@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MetaAds Spy — منصة تجسس إعلانات فيسبوك</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #f8fbff;
+    color: #172b4d;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- Header -->
+<header class="border-b border-[#cfe0f5] bg-white sticky top-0 z-20 shadow-sm">
+  <div class="max-w-7xl mx-auto px-4 py-3.5 flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-3">
+      <span class="text-xl font-black tracking-tight text-[#102a56]">🕵️ MetaAds<span class="text-blue-600">Spy</span></span>
+      <span class="text-xs px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] font-bold border border-[#cfe0f5]" id="db-backend">SQLite</span>
+    </div>
+    <div class="flex items-center gap-5 text-sm font-semibold">
+      <span class="flex items-center gap-1.5 text-slate-700">📦 <b class="num text-blue-700 text-base" id="stat-total">0</b> إعلان محفوظ</span>
+      <span class="flex items-center gap-1.5 text-slate-700">🏪 <b class="num text-emerald-700 text-base" id="stat-stores">0</b> متجر</span>
+      <button onclick="resetAll()" class="text-rose-600 hover:text-rose-700 text-xs font-bold hover:underline">مسح القاعدة</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+  <!-- Manual Scrape Bar -->
+  <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+    <div class="flex items-center justify-between">
+      <h2 class="font-bold text-[#102a56] text-sm flex items-center gap-2">⚙️ إطلاق سحب فوري مباشر</h2>
+      <span id="engine-state" class="text-xs px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200">متوقف</span>
+    </div>
+    <div class="grid md:grid-cols-12 gap-3">
+      <input id="q" placeholder="كلمة مفتاحية، رابط صفحة، دومين متجر (مثل bxrrt.com)، أو رابط مكتبة إعلانات كامل…" class="md:col-span-5 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <select id="scrape-date-preset" onchange="toggleScrapeDateInputs()" class="md:col-span-3 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="all">📅 كل الفترات (بدون تقييد تاريخ)</option>
+        <option value="this_month">⚡ هذا الشهر فقط</option>
+        <option value="last_month">🗓️ الشهر الماضي</option>
+        <option value="last_7d">⏱️ آخر 7 أيام</option>
+        <option value="last_30d">🗓️ آخر 30 يوماً</option>
+        <option value="custom">✏️ فترة مخصصة (تحديد التواريخ)</option>
+      </select>
+      <select id="country-select" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="DZ">🇩🇿 الجزائر (DZ)</option>
+        <option value="ALL">🌍 كل الدول (ALL)</option>
+        <option value="SA">🇸🇦 السعودية</option>
+        <option value="AE">🇦🇪 الإمارات</option>
+        <option value="FR">🇫🇷 فرنسا</option>
+      </select>
+      <button id="btn-start" onclick="startEngine()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl px-4 py-2.5 font-bold text-sm text-white shadow-sm transition">▶ بدء السحب</button>
+    </div>
+
+    <!-- Custom Date Range Row (Visible only if custom is selected) -->
+    <div id="scrape-custom-dates" class="hidden flex items-center gap-3 bg-[#f8fbff] border border-[#cfe0f5] p-3 rounded-xl text-xs font-bold text-slate-700">
+      <span>📅 فترة السحب المخصصة:</span>
+      <span class="text-slate-500">من:</span>
+      <input id="scrape-custom-min" type="date" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5 text-xs text-slate-800">
+      <span class="text-slate-500">إلى:</span>
+      <input id="scrape-custom-max" type="date" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5 text-xs text-slate-800">
+    </div>
+    <div class="flex items-center gap-5 text-xs text-slate-600 flex-wrap pt-1 font-medium">
+      <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="stores_only" checked class="rounded text-blue-600"> المتاجر فقط (E-commerce)</label>
+      <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="exact" class="rounded text-blue-600"> عبارة حرفية</label>
+      <label class="flex items-center gap-2 cursor-pointer" title="يشغّل عدة تمريرات لدمج النتائج وتفادي قيود فيسبوك"><input type="checkbox" id="sweep" class="rounded text-blue-600"> 🔁 تغطية موسّعة (Sweep)</label>
+      <button onclick="stopEngine()" class="ms-auto text-rose-600 hover:underline font-bold">⏹ إيقاف المحرك</button>
+    </div>
+
+    <!-- Live Scrape Progress & Statistics Widget -->
+    <div id="live-progress-box" class="hidden bg-[#f0f7ff] border border-[#9fbbe0] rounded-2xl p-4 space-y-3 shadow-sm transition-all duration-300">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-2">
+          <span class="animate-pulse text-base">⚡</span>
+          <span class="text-xs font-bold text-slate-600">جاري السحب للهدف:</span>
+          <b id="live-target-name" class="text-[#102a56] text-sm font-black">...</b>
+        </div>
+        <div class="flex items-center gap-3 text-xs font-bold flex-wrap">
+          <span class="px-3 py-1 rounded-full bg-white border border-[#cfe0f5] text-blue-700 shadow-sm flex items-center gap-1.5">
+            📊 إجمالي فيسبوك: <b id="live-reported" class="text-sm num font-black text-blue-800">جاري الرصد...</b>
+          </span>
+          <span class="px-3 py-1 rounded-full bg-white border border-[#cfe0f5] text-emerald-700 shadow-sm flex items-center gap-1.5">
+            📥 تم سحبه: <b id="live-scraped" class="text-sm num font-black text-emerald-800">0</b>
+          </span>
+          <span class="px-3 py-1 rounded-full bg-white border border-[#cfe0f5] text-amber-700 shadow-sm flex items-center gap-1.5">
+            ⏳ متبقي تقريباً: <b id="live-remaining" class="text-sm num font-black text-amber-800">-</b>
+          </span>
+          <span class="px-3 py-1 rounded-full bg-white border border-[#cfe0f5] text-purple-700 shadow-sm flex items-center gap-1.5">
+            🏪 متاجر فريدة: <b id="live-stores" class="text-sm num font-black text-purple-800">0</b>
+          </span>
+          <button onclick="stopEngine()" class="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition">
+            ⏹ إيقاف
+          </button>
+        </div>
+      </div>
+
+      <!-- Animated Progress Bar Container -->
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between text-xs font-bold text-slate-600">
+          <span id="live-status-note">جاري فتح صفحة فيسبوك واستخراج النتائج...</span>
+          <span id="live-percent" class="text-blue-700 font-black num">0%</span>
+        </div>
+        <div class="w-full bg-slate-200 h-3 rounded-full overflow-hidden p-0.5 border border-slate-300/70">
+          <div id="live-progress-fill" class="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 rounded-full transition-all duration-300 shadow-sm" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Navigation Tabs -->
+  <div class="flex gap-2.5 border-b border-[#cfe0f5] pb-3 flex-wrap items-center">
+    <button onclick="showTab('ads')" id="tab-ads" class="px-5 py-2.5 rounded-xl bg-blue-600 text-sm font-bold text-white shadow-sm transition">🛍️ بنك الإعلانات والتجسس</button>
+    <button onclick="showTab('targets')" id="tab-targets" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🎯 الأهداف والمنافسين</button>
+    <button onclick="showTab('tracked')" id="tab-tracked" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📡 الصفحات المتتبعة</button>
+    <button onclick="showTab('stores')" id="tab-stores" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🏪 المتاجر المكتشفة</button>
+    <button onclick="showTab('jobs')" id="tab-jobs" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📋 قائمة المهام</button>
+    <button onclick="showTab('settings')" id="tab-settings" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">⚙️ الإعدادات والربط</button>
+    <div class="ms-auto flex gap-2">
+      <button onclick="exportData('csv')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير CSV</button>
+      <button onclick="exportData('json')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير JSON</button>
+    </div>
+  </div>
+
+  <!-- VIEW: ADS (SPY ENGINE) -->
+  <section id="view-ads" class="space-y-4">
+
+    <!-- Target Filter Banner -->
+    <div id="target-filter-banner" class="hidden bg-[#e8f1ff] border border-[#9fbbe0] rounded-2xl px-5 py-3.5 flex items-center justify-between text-xs text-[#153e75] gap-3 flex-wrap shadow-sm">
+      <div class="flex items-center gap-2.5">
+        <span class="text-lg">🎯</span>
+        <span class="font-bold">مفلتر بالهدف:</span>
+        <b id="target-filter-label" class="text-[#102a56] text-sm font-black"></b>
+        <span id="target-filter-type" class="px-2.5 py-0.5 rounded-full bg-blue-600 text-white text-[10px] font-bold"></span>
+      </div>
+      <button onclick="clearTargetFilter()" class="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
+        ✕ إلغاء الفلتر وعرض جميع الإعلانات
+      </button>
+    </div>
+
+    <!-- Filters Row Container -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <!-- Preset Filter Pills -->
+      <div class="flex items-center justify-between flex-wrap gap-2.5">
+        <span class="text-xs font-bold text-slate-500">🔥 فلاتر الاقتناص السريع:</span>
+        <div class="flex items-center gap-2 flex-wrap">
+          <button onclick="setPreset('')" id="preset-all" class="text-xs px-3.5 py-1.5 rounded-lg bg-blue-600 text-white font-bold shadow-sm transition">الكل</button>
+          <button onclick="setPreset('winning')" id="preset-winning" class="text-xs px-3.5 py-1.5 rounded-lg bg-white text-amber-700 border border-amber-300 hover:bg-amber-50 font-bold transition shadow-sm">🏆 منتجات رابحة (+5 أيام نشطة)</button>
+          <button onclick="setPreset('new_launches')" id="preset-new_launches" class="text-xs px-3.5 py-1.5 rounded-lg bg-white text-sky-700 border border-sky-300 hover:bg-sky-50 font-bold transition shadow-sm">🚀 أُطلقت حديثاً (آخر 3 أيام)</button>
+          <button onclick="setPreset('active')" id="preset-active" class="text-xs px-3.5 py-1.5 rounded-lg bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 font-bold transition shadow-sm">🟢 نشطة حالياً</button>
+          <button onclick="setPreset('stopped')" id="preset-stopped" class="text-xs px-3.5 py-1.5 rounded-lg bg-white text-rose-700 border border-rose-300 hover:bg-rose-50 font-bold transition shadow-sm">⏸️ إعلانات متوقفة</button>
+        </div>
+      </div>
+
+      <!-- Advanced Filter Inputs -->
+      <div class="grid md:grid-cols-12 gap-3 pt-3 border-t border-slate-100 text-xs">
+        <div class="md:col-span-4">
+          <label class="block text-slate-600 font-bold mb-1">بحث بالنص أو المتجر أو الصفحة:</label>
+          <input id="search" oninput="debounceLoadAds()" placeholder="اكتب للبحث الفوري…" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-slate-600 font-bold mb-1">تاريخ الإطلاق من:</label>
+          <input id="start-date-min" type="date" onchange="loadAds()" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-2.5 py-2 text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-slate-600 font-bold mb-1">تاريخ الإطلاق إلى:</label>
+          <input id="start-date-max" type="date" onchange="loadAds()" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-2.5 py-2 text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-slate-600 font-bold mb-1">الحد الأدنى للأيام النشطة:</label>
+          <input id="min-days" type="number" min="0" placeholder="0" onchange="loadAds()" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-2.5 py-2 text-slate-800 font-bold text-center focus:outline-none focus:ring-1 focus:ring-blue-500">
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-slate-600 font-bold mb-1">الترتيب حسب:</label>
+          <select id="sort-by" onchange="loadAds()" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-2.5 py-2 text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+            <option value="collected_at">الأحدث مسحاً</option>
+            <option value="longest_running">الأطول عمراً (الأكثر ربحاً)</option>
+            <option value="newest_launch">الأحدث إطلاقاً</option>
+            <option value="most_collated">الأكثر انتشاراً (Scaling)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Ads Count Label -->
+    <div class="flex items-center justify-between text-xs text-slate-600 px-1 font-semibold">
+      <span>عدد الإعلانات المعروضة: <b class="num text-blue-700 text-sm font-bold" id="ads-total">0</b></span>
+      <span id="active-filter-indicator" class="text-blue-600 font-bold"></span>
+    </div>
+
+    <!-- Ads Grid (Cards identical to screenshot) -->
+    <div id="ads" class="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+  </section>
+
+  <!-- VIEW: TARGETS (SPY ON PAGES, STORES, KEYWORDS) -->
+  <section id="view-targets" class="hidden space-y-4">
+    <!-- Add Target Card -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <h3 class="font-bold text-[#102a56] text-sm">🎯 إضافة هدف جديد للمراقبة والتتبع التلقائي</h3>
+      <div class="grid md:grid-cols-12 gap-3">
+        <select id="new-target-type" class="md:col-span-3 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <option value="page">صفحة فيسبوك (رابط أو ID)</option>
+          <option value="domain">دومين متجر (مثل bxrrt.com)</option>
+          <option value="keyword">كلمة مفتاحية</option>
+          <option value="custom_url">رابط مكتبة إعلانات كامل ومخصص</option>
+        </select>
+        <input id="new-target-value" placeholder="القيمة: رابط الصفحة، bxrrt.com، كلمة مفتاحية، أو رابط مخصص…" class="md:col-span-5 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <input id="new-target-label" placeholder="تسمية اختيارية (اسم المنافس)…" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <button onclick="addTarget()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl font-bold text-sm text-white px-4 py-2.5 transition shadow-sm">+ إضافة للمراقبة</button>
+      </div>
+      <div class="flex items-center gap-4 text-xs text-slate-500 flex-wrap font-medium">
+        <span>فحص دوري كل:</span>
+        <input id="new-target-interval" type="number" min="1" value="12" class="w-16 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1 text-slate-800 font-bold text-center">
+        <span>ساعة</span>
+        <span>· يقوم النظام بفحص الهدف وسحب الإعلانات الجديدة فقط مع التوقف الذكي لتوفير الرام.</span>
+      </div>
+    </div>
+
+    <!-- Targets List Table -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/60">
+        <h4 class="font-bold text-[#102a56] text-sm">قائمة الأهداف المتتبَّعة</h4>
+        <div class="flex gap-2.5">
+          <button onclick="runScheduleNow()" class="text-xs bg-white hover:bg-[#eef6ff] text-blue-700 px-3.5 py-1.5 rounded-lg border border-[#cfe0f5] font-bold shadow-sm transition">⚡ فحص جميع الأهداف الآن</button>
+          <button onclick="loadTargets()" class="text-xs text-slate-600 hover:text-blue-600 font-bold">تحديث</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-slate-500 text-xs bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="py-3 px-5 text-right font-bold">النوع</th>
+              <th class="text-right px-5 font-bold">الهدف / التسمية</th>
+              <th class="text-right px-5 font-bold">الدولة</th>
+              <th class="text-right px-5 font-bold">التكرار</th>
+              <th class="text-right px-5 font-bold">آخر فحص</th>
+              <th class="text-center px-5 font-bold">إجراءات</th>
+            </tr>
+          </thead>
+          <tbody id="targets-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- VIEW: TRACKED PAGES (browser extension) -->
+  <section id="view-tracked" class="hidden space-y-4">
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h3 class="font-bold text-[#102a56] text-sm">📡 الصفحات المتتبعة (من إضافة المتصفح)</h3>
+          <p class="text-xs text-slate-500 mt-1">تظهر هنا الصفحات التي تتبّعتها من إضافة «Ad Library Research Assistant» مع عدد الإعلانات النشطة عبر الزمن.</p>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="loadTrackedPages()" class="text-xs bg-white hover:bg-[#eef6ff] text-slate-700 px-3.5 py-2 rounded-lg border border-[#cfe0f5] font-bold shadow-sm transition">تحديث</button>
+          <button onclick="untrackAllPages()" class="text-xs bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2 rounded-lg font-bold shadow-sm transition">حذف كل الصفحات</button>
+        </div>
+      </div>
+    </div>
+    <div id="tracked-pages" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  </section>
+
+  <!-- VIEW: STORES -->
+  <section id="view-stores" class="hidden bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)] overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-slate-500 text-xs border-b border-slate-200 bg-slate-50">
+        <tr>
+          <th class="text-right py-3 px-4 font-bold">المتجر</th>
+          <th class="text-right px-4 font-bold">المنصة</th>
+          <th class="text-right px-4 font-bold">عدد الإعلانات</th>
+          <th class="text-right px-4 font-bold">آخر ظهور</th>
+          <th class="text-center px-4 font-bold">إجراء</th>
+        </tr>
+      </thead>
+      <tbody id="stores" class="divide-y divide-slate-100"></tbody>
+    </table>
+  </section>
+
+  <!-- VIEW: JOBS -->
+  <section id="view-jobs" class="hidden bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)] space-y-4">
+    <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+      <h3 class="font-bold text-[#102a56] text-sm">📋 سجل الأوامر والمهام الجارية</h3>
+      <button onclick="loadJobs()" class="text-xs text-slate-500 hover:text-blue-600 font-bold">تحديث</button>
+    </div>
+    <div id="jobs" class="space-y-2.5 max-h-96 overflow-auto"></div>
+  </section>
+
+  <!-- VIEW: SETTINGS & TELEGRAM INTEGRATION -->
+  <section id="view-settings" class="hidden space-y-6">
+    <div class="grid md:grid-cols-2 gap-6">
+
+      <!-- Telegram Integration Card -->
+      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
+          <span class="text-2xl">✈️</span>
+          <div>
+            <h3 class="font-bold text-[#102a56] text-sm">ربط بوت التلجرام (Telegram Alerts)</h3>
+            <p class="text-xs text-slate-500">استقبل تنبيهات فورية عندما يطلق أي منافس إعلاناً جديداً أو يستمر كمنتج رابح.</p>
+          </div>
+        </div>
+
+        <div class="space-y-3.5 text-xs">
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">توكن البوت (Bot Token):</label>
+            <input id="cfg-tg-token" type="text" placeholder="مثال: 123456789:ABCdefGhIJKlmNoPQRstu..." class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+            <span class="text-[10px] text-slate-400 mt-1 block">تحصل عليه من BotFather عند إنشاء البوت.</span>
+          </div>
+
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">معرّف المحادثة أو القناة (Chat ID):</label>
+            <input id="cfg-tg-chat" type="text" placeholder="مثال: 987654321 أو -1001234567890" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+            <span class="text-[10px] text-slate-400 mt-1 block">آيدي حسابك الشخصي أو آيدي القناة/المجموعة التي ينشر فيها البوت.</span>
+          </div>
+
+          <div class="pt-1">
+            <label class="flex items-center gap-2 cursor-pointer text-slate-800 font-bold">
+              <input type="checkbox" id="cfg-notify-enabled" class="rounded text-blue-600">
+              <span>تفعيل إرسال التنبيهات تلقائياً</span>
+            </label>
+          </div>
+
+          <div class="pt-2 flex gap-2.5">
+            <button onclick="testTelegram()" id="btn-tg-test" class="flex-1 bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl py-2.5 font-bold transition text-xs shadow-sm">
+              🧪 فحص وإرسال رسالة تجريبية
+            </button>
+            <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">
+              حفظ
+            </button>
+          </div>
+
+          <div id="tg-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold"></div>
+        </div>
+      </div>
+
+      <!-- Auto Scheduler Settings Card -->
+      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
+          <span class="text-2xl">⏰</span>
+          <div>
+            <h3 class="font-bold text-[#102a56] text-sm">إعدادات الجدولة التلقائية الذكية</h3>
+            <p class="text-xs text-slate-500">إدارة الفحص الدوري لجميع الأهداف والمنافسين المسجلين في النظام.</p>
+          </div>
+        </div>
+
+        <div class="space-y-4 text-xs">
+          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
+            <input type="checkbox" id="cfg-sched-enabled" class="rounded text-blue-600">
+            <div>
+              <div class="font-bold text-[#102a56]">تشغيل السحب المجدول الدوري</div>
+              <div class="text-[11px] text-slate-500 mt-0.5">يفحص كل هدف في موعده المحدد بالساعات بنمط السحب التزايدي السريع.</div>
+            </div>
+          </label>
+
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">التكرار الافتراضي (ساعات):</label>
+            <div class="flex items-center gap-2">
+              <input id="cfg-sched-interval" type="number" min="1" value="12" class="w-20 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 text-center font-black">
+              <span class="text-slate-600 font-medium">ساعة (افتراضياً 12 ساعة)</span>
+            </div>
+          </div>
+
+          <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl p-3.5 space-y-1.5 text-[11px] text-slate-600">
+            <div>📅 آخر عملية فحص مجدولة: <b id="last-sched-time" class="text-slate-900">-</b></div>
+            <div>⚡ نمط السحب: <span class="text-emerald-700 font-bold">تزايدي ذكي (يتوقف تلقائياً بعد 8 إعلانات مكررة)</span></div>
+          </div>
+
+          <div class="pt-2 flex gap-2.5">
+            <button onclick="runScheduleNow()" class="flex-1 bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl py-2.5 font-bold transition text-xs shadow-sm">
+              ⚡ تشغيل دورة الفحص الآن
+            </button>
+            <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">
+              حفظ
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Console Log Box -->
+  <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+    <div class="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+      <span>سجل الأحداث والمحرك</span>
+      <span class="text-[11px] text-slate-400 font-mono">Live Logs</span>
+    </div>
+    <pre id="log" class="text-xs bg-slate-900 text-slate-300 rounded-xl p-3.5 h-28 overflow-auto whitespace-pre-wrap leading-5 font-mono"></pre>
+  </section>
+
+</main>
+
+<script>
+let ads = [];
+let currentPreset = '';
+let currentTargetFilter = null; // { id, type, value, label }
+let debounceTimer = null;
+
+let liveScrapeState = {
+  active: false,
+  query: '',
+  reported: null,
+  scraped: 0,
+  stores: 0
+};
+
+function updateLiveProgressUI() {
+  const box = document.getElementById('live-progress-box');
+  if (!liveScrapeState.active && liveScrapeState.scraped === 0) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  document.getElementById('live-target-name').innerText = liveScrapeState.query || 'سحب مباشر';
+  document.getElementById('live-scraped').innerText = Number(liveScrapeState.scraped).toLocaleString('en-US');
+  document.getElementById('live-stores').innerText = Number(liveScrapeState.stores).toLocaleString('en-US');
+
+  if (liveScrapeState.reported && liveScrapeState.reported > 0) {
+    document.getElementById('live-reported').innerText = Number(liveScrapeState.reported).toLocaleString('en-US') + ' إعلان';
+    const rem = Math.max(0, liveScrapeState.reported - liveScrapeState.scraped);
+    document.getElementById('live-remaining').innerText = Number(rem).toLocaleString('en-US');
+    const pct = Math.min(100, Math.round((liveScrapeState.scraped / liveScrapeState.reported) * 100));
+    document.getElementById('live-percent').innerText = pct + '%';
+    document.getElementById('live-progress-fill').style.width = Math.max(4, pct) + '%';
+    document.getElementById('live-progress-fill').classList.remove('animate-pulse');
+    if (pct >= 100) {
+      document.getElementById('live-status-note').innerText = '✅ وصل السحب للحد الأقصى أو اكتمل!';
+    } else {
+      document.getElementById('live-status-note').innerText = `جاري السحب والتمرير... (${pct}% مكتمل)`;
+    }
+  } else {
+    document.getElementById('live-reported').innerText = 'جاري الرصد...';
+    document.getElementById('live-remaining').innerText = '-';
+    document.getElementById('live-percent').innerText = liveScrapeState.scraped > 0 ? (liveScrapeState.scraped + ' إعلان') : '0%';
+    document.getElementById('live-progress-fill').style.width = '100%';
+    document.getElementById('live-progress-fill').classList.add('animate-pulse');
+    document.getElementById('live-status-note').innerText = 'جاري رصد إجمالي النتائج والتمرير في فيسبوك...';
+  }
+}
+
+function setPreset(p) {
+  currentPreset = p;
+  ['all','winning','new_launches','active','stopped'].forEach(k => {
+    const el = document.getElementById('preset-'+k);
+    if (!el) return;
+    if ((p==='' && k==='all') || p===k) {
+      el.className = 'text-xs px-3.5 py-1.5 rounded-lg bg-blue-600 text-white font-bold shadow-sm transition';
+    } else {
+      el.className = 'text-xs px-3.5 py-1.5 rounded-lg bg-white text-slate-700 border border-[#cfe0f5] hover:bg-[#eef6ff] font-bold transition shadow-sm';
+    }
+  });
+  loadAds();
+}
+
+function debounceLoadAds() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(loadAds, 300);
+}
+
+function filterByTarget(targetId, targetType, targetValue, targetLabel) {
+  currentTargetFilter = { id: targetId, type: targetType, value: targetValue, label: targetLabel };
+  document.getElementById('target-filter-label').innerText = targetLabel || targetValue;
+  const typeAr = { page: 'صفحة', domain: 'متجر', keyword: 'كلمة', custom_url: 'رابط مخصص' };
+  document.getElementById('target-filter-type').innerText = typeAr[targetType] || targetType;
+  document.getElementById('target-filter-banner').classList.remove('hidden');
+  showTab('ads');
+  loadAds();
+}
+
+function clearTargetFilter() {
+  currentTargetFilter = null;
+  document.getElementById('target-filter-banner').classList.add('hidden');
+  loadAds();
+}
+
+async function loadStats() {
+  const r = await fetch('/api/stats'); const s = await r.json();
+  document.getElementById('stat-total').innerText = s.total_ads;
+  document.getElementById('stat-stores').innerText = s.total_stores;
+  document.getElementById('db-backend').innerText = s.backend;
+}
+
+async function loadAds() {
+  const q = document.getElementById('search').value;
+  const dmin = document.getElementById('start-date-min').value;
+  const dmax = document.getElementById('start-date-max').value;
+  const mdays = document.getElementById('min-days').value || 0;
+  const sort = document.getElementById('sort-by').value;
+
+  let url = `/api/ads?limit=200&search=${encodeURIComponent(q)}&preset=${currentPreset}&start_date_min=${encodeURIComponent(dmin)}&start_date_max=${encodeURIComponent(dmax)}&min_days_active=${mdays}&sort_by=${sort}`;
+
+  if (currentTargetFilter) {
+    if (currentTargetFilter.id) url += `&target_id=${currentTargetFilter.id}`;
+    if (currentTargetFilter.type === 'page') {
+      url += `&page_id=${encodeURIComponent(currentTargetFilter.value)}`;
+    } else if (currentTargetFilter.type === 'domain') {
+      url += `&store_domain=${encodeURIComponent(currentTargetFilter.value)}`;
+    } else if (currentTargetFilter.type === 'keyword') {
+      url += `&query=${encodeURIComponent(currentTargetFilter.value)}`;
+    }
+  }
+
+  const r = await fetch(url);
+  const d = await r.json();
+  ads = d.ads;
+  renderAds();
+  document.getElementById('ads-total').innerText = d.total;
+}
+
+function copyAdText(txt) {
+  if (!txt) return alert('لا يوجد نص لنسخه');
+  navigator.clipboard.writeText(txt).then(() => alert('تم نسخ نص الإعلان بنجاح'));
+}
+
+function renderAds() {
+  const el = document.getElementById('ads');
+  if (!ads.length) {
+    el.innerHTML = '<div class="col-span-full py-16 text-center text-slate-500 font-bold bg-white border border-[#cfe0f5] rounded-2xl">لا توجد إعلانات مطابقة للفلاتر المحددة.</div>';
+    return;
+  }
+  el.innerHTML = ads.map(a => {
+    const days = a.days_active || 1;
+    const isWin = days >= 5 && a.is_active;
+    const isNew = days <= 3 && a.is_active;
+    const adFbUrl = `https://www.facebook.com/ads/library/?id=${a.ad_id}`;
+    const previewImg = a.preview_image_url || '';
+
+    return `
+    <article class="bg-white border border-[#d7e3f4] rounded-2xl p-4 flex flex-col justify-between shadow-[0_8px_22px_rgba(23,43,77,0.06)] hover:shadow-md transition">
+      <div>
+        <!-- Top Media Container (Matching screenshot style) -->
+        <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center">
+          ${previewImg ? `
+            <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" class="w-full h-full object-cover" onerror="this.parentElement.innerHTML='<div class=\\'text-slate-400 text-xs font-bold\\'>لا توجد صورة</div>'">
+          ` : `
+            <div class="text-[#153e75] font-bold text-xs flex flex-col items-center gap-1">
+              <span class="text-2xl">🖼️</span>
+              <span>${a.platform || 'إعلان'}</span>
+            </div>
+          `}
+          <!-- Floating Status Pills -->
+          <div class="absolute top-2.5 right-2.5 flex gap-1.5 flex-wrap">
+            ${isWin ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold shadow-sm">🏆 منتج رابح</span>' : ''}
+            ${isNew ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-500 text-white font-bold shadow-sm">🚀 جديد</span>' : ''}
+          </div>
+          <div class="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-white/90 backdrop-blur text-[11px] font-bold text-[#102a56] shadow-sm">
+            ${a.is_active ? '🟢 نشط' : '⏸️ متوقف'}
+          </div>
+        </div>
+
+        <!-- Header: Page Name & Domain -->
+        <div class="space-y-1 mb-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="font-bold text-base text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
+            <span class="text-[11px] text-slate-500 shrink-0 font-mono">${(a.start_date || a.collected_at || '').slice(0, 10)}</span>
+          </div>
+          ${a.store_domain ? `
+            <div class="text-xs text-slate-600 flex items-center justify-between">
+              <span class="font-mono text-blue-700 truncate cursor-pointer hover:underline font-bold" onclick="trackDomain('${a.store_domain}')">🔗 ${a.store_domain}</span>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">${a.platform || 'Store'}</span>
+            </div>
+          ` : `
+            <div class="text-[11px] text-slate-400">بدون رابط متجر خارجي</div>
+          `}
+        </div>
+
+        <!-- Metric Badges (Matching screenshot pills) -->
+        <div class="flex flex-wrap gap-1.5 mb-3" dir="ltr">
+          <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
+            Active: <b>${days}</b> ${days === 1 ? 'day' : 'days'}
+          </span>
+          ${a.cta_text ? `
+            <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
+              CTA: ${a.cta_text}
+            </span>
+          ` : ''}
+          ${a.collation_count > 1 ? `
+            <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
+              Ads count: ${a.collation_count}
+            </span>
+          ` : ''}
+          <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
+            ID: ${a.ad_id}
+          </span>
+        </div>
+
+        <!-- Ad Copy Snippet -->
+        ${a.body ? `
+          <div class="text-xs text-slate-700 bg-slate-50 border border-slate-100 p-2.5 rounded-xl line-clamp-3 leading-relaxed mb-3">
+            ${a.body.slice(0, 180)}
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Action Buttons 2x2 Grid (Exact replica of screenshot) -->
+      <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-xs">
+        <a href="${adFbUrl}" target="_blank" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+          فتح الإعلان ↗
+        </a>
+        ${a.link_url ? `
+          <a href="${a.link_url}" target="_blank" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+            فتح المتجر 🛒
+          </a>
+        ` : `
+          <button disabled class="py-2 px-2 text-center rounded-lg bg-slate-50 border border-slate-200 text-slate-400 font-bold opacity-60">
+            لا يوجد متجر
+          </button>
+        `}
+        ${a.page_id ? `
+          <button onclick="trackPage('${a.page_id}', '${(a.page_name || '').replace(/'/g, "\\'")}')" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+            + تتبع الصفحة
+          </button>
+        ` : `
+          <button onclick="copyAdText('${(a.body || '').replace(/'/g, "\\'")}')" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+            نسخ النص 📋
+          </button>
+        `}
+        <button onclick="copyAdText('${(a.body || '').replace(/'/g, "\\'")}')" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+          نسخ النص 📋
+        </button>
+      </div>
+    </article>`;
+  }).join('');
+}
+
+// ── Targets management ──
+async function loadTargets() {
+  const r = await fetch('/api/targets'); const d = await r.json();
+  const el = document.getElementById('targets-list');
+  if (!d.targets || !d.targets.length) {
+    el.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-400 font-semibold">لا توجد أهداف مضافة بعد. أضف أول صفحة أو متجر بالأعلى.</td></tr>';
+    return;
+  }
+  const typeBadge = {
+    page: 'bg-violet-50 text-violet-700 border-violet-200',
+    domain: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    keyword: 'bg-sky-50 text-sky-700 border-sky-200',
+    custom_url: 'bg-amber-50 text-amber-700 border-amber-200'
+  };
+  const typeAr = { page: 'صفحة', domain: 'متجر', keyword: 'كلمة', custom_url: 'رابط مخصص' };
+
+  el.innerHTML = d.targets.map(t => {
+    const safeLabel = (t.label || t.target_value || '').replace(/'/g, "\\'");
+    const safeVal = (t.target_value || '').replace(/'/g, "\\'");
+    const adsCount = t.ads_count || 0;
+    return `
+    <tr class="hover:bg-slate-50/80 transition">
+      <td class="py-3 px-5"><span class="text-[10px] px-2.5 py-0.5 rounded-full font-bold border ${typeBadge[t.type] || 'bg-slate-100 text-slate-700'}">${typeAr[t.type] || t.type}</span></td>
+      <td class="px-5">
+        <div class="flex items-center gap-2">
+          <div class="font-bold text-[#102a56] hover:text-blue-600 cursor-pointer flex items-center gap-1.5 transition text-sm" onclick="filterByTarget(${t.id}, '${t.type}', '${safeVal}', '${safeLabel}')" title="انقر لعرض إعلانات هذا الهدف فقط">
+            <span>${t.label || t.target_value}</span>
+            <span class="text-blue-500 text-xs">↗</span>
+          </div>
+          ${adsCount > 0 ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 num font-bold">${adsCount} إعلان</span>` : `<span class="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 num">0</span>`}
+        </div>
+        <div class="text-[11px] text-slate-500 truncate max-w-xs font-mono">${t.target_value}</div>
+      </td>
+      <td class="px-5 text-xs text-slate-600 font-bold">${t.country || 'DZ'}</td>
+      <td class="px-5 text-xs num text-slate-600 font-medium">كل ${t.interval_hours || 12} س</td>
+      <td class="px-5 text-xs text-slate-500 font-mono">${t.last_scraped_at ? t.last_scraped_at.slice(0, 16).replace('T', ' ') : 'لم يُفحص بعد'}</td>
+      <td class="px-5 text-center">
+        <div class="flex items-center justify-center gap-2">
+          <button onclick="filterByTarget(${t.id}, '${t.type}', '${safeVal}', '${safeLabel}')" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">👁️ إعلاناته (${adsCount})</button>
+          <button onclick="scanTarget(${t.id})" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition shadow-sm">⚡ فحص الآن</button>
+          <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleTarget(${t.id}, this.checked)" title="تفعيل/تعطيل" class="cursor-pointer rounded text-blue-600">
+          <button onclick="delTarget(${t.id})" class="text-rose-600 hover:text-rose-700 text-xs px-1.5 font-bold" title="حذف">✕</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function addTarget() {
+  const type = document.getElementById('new-target-type').value;
+  const val = document.getElementById('new-target-value').value.trim();
+  const label = document.getElementById('new-target-label').value.trim();
+  const interval = parseFloat(document.getElementById('new-target-interval').value) || 12;
+  if (!val) return alert('الرجاء إدخال الهدف أولاً');
+
+  const r = await fetch('/api/targets', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ type: type, target_value: val, label: label, interval_hours: interval, country: 'DZ' })
+  });
+  const d = await r.json();
+  if (!d.ok) return alert(d.error || 'فشلت الإضافة');
+  document.getElementById('new-target-value').value = '';
+  document.getElementById('new-target-label').value = '';
+  loadTargets();
+}
+
+async function delTarget(id) {
+  if (!confirm('هل تريد حذف هذا الهدف؟')) return;
+  await fetch('/api/targets/' + id, { method: 'DELETE' });
+  loadTargets();
+}
+async function toggleTarget(id, en) {
+  await fetch('/api/targets/' + id, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled: en }) });
+}
+async function scanTarget(id) {
+  const r = await fetch('/api/targets/' + id + '/scan', { method: 'POST' });
+  const d = await r.json();
+  if (d.ok) alert('⚡ تم إرسال أمر الفحص التزايدي السريع إلى المحرك بنجاح.');
+}
+
+function trackDomain(dom) {
+  showTab('targets');
+  document.getElementById('new-target-type').value = 'domain';
+  document.getElementById('new-target-value').value = dom;
+  document.getElementById('new-target-label').value = dom;
+}
+function trackPage(pid, name) {
+  showTab('targets');
+  document.getElementById('new-target-type').value = 'page';
+  document.getElementById('new-target-value').value = pid;
+  document.getElementById('new-target-label').value = name || pid;
+}
+
+// ── Tracked pages (browser extension) ──
+function escT(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function trackedSparkline(snaps){
+  const vals = (snaps||[]).map(s => Number(s.active_ads_count||0));
+  if (vals.length < 2) return '';
+  const w = 200, h = 40, max = Math.max(1, ...vals), step = w/(vals.length-1);
+  const pts = vals.map((v,i) => `${(i*step).toFixed(1)},${(h-(v/max)*(h-6)-3).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${w} ${h}" class="w-full h-10 mt-1"><polyline fill="none" stroke="#2563eb" stroke-width="2" points="${pts}"/></svg>`;
+}
+function pageAdsUrl(pid){
+  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&sort_data[mode]=total_impressions&sort_data[direction]=desc&view_all_page_id=${pid}`;
+}
+function trackedCard(p){
+  const last = p.last_snapshot_at ? new Date(p.last_snapshot_at).toLocaleString('ar') : '—';
+  return `
+  <div class="bg-white border border-[#cfe0f5] rounded-2xl p-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)] space-y-3">
+    <div class="flex items-start justify-between gap-2">
+      <div class="truncate">
+        <h4 class="font-bold text-[#102a56] truncate">${escT(p.page_name||'صفحة')}</h4>
+        <p class="text-xs text-slate-500 font-mono">ID: ${escT(p.page_id)}</p>
+      </div>
+      ${p.platform?`<span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 font-bold">${escT(p.platform)}</span>`:''}
+    </div>
+    <div class="grid grid-cols-3 gap-2 text-center text-xs">
+      <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl py-2"><div class="font-black text-blue-700 text-lg num">${p.active_ads_count||0}</div><div class="text-slate-500">نشطة</div></div>
+      <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl py-2"><div class="font-black text-slate-700 text-lg num">${p.ads_count||0}</div><div class="text-slate-500">محفوظة</div></div>
+      <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl py-2"><div class="font-black text-emerald-700 text-lg num">${(p.page_likes||0).toLocaleString('en-US')}</div><div class="text-slate-500">إعجابات</div></div>
+    </div>
+    ${trackedSparkline(p.snapshots)}
+    <div class="text-xs text-slate-500">آخر لقطة: <b>${last}</b> · عدد اللقطات: <b>${p.snapshots_count||0}</b></div>
+    <div class="grid grid-cols-2 gap-2">
+      <a href="${pageAdsUrl(p.page_id)}" target="_blank" rel="noopener" class="text-center text-xs bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] rounded-lg py-2 font-bold">فتح إعلانات الصفحة</a>
+      <button onclick="toggleSnapshots('${escT(p.page_id)}')" class="text-xs bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] rounded-lg py-2 font-bold">تاريخ اللقطات</button>
+      <button onclick="untrackPage('${escT(p.page_id)}')" class="col-span-2 text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg py-2 font-bold">إلغاء التتبّع</button>
+    </div>
+    <div id="snap-${escT(p.page_id)}" class="hidden"></div>
+  </div>`;
+}
+async function loadTrackedPages(){
+  const el = document.getElementById('tracked-pages');
+  try {
+    const r = await fetch('/api/tracked-pages'); const d = await r.json();
+    const pages = d.pages || [];
+    if (!pages.length) {
+      el.innerHTML = '<div class="sm:col-span-2 lg:col-span-3 text-center py-10 text-slate-400 font-semibold bg-white border border-[#cfe0f5] rounded-2xl">لا توجد صفحات متتبعة بعد. تتبّع صفحة من إضافة المتصفح (زر «تتبع الصفحة») وستظهر هنا.</div>';
+      return;
+    }
+    el.innerHTML = pages.map(trackedCard).join('');
+  } catch (e) { el.innerHTML = '<div class="text-rose-600 text-sm font-bold py-6 text-center">تعذر تحميل الصفحات المتتبعة</div>'; }
+}
+async function toggleSnapshots(pid){
+  const box = document.getElementById('snap-'+pid);
+  if (!box) return;
+  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+  try {
+    const r = await fetch('/api/tracked-pages/'+encodeURIComponent(pid)+'/snapshots'); const d = await r.json();
+    const snaps = d.snapshots || [];
+    box.innerHTML = snaps.length
+      ? '<div class="max-h-44 overflow-auto border border-[#cfe0f5] rounded-xl mt-1"><table class="w-full text-xs"><thead class="bg-slate-50 text-slate-500"><tr><th class="text-right px-2 py-1.5 font-bold">الوقت</th><th class="text-right px-2 font-bold">نشط</th><th class="text-right px-2 font-bold">إجمالي</th></tr></thead><tbody>' +
+        snaps.map(s => `<tr class="border-t border-slate-100"><td class="px-2 py-1 font-mono">${new Date(s.captured_at).toLocaleString('ar')}</td><td class="px-2 num font-bold text-emerald-700">${s.active_ads_count}</td><td class="px-2 num text-slate-600">${s.total_ads_count}</td></tr>`).join('') +
+        '</tbody></table></div>'
+      : '<div class="text-xs text-slate-400 py-3 text-center">لا لقطات محفوظة بعد.</div>';
+    box.classList.remove('hidden');
+  } catch (e) { box.textContent = 'تعذر تحميل اللقطات'; box.classList.remove('hidden'); }
+}
+async function untrackPage(pid){ if(!confirm('إلغاء تتبّع هذه الصفحة؟')) return; await fetch('/api/tracked-pages/'+encodeURIComponent(pid),{method:'DELETE'}); loadTrackedPages(); }
+async function untrackAllPages(){ if(!confirm('حذف جميع الصفحات المتتبعة؟')) return; await fetch('/api/tracked-pages',{method:'DELETE'}); loadTrackedPages(); }
+
+// ── Tab switcher ──
+function showTab(t) {
+  ['ads','targets','tracked','stores','jobs','settings'].forEach(v => {
+    const el = document.getElementById('view-'+v);
+    if (el) el.classList.toggle('hidden', t!==v);
+  });
+  ['ads','targets','tracked','stores','jobs','settings'].forEach(v => {
+    const btn = document.getElementById('tab-'+v);
+    if (btn) {
+      if (t === v) {
+        btn.className = 'px-5 py-2.5 rounded-xl bg-blue-600 text-sm font-bold text-white shadow-sm transition';
+      } else {
+        btn.className = 'px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition';
+      }
+    }
+  });
+  if (t === 'targets') loadTargets();
+  if (t === 'tracked') loadTrackedPages();
+  if (t === 'stores') loadStores();
+  if (t === 'jobs') loadJobs();
+  if (t === 'settings') loadSettings();
+}
+
+async function loadStores() {
+  const r = await fetch('/api/stores'); const d = await r.json();
+  document.getElementById('stores').innerHTML = d.stores.map(s => `
+    <tr class="hover:bg-slate-50 transition">
+      <td class="py-3 px-4 font-bold text-blue-700 font-mono">${s.store_domain}</td>
+      <td class="text-slate-600 px-4">${s.platform || ''}</td>
+      <td class="num font-bold text-slate-800 px-4">${s.total_ads}</td>
+      <td class="text-xs text-slate-500 font-mono px-4">${(s.last_seen || '').slice(0, 10)}</td>
+      <td class="text-center px-4">
+        <button onclick="trackDomain('${s.store_domain}')" class="text-xs px-3 py-1.5 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">+ تتبع هذا المتجر</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="5" class="text-center py-6 text-slate-400 font-semibold">لا توجد متاجر مكتشفة بعد.</td></tr>';
+}
+
+function toggleScrapeDateInputs() {
+  const p = document.getElementById('scrape-date-preset').value;
+  const customBox = document.getElementById('scrape-custom-dates');
+  if (customBox) {
+    customBox.classList.toggle('hidden', p !== 'custom');
+  }
+}
+
+function applyViewDateFilter(preset) {
+  const today = new Date();
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  let minD = '', maxD = '';
+
+  if (preset === 'last_7d') {
+    const past = new Date(); past.setDate(past.getDate() - 7);
+    minD = fmt(past); maxD = fmt(today);
+  } else if (preset === 'this_month') {
+    const first = new Date(today.getFullYear(), today.getMonth(), 1);
+    minD = fmt(first); maxD = fmt(today);
+  } else if (preset === 'last_30d') {
+    const past = new Date(); past.setDate(past.getDate() - 30);
+    minD = fmt(past); maxD = fmt(today);
+  }
+
+  if (minD) {
+    document.getElementById('start-date-min').value = minD;
+    document.getElementById('start-date-max').value = maxD;
+    loadAds();
+  }
+}
+
+async function startEngine() {
+  const q = document.getElementById('q').value.trim();
+  const c = document.getElementById('country-select').value;
+  if (!q) return alert('الرجاء كتابة كلمة مفتاحية أو رابط أو دومين');
+
+  const datePreset = document.getElementById('scrape-date-preset').value;
+  const dMin = document.getElementById('scrape-custom-min')?.value || '';
+  const dMax = document.getElementById('scrape-custom-max')?.value || '';
+
+  // Apply the same date filter to the view so user only sees ads from this range
+  if (datePreset !== 'all') {
+    applyViewDateFilter(datePreset);
+  }
+
+  const r = await fetch('/api/start', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      query: q,
+      country: c,
+      date_preset: datePreset,
+      start_date_min: dMin,
+      start_date_max: dMax,
+      exact: document.getElementById('exact').checked,
+      stores_only: document.getElementById('stores_only').checked,
+      sweep: document.getElementById('sweep').checked,
+      sort: 'total_impressions'
+    })
+  });
+  const d = await r.json();
+  if (d.queued) { alert('✅ تم إرسال أمر السحب بنجاح' + (d.date_label ? ` (${d.date_label})` : '') + '.'); loadJobs(); return; }
+  if (!d.ok) logLines.push('⚠️ السحب يعمل حالياً — انتظر انتهاءه.');
+}
+async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
+async function resetAll(){ if(!confirm('هل أنت متأكد من مسح جميع الإعلانات؟')) return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
+function exportData(f){ window.location = '/api/export/' + f; }
+
+// ── Jobs loop ──
+const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف' };
+async function loadJobs() {
+  const r = await fetch('/api/jobs'); const d = await r.json();
+  const el = document.getElementById('jobs');
+  if (!d.jobs.length) { el.innerHTML = '<div class="text-slate-400 text-sm font-semibold py-4 text-center">لا أوامر بعد.</div>'; return; }
+  const color = {
+    pending:'text-slate-700 bg-slate-100 border-slate-300',
+    running:'text-sky-700 bg-sky-50 border-sky-300',
+    done:'text-emerald-700 bg-emerald-50 border-emerald-300',
+    failed:'text-rose-700 bg-rose-50 border-rose-300',
+    stopped:'text-amber-700 bg-amber-50 border-amber-300',
+    stopping:'text-amber-700 bg-amber-50 border-amber-300'
+  };
+  el.innerHTML = d.jobs.map(j => `
+    <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl px-4 py-3 text-sm space-y-1.5 shadow-sm">
+      <div class="flex items-center justify-between gap-2">
+        <div class="truncate">
+          <span class="font-bold text-[#102a56]">${j.query || '🔗 رابط مخصص'}</span>
+          <span class="text-[11px] text-slate-500 font-medium"> · ${j.source === 'schedule' ? 'مجدول تلقائي' : 'يدوي'}</span>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          ${(j.status === 'done' || j.status === 'stopped') ? `<span class="text-xs text-emerald-700 font-bold num">${j.result_count || 0} إعلان</span>` : ''}
+          <span class="text-[11px] px-2.5 py-0.5 rounded-full border font-bold ${color[j.status] || 'bg-slate-100'}">${JOB_AR[j.status] || j.status}</span>
+          ${j.status === 'running' ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
+        </div>
+      </div>
+      ${j.status === 'running' ? `
+        <div class="text-xs text-sky-700 font-semibold">📥 ${j.progress || 0} إعلان مسحوب ${j.progress_note ? ('· ' + j.progress_note) : ''}</div>
+        <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full bg-blue-600 animate-pulse" style="width:100%"></div></div>` : ''}
+    </div>`).join('');
+}
+async function stopJob(id){ await fetch('/api/jobs/'+id+'/stop',{method:'POST'}); loadJobs(); }
+
+// ── Settings & Telegram Integration ──
+async function loadSettings() {
+  const r = await fetch('/api/settings'); const s = await r.json();
+  document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
+  document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
+  document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
+  document.getElementById('cfg-tg-token').value = s.telegram_token || '';
+  document.getElementById('cfg-tg-chat').value = s.telegram_chat_id || '';
+  document.getElementById('last-sched-time').innerText = s.last_scheduled_at ? s.last_scheduled_at.slice(0, 16).replace('T', ' ') : 'لم تبدأ بعد';
+}
+
+async function saveAllSettings() {
+  const token = document.getElementById('cfg-tg-token').value.trim();
+  const chat = document.getElementById('cfg-tg-chat').value.trim();
+  const schedEn = document.getElementById('cfg-sched-enabled').checked;
+  const schedInt = parseFloat(document.getElementById('cfg-sched-interval').value) || 12;
+  const notifEn = document.getElementById('cfg-notify-enabled').checked;
+
+  const r = await fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      schedule_enabled: schedEn,
+      interval_hours: schedInt,
+      notify_enabled: notifEn,
+      telegram_token: token,
+      telegram_chat_id: chat
+    })
+  });
+  const d = await r.json();
+  if (d.ok) alert('✅ تم حفظ جميع الإعدادات بنجاح!');
+}
+
+async function testTelegram() {
+  const token = document.getElementById('cfg-tg-token').value.trim();
+  const chat = document.getElementById('cfg-tg-chat').value.trim();
+  const resEl = document.getElementById('tg-test-result');
+  const btn = document.getElementById('btn-tg-test');
+
+  if (!token || !chat) {
+    alert('الرجاء إدخال كل من Bot Token و Chat ID أولاً.');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerText = '⏳ جارٍ الإرسال…';
+  resEl.classList.add('hidden');
+
+  try {
+    const r = await fetch('/api/telegram/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ telegram_token: token, telegram_chat_id: chat })
+    });
+    const d = await r.json();
+    resEl.classList.remove('hidden');
+    if (d.ok) {
+      resEl.className = 'p-3 rounded-xl text-xs bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold';
+      resEl.innerHTML = '✅ ' + d.message;
+    } else {
+      resEl.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold';
+      resEl.innerHTML = '❌ ' + d.message;
+    }
+  } catch (err) {
+    resEl.classList.remove('hidden');
+    resEl.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold';
+    resEl.innerHTML = '❌ فشل الاتصال بالخادم: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerText = '🧪 فحص وإرسال رسالة تجريبية';
+  }
+}
+
+async function runScheduleNow() {
+  const r = await fetch('/api/schedule/run-now', { method: 'POST' });
+  const d = await r.json();
+  if (d.ok) alert(`⚡ تم إرسال ${d.enqueued} مهمة فحص دوري تزايدي للمحرك.`);
+}
+
+// ── SSE Events ──
+let logLines = [];
+const es = new EventSource('/api/stream');
+es.onmessage = (e) => {
+  const m = JSON.parse(e.data); const d = m.data || {};
+  if (m.type === 'log') {
+    logLines.push(d.text); logLines = logLines.slice(-200);
+    const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight;
+  } else if (m.type === 'started') {
+    setState(true);
+    liveScrapeState = { active: true, query: d.query || document.getElementById('q').value.trim(), reported: null, scraped: 0, stores: 0 };
+    updateLiveProgressUI();
+  } else if (m.type === 'reported') {
+    liveScrapeState.reported = d.reported;
+    updateLiveProgressUI();
+  } else if (m.type === 'scrape_progress') {
+    liveScrapeState.scraped = d.scraped;
+    if (d.reported) liveScrapeState.reported = d.reported;
+    if (d.stores) liveScrapeState.stores = d.stores;
+    updateLiveProgressUI();
+  } else if (m.type === 'slice_update') {
+    document.getElementById('live-status-note').innerText =
+      `🔄 جاري سحب الشريحة ${d.pass} من ${d.total_passes} (شهر ${d.label}) — تراكمي: ${d.accumulated} إعلان`;
+  } else if (m.type === 'ad') {
+    liveScrapeState.scraped++;
+    updateLiveProgressUI();
+    ads.unshift(d); if (ads.length > 200) ads.pop(); renderAds();
+  } else if (m.type === 'progress') {
+    loadJobs();
+    liveScrapeState.active = true;
+    if (d.progress) liveScrapeState.scraped = d.progress;
+    if (d.reported) liveScrapeState.reported = d.reported;
+    if (d.note) document.getElementById('live-status-note').innerText = d.note;
+    updateLiveProgressUI();
+  } else if (m.type === 'job') {
+    loadJobs();
+    if (d.stored) { loadStats(); loadStores(); }
+  } else if (m.type === 'finished') {
+    liveScrapeState.active = false;
+    if (d.scraped) liveScrapeState.scraped = d.scraped;
+    if (d.reported) liveScrapeState.reported = d.reported;
+    if (d.stores) liveScrapeState.stores = d.stores;
+    updateLiveProgressUI();
+    document.getElementById('live-status-note').innerText = `✅ اكتمل السحب بنجاح! تم حفظ ${d.scraped} إعلاناً و${d.stores} متجراً.`;
+  } else if (m.type === 'done') {
+    setState(false);
+    loadAds();
+    loadStats();
+    setTimeout(() => {
+      if (!liveScrapeState.active) {
+        document.getElementById('live-progress-box').classList.add('hidden');
+      }
+    }, 12000);
+  }
+};
+
+function setState(run) {
+  document.getElementById('engine-state').innerText = run ? 'يعمل الآن…' : 'متوقف';
+  document.getElementById('engine-state').className = 'text-xs px-3 py-1 rounded-full font-bold ' +
+    (run ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-600 border border-slate-200');
+  document.getElementById('btn-start').disabled = run;
+}
+
+// Poll engine status periodically
+setInterval(async () => {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    if (s.running) {
+      setState(true);
+      liveScrapeState.active = true;
+      liveScrapeState.query = s.query || liveScrapeState.query;
+      liveScrapeState.scraped = s.scraped || liveScrapeState.scraped;
+      liveScrapeState.stores = s.stores || liveScrapeState.stores;
+      if (s.reported) liveScrapeState.reported = s.reported;
+      updateLiveProgressUI();
+    }
+  } catch (_e) {}
+}, 2500);
+
+loadStats();
+loadAds();
+loadTargets();
+loadJobs();
+loadSettings();
+setInterval(loadJobs, 5000);
+setInterval(loadStats, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: "5002"
+      DATABASE_URL: ${DATABASE_URL}
+      META_ADS_PROXY: ${META_ADS_PROXY}
+      INGEST_TOKEN: ${INGEST_TOKEN}
+      SCRAPE_ENABLED: "true"
+    expose:
+      - "5002"
+    ports:
+      - "5002:5002"
+    restart: unless-stopped
