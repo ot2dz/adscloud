@@ -26,7 +26,8 @@ from meta_ads_collector.constants import (
     STATUS_ACTIVE,
 )
 
-from pages import clean_domain
+from pages import clean_domain  # noqa: F401  (kept for compatibility)
+from store_filter import extract_store_domain
 
 logger = logging.getLogger("engine")
 
@@ -109,6 +110,7 @@ def _adapt(m) -> Ad:
     link = (getattr(cr, "link_url", "") if cr else "") or ""
     page = getattr(m, "page", None)
     start = getattr(m, "delivery_start_time", None)
+    domain, platform = extract_store_domain(link)
     return Ad(
         ad_id=str(getattr(m, "id", "") or ""),
         page_name=(getattr(page, "name", "") if page else "") or "",
@@ -116,8 +118,8 @@ def _adapt(m) -> Ad:
         start_date=(start.date().isoformat() if start else ""),
         is_active=bool(getattr(m, "is_active", False)),
         link_url=link,
-        store_domain=clean_domain(link),
-        platform="",
+        store_domain=domain or "",
+        platform=platform or "",
         body=(getattr(cr, "body", "") if cr else "") or "",
         cta_text=(((getattr(cr, "cta_type", "") or getattr(cr, "cta_text", "")) if cr else "") or ""),
         collation_count=int(getattr(m, "collation_count", 0) or 1),
@@ -202,7 +204,8 @@ def scrape(
                 progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
                 break
             ad = _adapt(m)
-            if stores_only and not ad.store_domain:
+            # Always store-only: never collect ads without a real store link.
+            if not ad.store_domain:
                 continue
             total += 1
             if on_ad:

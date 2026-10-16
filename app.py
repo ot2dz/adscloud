@@ -22,6 +22,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 from db import db
 from engine import scrape
 from pages import clean_domain, extract_page_id, resolve_target_url
+from store_filter import extract_store_domain
 
 
 def enable_utf8_console() -> None:
@@ -289,7 +290,8 @@ def api_ads():
     query = request.args.get("query", "")
     store_domain = request.args.get("store_domain", "")
     page_id = request.args.get("page_id", "")
-    stores_only = request.args.get("stores_only", "0") == "1"
+    # Always store-only: the UI must never surface non-store ads.
+    stores_only = True
     preset = request.args.get("preset", "")
     active_only = request.args.get("active_only", "0") == "1"
     start_date_min = request.args.get("start_date_min", "")
@@ -686,14 +688,16 @@ def api_ext_save_ad():
         return jsonify({"ok": False, "error": {"message": "facebook_ad_id required"}}), 400
 
     preview_img = data.get("preview_image_url") or data.get("previewImageUrl") or ""
+    link = data.get("landing_url") or ""
+    dom, plat = extract_store_domain(link)
     ad_dict = {
         "ad_id": ad_id,
         "page_id": str(data.get("page_id") or ""),
         "page_name": data.get("page_name") or "",
         "body": data.get("ad_text") or "",
-        "link_url": data.get("landing_url") or "",
-        "store_domain": data.get("landing_domain") or "",
-        "platform": data.get("platform") or "",
+        "link_url": link,
+        "store_domain": dom or "",
+        "platform": data.get("platform") or plat or "",
         "cta_text": data.get("cta") or "",
         "start_date": data.get("start_date") or "",
         "is_active": True,
@@ -788,14 +792,16 @@ def api_ext_page_snapshot():
         aid = str(ad.get("facebook_ad_id") or ad.get("id") or "").strip()
         if not aid:
             continue
+        link = ad.get("landing_url") or ""
+        dom, plat = extract_store_domain(link)
         ad_dict = {
             "ad_id": aid,
             "page_id": page_id or str(ad.get("page_id") or ""),
             "page_name": page_name or ad.get("page_name") or "",
             "body": ad.get("ad_text") or "",
-            "link_url": ad.get("landing_url") or "",
-            "store_domain": ad.get("landing_domain") or "",
-            "platform": ad.get("platform") or "",
+            "link_url": link,
+            "store_domain": dom or "",
+            "platform": ad.get("platform") or plat or "",
             "cta_text": ad.get("cta") or "",
             "start_date": ad.get("start_date") or "",
             "is_active": True,
@@ -828,14 +834,16 @@ def api_ext_sync_ads():
         aid = str(ad.get("facebook_ad_id") or ad.get("id") or "").strip()
         if not aid:
             continue
+        link = ad.get("landing_url") or ""
+        dom, plat = extract_store_domain(link)
         ad_dict = {
             "ad_id": aid,
             "page_id": str(ad.get("page_id") or ""),
             "page_name": ad.get("page_name") or "",
             "body": ad.get("ad_text") or "",
-            "link_url": ad.get("landing_url") or "",
-            "store_domain": ad.get("landing_domain") or "",
-            "platform": ad.get("platform") or "",
+            "link_url": link,
+            "store_domain": dom or "",
+            "platform": ad.get("platform") or plat or "",
             "cta_text": ad.get("cta") or "",
             "start_date": ad.get("start_date") or "",
             "is_active": True,
@@ -911,6 +919,26 @@ def api_export(fmt: str):
         return send_file(data, mimetype="application/json", as_attachment=True,
                          download_name=f"meta_ads_{int(datetime.now().timestamp())}.json")
     return jsonify({"error": "unsupported format"}), 400
+
+
+@app.route("/api/maintenance/reclassify-stores", methods=["POST"])
+def api_reclassify_stores():
+    """Recompute store_domain for every ad; clear non-store links (WhatsApp, app stores, socials)."""
+    rows = db._query("SELECT ad_id, link_url, store_domain FROM meta_ads")
+    changed = cleared = 0
+    for r in rows:
+        dom, plat = extract_store_domain(r.get("link_url") or "")
+        new = dom or ""
+        old = r.get("store_domain") or ""
+        if new != old:
+            db._execute(
+                f"UPDATE meta_ads SET store_domain={db._ph()}, platform={db._ph()} WHERE ad_id={db._ph()}",
+                (new, (plat or ""), r["ad_id"]))
+            changed += 1
+            if old and not new:
+                cleared += 1
+    logger.info("reclassify-stores: checked=%s changed=%s cleared=%s", len(rows), changed, cleared)
+    return jsonify({"ok": True, "checked": len(rows), "changed": changed, "cleared_non_store": cleared})
 
 
 def scheduler_loop() -> None:
