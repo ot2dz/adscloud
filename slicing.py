@@ -93,16 +93,17 @@ def build_deep_passes(query: str = "", url: str = "", country: str = "DZ",
                       exact: bool = False, sort_mode: str = "total_impressions",
                       months_back: int = 12) -> list[dict]:
     """Build sliced pass URLs for deep comprehensive scraping."""
-    from collector.scraper import build_url
+    from pages import keyword_url
 
-    base = url.strip() if url.strip() else build_url(query, country=country, exact_phrase=exact, sort_mode=sort_mode)
+    base = url.strip() if url.strip() else keyword_url(query, country=country, exact_phrase=exact, sort_mode=sort_mode)
     windows = clean_month_windows(months_back)
     passes = []
 
     for idx, win in enumerate(windows, 1):
+        max_exclusive = (date.fromisoformat(win["max_date"][:10]) + timedelta(days=1)).isoformat()
         params = {
             "start_date[min]": win["min_date"],
-            "start_date[max]": win["max_date"],
+            "start_date[max]": max_exclusive,
             "sort_data[mode]": sort_mode,
             "sort_data[direction]": "desc",
         }

@@ -25,15 +25,55 @@
       <span class="text-xl font-black tracking-tight text-[#102a56]">🕵️ MetaAds<span class="text-blue-600">Spy</span></span>
       <span class="text-xs px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] font-bold border border-[#cfe0f5]" id="db-backend">SQLite</span>
     </div>
-    <div class="flex items-center gap-5 text-sm font-semibold">
+    <div class="flex items-center gap-4 text-sm font-semibold flex-wrap">
       <span class="flex items-center gap-1.5 text-slate-700">📦 <b class="num text-blue-700 text-base" id="stat-total">0</b> إعلان محفوظ</span>
       <span class="flex items-center gap-1.5 text-slate-700">🏪 <b class="num text-emerald-700 text-base" id="stat-stores">0</b> متجر</span>
-      <button onclick="resetAll()" class="text-rose-600 hover:text-rose-700 text-xs font-bold hover:underline">مسح القاعدة</button>
+      <button id="btn-reset-db" onclick="resetAll()" class="hidden text-rose-600 hover:text-rose-700 text-xs font-bold hover:underline">مسح القاعدة</button>
+      <div id="auth-user-info" class="flex items-center gap-2.5 ps-3 border-s border-slate-200">
+        <span id="auth-user-badge" class="text-[11px] px-2.5 py-0.5 rounded-full font-bold"></span>
+        <span id="auth-user-email" class="text-xs text-slate-700 font-bold max-w-[150px] truncate"></span>
+        <button onclick="logout()" class="text-xs px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold transition">خروج</button>
+      </div>
     </div>
   </div>
 </header>
 
-<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+<!-- Auth Modal (Login / Register) -->
+<div id="auth-modal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-white border border-[#cfe0f5] rounded-3xl p-6 sm:p-8 w-full max-w-md shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-200">
+    <div class="text-center space-y-1.5">
+      <div class="text-3xl">🕵️</div>
+      <h2 class="text-xl font-black text-[#102a56]">MetaAds <span class="text-blue-600">Spy</span></h2>
+      <p id="auth-subtitle" class="text-xs text-slate-500 font-semibold">تسجيل الدخول للوصول إلى لوحة التحكم وبنك الإعلانات</p>
+    </div>
+
+    <!-- Auth Tabs -->
+    <div class="flex rounded-xl bg-slate-100 p-1 text-xs font-bold">
+      <button id="tab-login-btn" onclick="setAuthMode('login')" class="flex-1 py-2 rounded-lg bg-white text-blue-700 shadow-sm transition">تسجيل الدخول</button>
+      <button id="tab-register-btn" onclick="setAuthMode('register')" class="flex-1 py-2 rounded-lg text-slate-600 hover:text-slate-900 transition">حساب جديد</button>
+    </div>
+
+    <!-- Auth Form -->
+    <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-3.5 text-xs">
+      <div>
+        <label class="block text-slate-700 font-bold mb-1">البريد الإلكتروني:</label>
+        <input id="auth-email" type="email" required placeholder="name@example.com" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-slate-800 placeholder-slate-400 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div>
+        <label class="block text-slate-700 font-bold mb-1">كلمة المرور:</label>
+        <input id="auth-password" type="password" required placeholder="••••••••" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-slate-800 placeholder-slate-400 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+
+      <div id="auth-error-msg" class="hidden p-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold leading-relaxed"></div>
+
+      <button id="auth-submit-btn" type="submit" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-sm shadow-sm transition">
+        دخول إلى المنصة
+      </button>
+    </form>
+  </div>
+</div>
+
+<main id="main-content" class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
   <!-- Manual Scrape Bar -->
   <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
@@ -42,14 +82,18 @@
       <span id="engine-state" class="text-xs px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200">متوقف</span>
     </div>
     <div class="grid md:grid-cols-12 gap-3">
-      <input id="q" placeholder="كلمة مفتاحية، رابط صفحة، دومين متجر (مثل bxrrt.com)، أو رابط مكتبة إعلانات كامل…" class="md:col-span-5 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
-      <select id="scrape-date-preset" onchange="toggleScrapeDateInputs()" class="md:col-span-3 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <input id="q" placeholder="كلمة مفتاحية، رابط صفحة، دومين متجر (مثل bxrrt.com)، أو رابط مكتبة إعلانات كامل…" class="md:col-span-4 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <select id="scrape-date-preset" onchange="toggleScrapeDateInputs()" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500">
         <option value="all">📅 كل الفترات (بدون تقييد تاريخ)</option>
         <option value="this_month">⚡ هذا الشهر فقط</option>
         <option value="last_month">🗓️ الشهر الماضي</option>
         <option value="last_7d">⏱️ آخر 7 أيام</option>
         <option value="last_30d">🗓️ آخر 30 يوماً</option>
         <option value="custom">✏️ فترة مخصصة (تحديد التواريخ)</option>
+      </select>
+      <select id="scrape-date-scope" title="تاريخ الإطلاق: يجلب فقط الإعلانات المُطلقة في اليوم/الفترة المحددة. تاريخ الظهور: نفس فلتر فيسبوك (تواريخ الظهور)." class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="launch">🎯 تاريخ الإطلاق فقط</option>
+        <option value="impressions">🌐 تاريخ الظهور (فيسبوك)</option>
       </select>
       <select id="country-select" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
         <option value="DZ">🇩🇿 الجزائر (DZ)</option>
@@ -123,7 +167,8 @@
     <button onclick="showTab('tracked')" id="tab-tracked" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📡 الصفحات المتتبعة</button>
     <button onclick="showTab('stores')" id="tab-stores" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🏪 المتاجر المكتشفة</button>
     <button onclick="showTab('jobs')" id="tab-jobs" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📋 قائمة المهام</button>
-    <button onclick="showTab('settings')" id="tab-settings" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">⚙️ الإعدادات والربط</button>
+    <button onclick="showTab('settings')" id="tab-settings" class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">⚙️ الإعدادات والربط</button>
+    <button onclick="showTab('users')" id="tab-users" class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">👥 إدارة المستخدمين</button>
     <div class="ms-auto flex gap-2">
       <button onclick="exportData('csv')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير CSV</button>
       <button onclick="exportData('json')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير JSON</button>
@@ -386,6 +431,38 @@
     </div>
   </section>
 
+  <!-- VIEW: USERS (ADMIN ONLY) -->
+  <section id="view-users" class="hidden space-y-4">
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h3 class="font-bold text-[#102a56] text-sm">👥 قائمة المستخدمين المسجلين في النظام</h3>
+          <p class="text-xs text-slate-500 mt-1">التحكم في صلاحيات المستخدمين، تفعيل أو تجميد الحسابات، وترقية أو إزالة المدراء.</p>
+        </div>
+        <button onclick="loadAdminUsers()" class="text-xs bg-white hover:bg-[#eef6ff] text-slate-700 px-3.5 py-2 rounded-lg border border-[#cfe0f5] font-bold shadow-sm transition">تحديث القائمة</button>
+      </div>
+    </div>
+
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-slate-500 text-xs bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="py-3 px-5 text-right font-bold">#</th>
+              <th class="text-right px-5 font-bold">البريد الإلكتروني</th>
+              <th class="text-right px-5 font-bold">الصلاحية</th>
+              <th class="text-right px-5 font-bold">الحالة</th>
+              <th class="text-right px-5 font-bold">تاريخ التسجيل</th>
+              <th class="text-right px-5 font-bold">آخر دخول</th>
+              <th class="text-center px-5 font-bold">الإجراءات</th>
+            </tr>
+          </thead>
+          <tbody id="admin-users-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <!-- Console Log Box -->
   <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
     <div class="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
@@ -398,22 +475,228 @@
 </main>
 
 <script>
+let currentUser = null;
+let currentAuthMode = 'login';
 let ads = [];
 let currentPreset = '';
 let currentTargetFilter = null; // { id, type, value, label }
 let debounceTimer = null;
+
+// ── Auth Manager ──
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/me');
+    const data = await res.json();
+    if (data.authenticated && data.user) {
+      currentUser = data.user;
+      renderAuthUser();
+      hideAuthModal();
+      loadStats();
+      loadAds();
+      loadTargets();
+      loadJobs();
+    } else {
+      currentUser = null;
+      showAuthModal();
+    }
+  } catch (err) {
+    currentUser = null;
+    showAuthModal();
+  }
+}
+
+function showAuthModal() {
+  document.getElementById('auth-modal').classList.remove('hidden');
+}
+
+function hideAuthModal() {
+  document.getElementById('auth-modal').classList.add('hidden');
+}
+
+function setAuthMode(mode) {
+  currentAuthMode = mode;
+  const loginBtn = document.getElementById('tab-login-btn');
+  const regBtn = document.getElementById('tab-register-btn');
+  const submitBtn = document.getElementById('auth-submit-btn');
+  const subtitle = document.getElementById('auth-subtitle');
+  const errBox = document.getElementById('auth-error-msg');
+  errBox.classList.add('hidden');
+
+  if (mode === 'login') {
+    loginBtn.className = 'flex-1 py-2 rounded-lg bg-white text-blue-700 shadow-sm transition';
+    regBtn.className = 'flex-1 py-2 rounded-lg text-slate-600 hover:text-slate-900 transition';
+    submitBtn.innerText = 'دخول إلى المنصة';
+    subtitle.innerText = 'تسجيل الدخول للوصول إلى لوحة التحكم وبنك الإعلانات';
+  } else {
+    regBtn.className = 'flex-1 py-2 rounded-lg bg-white text-blue-700 shadow-sm transition';
+    loginBtn.className = 'flex-1 py-2 rounded-lg text-slate-600 hover:text-slate-900 transition';
+    submitBtn.innerText = 'إنشاء حساب جديد';
+    subtitle.innerText = 'أنشئ حسابك للبدء في استخدام أدوات التجسس والتحليل';
+  }
+}
+
+async function handleAuthSubmit(e) {
+  e.preventDefault();
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const errBox = document.getElementById('auth-error-msg');
+  const submitBtn = document.getElementById('auth-submit-btn');
+
+  errBox.classList.add('hidden');
+  submitBtn.disabled = true;
+  submitBtn.innerText = 'جارٍ التحقق...';
+
+  try {
+    const endpoint = currentAuthMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (data.ok && data.user) {
+      currentUser = data.user;
+      renderAuthUser();
+      hideAuthModal();
+      loadStats();
+      loadAds();
+      loadTargets();
+      loadJobs();
+    } else {
+      errBox.innerText = data.error || 'حدث خطأ في المصادقة';
+      errBox.classList.remove('hidden');
+    }
+  } catch (err) {
+    errBox.innerText = 'تعذر الاتصال بالخادم، يرجى المحاولة لاحقاً';
+    errBox.classList.remove('hidden');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerText = currentAuthMode === 'login' ? 'دخول إلى المنصة' : 'إنشاء حساب جديد';
+  }
+}
+
+async function logout() {
+  if (!confirm('هل تريد تسجيل الخروج؟')) return;
+  await fetch('/api/auth/logout', { method: 'POST' });
+  currentUser = null;
+  location.reload();
+}
+
+function renderAuthUser() {
+  if (!currentUser) return;
+  const emailEl = document.getElementById('auth-user-email');
+  const badgeEl = document.getElementById('auth-user-badge');
+  const tabUsers = document.getElementById('tab-users');
+  const tabSettings = document.getElementById('tab-settings');
+  const resetBtn = document.getElementById('btn-reset-db');
+
+  emailEl.innerText = currentUser.email;
+
+  if (currentUser.role === 'admin') {
+    badgeEl.innerText = '👑 مدير النظام';
+    badgeEl.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 border border-amber-300';
+    tabUsers.classList.remove('hidden');
+    tabSettings.classList.remove('hidden');
+    resetBtn.classList.remove('hidden');
+  } else {
+    badgeEl.innerText = '👤 مستخدم';
+    badgeEl.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800 border border-blue-300';
+    tabUsers.classList.add('hidden');
+    tabSettings.classList.add('hidden');
+    resetBtn.classList.add('hidden');
+  }
+}
+
+// ── Admin Users Management ──
+async function loadAdminUsers() {
+  if (!currentUser || currentUser.role !== 'admin') return;
+  const el = document.getElementById('admin-users-list');
+  try {
+    const res = await fetch('/api/admin/users');
+    const data = await res.json();
+    const users = data.users || [];
+    if (!users.length) {
+      el.innerHTML = '<tr><td colspan="7" class="py-6 text-center text-slate-400">لا يوجد مستخدمون مسجلون.</td></tr>';
+      return;
+    }
+    el.innerHTML = users.map(u => {
+      const isSelf = u.id === currentUser.id;
+      const roleBadge = u.role === 'admin'
+        ? '<span class="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-xs font-bold">مدير النظام</span>'
+        : '<span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold">مستخدم عادي</span>';
+      const statusBadge = u.is_active
+        ? '<span class="text-xs text-emerald-700 font-bold">🟢 مفعل</span>'
+        : '<span class="text-xs text-rose-600 font-bold">🔴 معطل</span>';
+
+      return `
+      <tr class="hover:bg-slate-50 transition">
+        <td class="py-3 px-5 text-slate-400 font-mono text-xs">${u.id}</td>
+        <td class="px-5 font-bold text-[#102a56]">${u.email} ${isSelf ? '<span class="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">(أنت)</span>' : ''}</td>
+        <td class="px-5">${roleBadge}</td>
+        <td class="px-5">${statusBadge}</td>
+        <td class="px-5 text-xs text-slate-500 font-mono">${(u.created_at || '').slice(0, 10) || '—'}</td>
+        <td class="px-5 text-xs text-slate-500 font-mono">${(u.last_login_at || '').slice(0, 16).replace('T', ' ') || 'لم يدخل بعد'}</td>
+        <td class="px-5 text-center">
+          ${isSelf ? '<span class="text-xs text-slate-400 italic">حسابك الحالي</span>' : `
+            <div class="flex items-center justify-center gap-2">
+              <button onclick="toggleUserStatus(${u.id})" class="text-xs px-2.5 py-1 rounded-lg border font-bold transition ${u.is_active ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}">
+                ${u.is_active ? 'تجميد' : 'تفعيل'}
+              </button>
+              <button onclick="toggleUserRole(${u.id}, '${u.role}')" class="text-xs px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 font-bold transition">
+                ${u.role === 'admin' ? 'تنزيل لمستخدم' : 'ترقية لأدمن'}
+              </button>
+              <button onclick="deleteUser(${u.id})" class="text-xs px-2 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 font-bold transition">
+                حذف
+              </button>
+            </div>
+          `}
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    el.innerHTML = '<tr><td colspan="7" class="py-6 text-center text-rose-600 font-bold">فشل تحميل المستخدمين</td></tr>';
+  }
+}
+
+async function toggleUserStatus(userId) {
+  const res = await fetch(`/api/admin/users/${userId}/toggle-status`, { method: 'POST' });
+  const data = await res.json();
+  if (!data.ok) return alert(data.error || 'فشلت العملية');
+  loadAdminUsers();
+}
+
+async function toggleUserRole(userId, currentRole) {
+  const newRole = currentRole === 'admin' ? 'user' : 'admin';
+  const res = await fetch(`/api/admin/users/${userId}/role`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: newRole })
+  });
+  const data = await res.json();
+  if (!data.ok) return alert(data.error || 'فشلت العملية');
+  loadAdminUsers();
+}
+
+async function deleteUser(userId) {
+  if (!confirm('هل أنت متأكد من حذف هذا المستخدم نهائياً؟')) return;
+  const res = await fetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!data.ok) return alert(data.error || 'فشلت العملية');
+  loadAdminUsers();
+}
 
 let liveScrapeState = {
   active: false,
   query: '',
   reported: null,
   scraped: 0,
+  scanned: 0,
   stores: 0
 };
 
 function updateLiveProgressUI() {
   const box = document.getElementById('live-progress-box');
-  if (!liveScrapeState.active && liveScrapeState.scraped === 0) {
+  if (!liveScrapeState.active && liveScrapeState.scraped === 0 && !liveScrapeState.scanned) {
     box.classList.add('hidden');
     return;
   }
@@ -422,18 +705,27 @@ function updateLiveProgressUI() {
   document.getElementById('live-scraped').innerText = Number(liveScrapeState.scraped).toLocaleString('en-US');
   document.getElementById('live-stores').innerText = Number(liveScrapeState.stores).toLocaleString('en-US');
 
-  if (liveScrapeState.reported && liveScrapeState.reported > 0) {
-    document.getElementById('live-reported').innerText = Number(liveScrapeState.reported).toLocaleString('en-US') + ' إعلان';
-    const rem = Math.max(0, liveScrapeState.reported - liveScrapeState.scraped);
+  const reported = liveScrapeState.reported;
+  // Progress is measured against how many ads were EXAMINED (scanned), not how
+  // many were kept, so it reaches 100% even when a launch-date filter keeps a
+  // small subset of the day's ads.
+  const scanned = liveScrapeState.scanned || liveScrapeState.scraped || 0;
+
+  if (reported && reported > 0) {
+    document.getElementById('live-reported').innerText = Number(reported).toLocaleString('en-US') + ' إعلان';
+    const rem = Math.max(0, reported - scanned);
     document.getElementById('live-remaining').innerText = Number(rem).toLocaleString('en-US');
-    const pct = Math.min(100, Math.round((liveScrapeState.scraped / liveScrapeState.reported) * 100));
+    let pct = Math.min(100, Math.round((scanned / reported) * 100));
+    if (!liveScrapeState.active) pct = 100;
     document.getElementById('live-percent').innerText = pct + '%';
     document.getElementById('live-progress-fill').style.width = Math.max(4, pct) + '%';
     document.getElementById('live-progress-fill').classList.remove('animate-pulse');
-    if (pct >= 100) {
+    if (!liveScrapeState.active) {
+      document.getElementById('live-status-note').innerText = `✅ اكتمل الفحص — تم حفظ ${liveScrapeState.scraped} إعلاناً مطابقاً.`;
+    } else if (pct >= 100) {
       document.getElementById('live-status-note').innerText = '✅ وصل السحب للحد الأقصى أو اكتمل!';
     } else {
-      document.getElementById('live-status-note').innerText = `جاري السحب والتمرير... (${pct}% مكتمل)`;
+      document.getElementById('live-status-note').innerText = `جاري فحص النتائج والتمرير... (${pct}% — فُحص ${scanned})`;
     }
   } else {
     document.getElementById('live-reported').innerText = 'جاري الرصد...';
@@ -793,11 +1085,11 @@ async function untrackAllPages(){ if(!confirm('حذف جميع الصفحات ا
 
 // ── Tab switcher ──
 function showTab(t) {
-  ['ads','targets','tracked','stores','jobs','settings'].forEach(v => {
+  ['ads','targets','tracked','stores','jobs','settings','users'].forEach(v => {
     const el = document.getElementById('view-'+v);
     if (el) el.classList.toggle('hidden', t!==v);
   });
-  ['ads','targets','tracked','stores','jobs','settings'].forEach(v => {
+  ['ads','targets','tracked','stores','jobs','settings','users'].forEach(v => {
     const btn = document.getElementById('tab-'+v);
     if (btn) {
       if (t === v) {
@@ -812,6 +1104,7 @@ function showTab(t) {
   if (t === 'stores') loadStores();
   if (t === 'jobs') loadJobs();
   if (t === 'settings') loadSettings();
+  if (t === 'users') loadAdminUsers();
 }
 
 async function loadStores() {
@@ -881,6 +1174,7 @@ async function startEngine() {
       date_preset: datePreset,
       start_date_min: dMin,
       start_date_max: dMax,
+      date_scope: document.getElementById('scrape-date-scope')?.value || 'launch',
       exact: document.getElementById('exact').checked,
       stores_only: document.getElementById('stores_only').checked,
       sweep: document.getElementById('sweep').checked,
@@ -1025,6 +1319,7 @@ es.onmessage = (e) => {
     updateLiveProgressUI();
   } else if (m.type === 'scrape_progress') {
     liveScrapeState.scraped = d.scraped;
+    if (d.scanned) liveScrapeState.scanned = d.scanned;
     if (d.reported) liveScrapeState.reported = d.reported;
     if (d.stores) liveScrapeState.stores = d.stores;
     updateLiveProgressUI();
@@ -1047,6 +1342,7 @@ es.onmessage = (e) => {
     if (d.stored) { loadStats(); loadStores(); }
   } else if (m.type === 'finished') {
     liveScrapeState.active = false;
+    setState(false);
     if (d.scraped) liveScrapeState.scraped = d.scraped;
     if (d.reported) liveScrapeState.reported = d.reported;
     if (d.stores) liveScrapeState.stores = d.stores;
@@ -1082,17 +1378,30 @@ setInterval(async () => {
       liveScrapeState.query = s.query || liveScrapeState.query;
       liveScrapeState.scraped = s.scraped || liveScrapeState.scraped;
       liveScrapeState.stores = s.stores || liveScrapeState.stores;
+      if (s.scanned) liveScrapeState.scanned = s.scanned;
       if (s.reported) liveScrapeState.reported = s.reported;
       updateLiveProgressUI();
+    } else if (liveScrapeState.active) {
+      // Engine stopped: reconcile the UI even if the SSE "done" event was missed
+      // (e.g. several dashboard tabs sharing the stream).
+      liveScrapeState.active = false;
+      liveScrapeState.scraped = s.scraped || liveScrapeState.scraped;
+      liveScrapeState.stores = s.stores || liveScrapeState.stores;
+      if (s.scanned) liveScrapeState.scanned = s.scanned;
+      if (s.reported) liveScrapeState.reported = s.reported;
+      setState(false);
+      updateLiveProgressUI();
+      loadAds(); loadStats();
+      setTimeout(() => {
+        if (!liveScrapeState.active) {
+          document.getElementById('live-progress-box').classList.add('hidden');
+        }
+      }, 12000);
     }
   } catch (_e) {}
 }, 2500);
 
-loadStats();
-loadAds();
-loadTargets();
-loadJobs();
-loadSettings();
+checkAuth();
 setInterval(loadJobs, 5000);
 setInterval(loadStats, 10000);
 </script>

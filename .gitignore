@@ -7,3 +7,6 @@ meta_ads.sqlite
 .env
 .env.local
 *.log
+
+# Separate nested project (has its own git remote)
+/adlibrary/

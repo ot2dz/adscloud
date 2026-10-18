@@ -106,7 +106,8 @@ class Database:
             started_at TEXT,
             finished_at TEXT,
             result_count INTEGER DEFAULT 0,
-            error TEXT
+            error TEXT,
+            date_scope TEXT DEFAULT 'impressions'
         )
         """)
         cur.execute(f"""
@@ -128,6 +129,17 @@ class Database:
             query TEXT,
             enabled INTEGER DEFAULT 1,
             created_at TEXT
+        )
+        """)
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS users (
+            id {idcol},
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'user',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT,
+            last_login_at TEXT
         )
         """)
         cur.execute("""
@@ -180,6 +192,7 @@ class Database:
             ("incremental", "INTEGER DEFAULT 0"),
             ("start_date_min", "TEXT"),
             ("start_date_max", "TEXT"),
+            ("date_scope", "TEXT DEFAULT 'impressions'"),
         ]:
             try:
                 if self.is_postgres:
@@ -212,6 +225,27 @@ class Database:
                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             except Exception:
                 pass
+        # Seed the admin user from environment variables only (never hardcode a
+        # password in the repository). Without ADMIN_PASSWORD no admin is seeded.
+        try:
+            from werkzeug.security import generate_password_hash
+            admin_email = (os.environ.get("ADMIN_EMAIL") or "must2dz@gmail.com").strip().lower()
+            admin_password = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+            p = "%s" if self.is_postgres else "?"
+            cur.execute(f"SELECT id FROM users WHERE email = {p}", (admin_email,))
+            existing_admin = cur.fetchone()
+            if not existing_admin and admin_password:
+                hashed = generate_password_hash(admin_password)
+                now_str = datetime.now(timezone.utc).isoformat()
+                cur.execute(
+                    f"INSERT INTO users (email, password_hash, role, is_active, created_at) VALUES ({p},{p},'admin',1,{p})",
+                    (admin_email, hashed, now_str)
+                )
+            elif existing_admin:
+                cur.execute(f"UPDATE users SET role='admin', is_active=1 WHERE email={p}", (admin_email,))
+        except Exception as admin_err:
+            logger.warning("Admin auto-seed notice: %s", admin_err)
+
         conn.commit()
         conn.close()
 
@@ -522,17 +556,18 @@ class Database:
                    stores_only: bool = False, sort_mode: str = "total_impressions",
                    source: str = "manual", url: str = "", sweep: bool = False,
                    target_id: Optional[int] = None, incremental: bool = False,
-                   start_date_min: str = "", start_date_max: str = "") -> int:
+                   start_date_min: str = "", start_date_max: str = "",
+                   date_scope: str = "impressions") -> int:
         p = self._ph()
         conn = self._connect()
         try:
             cur = conn.cursor()
             cols = ("query", "url", "country", "exact_phrase", "stores_only", "sweep",
                     "sort_mode", "status", "source", "created_at", "target_id", "incremental",
-                    "start_date_min", "start_date_max")
+                    "start_date_min", "start_date_max", "date_scope")
             vals = (query, url, country, int(exact_phrase), int(stores_only), int(sweep),
                     sort_mode, "pending", source, _now(), target_id, int(incremental),
-                    start_date_min, start_date_max)
+                    start_date_min, start_date_max, date_scope or "impressions")
             placeholders = ", ".join([p] * len(cols))
             col_list = ", ".join(cols)
             if self.is_postgres:
@@ -776,6 +811,51 @@ class Database:
         self.toggle_target(kw_id, enabled)
 
     # ── settings (schedule) ───────────────────────────────────────────────
+    # ── users & authentication ───────────────────────────────────────────
+    def create_user(self, email: str, password_hash: str, role: str = "user", is_active: int = 1) -> Optional[int]:
+        p = self._ph()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cols = ("email", "password_hash", "role", "is_active", "created_at")
+            vals = (email.strip().lower(), password_hash, role, int(is_active), _now())
+            placeholders = ", ".join([p] * len(cols))
+            col_list = ", ".join(cols)
+            if self.is_postgres:
+                cur.execute(f"INSERT INTO users ({col_list}) VALUES ({placeholders}) RETURNING id", vals)
+                new_id = cur.fetchone()[0]
+            else:
+                cur.execute(f"INSERT INTO users ({col_list}) VALUES ({placeholders})", vals)
+                new_id = cur.lastrowid
+            conn.commit()
+            return int(new_id)
+        except Exception as exc:
+            logger.error("create_user failed: %s", exc)
+            return None
+        finally:
+            conn.close()
+
+    def get_user_by_email(self, email: str) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM users WHERE email = {self._ph()}", (email.strip().lower(),))
+
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM users WHERE id = {self._ph()}", (int(user_id),))
+
+    def list_users(self) -> list[dict]:
+        return self._query("SELECT id, email, role, is_active, created_at, last_login_at FROM users ORDER BY id ASC")
+
+    def update_user_status(self, user_id: int, is_active: bool) -> None:
+        self._execute(f"UPDATE users SET is_active = {self._ph()} WHERE id = {self._ph()}", (1 if is_active else 0, int(user_id)))
+
+    def update_user_role(self, user_id: int, role: str) -> None:
+        self._execute(f"UPDATE users SET role = {self._ph()} WHERE id = {self._ph()}", (role, int(user_id)))
+
+    def update_user_login(self, user_id: int) -> None:
+        self._execute(f"UPDATE users SET last_login_at = {self._ph()} WHERE id = {self._ph()}", (_now(), int(user_id)))
+
+    def delete_user(self, user_id: int) -> None:
+        self._execute(f"DELETE FROM users WHERE id = {self._ph()}", (int(user_id),))
+
     def get_settings(self) -> dict:
         rows = self._query("SELECT key, value FROM settings")
         return {r["key"]: r["value"] for r in rows}

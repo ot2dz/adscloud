@@ -104,6 +104,16 @@ def _iso_plus_one(value: Optional[str]) -> Optional[str]:
         return None
 
 
+def _iso_minus_one(value: Optional[str]) -> Optional[str]:
+    """Convert exclusive end_date back to inclusive date (value - 1 day)."""
+    if not value:
+        return None
+    try:
+        return (datetime.strptime(value[:10], "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
+    except Exception:
+        return None
+
+
 def _adapt(m) -> Ad:
     """Map a meta_ads_collector Ad -> local Ad."""
     cr = m.creatives[0] if getattr(m, "creatives", None) else None
@@ -143,6 +153,8 @@ def scrape(
     on_reported: Optional[Callable[[Optional[int]], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     max_results: Optional[int] = None,
+    date_scope: str = "impressions",
+    on_scanned: Optional[Callable[[int], None]] = None,
 ) -> ScrapeResult:
     """Collect ads for a keyword / page / domain / custom URL over HTTP."""
     progress = progress or (lambda _m: None)
@@ -151,9 +163,17 @@ def scrape(
     q = (parsed.get("q") or query or "").strip()
     ctry = (parsed.get("country") or country or "DZ").upper()
     page_id = parsed.get("page_id")
-    s_min = parsed.get("start_date_min") or start_date_min or None
-    s_max = parsed.get("start_date_max") or start_date_max or None
-    end_date = _iso_plus_one(s_max)
+
+    url_min = parsed.get("start_date_min")
+    url_max = parsed.get("start_date_max")
+    arg_min = start_date_min
+    arg_max = start_date_max
+
+    inc_min = url_min or arg_min
+    inc_max = (_iso_minus_one(url_max) if url_max else arg_max)
+
+    gql_min = inc_min
+    gql_max = _iso_plus_one(inc_max) if inc_max else None
 
     search_type = SEARCH_PAGE if page_id else (SEARCH_EXACT if exact_phrase else SEARCH_KEYWORD)
     sort_by = (SORT_RELEVANCY_MONTHLY_GROUPED
@@ -167,19 +187,20 @@ def scrape(
     progress(
         f"🚀 بدء السحب عبر HTTP (بدون متصفح): "
         f"{'page ' + page_id if page_id else 'q=' + repr(q)} | country={ctry} | "
-        f"date={s_min or '-'}..{s_max or '-'}"
+        f"date={inc_min or '-'}..{inc_max or '-'} | scope={date_scope}"
     )
 
     collector = MetaAdsCollector(proxy=_proxy_arg())
     reported: Optional[int] = None
     total = 0
+    scanned = 0
     stopped = False
     try:
         # Best-effort estimated count (one extra request; never fatal).
         try:
             reported = collector.count(
                 query=q, country=ctry, status=STATUS_ACTIVE, sort_by=sort_by,
-                start_date=s_min, end_date=end_date,
+                start_date=gql_min, end_date=gql_max,
             )
             if reported is not None:
                 progress(f"📊 العدد التقديري من Meta: {reported}")
@@ -195,15 +216,28 @@ def scrape(
             search_type=search_type,
             page_ids=[page_id] if page_id else None,
             sort_by=sort_by,
-            start_date=s_min,
-            end_date=end_date,
+            start_date=gql_min,
+            end_date=gql_max,
             max_results=max_results,
         ):
             if should_stop and should_stop():
                 stopped = True
                 progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
                 break
+            scanned += 1
+            if on_scanned and (scanned == 1 or scanned % 5 == 0):
+                on_scanned(scanned)
             ad = _adapt(m)
+
+            if date_scope == "launch":
+                sd = ad.start_date or ""
+                if not sd:
+                    continue
+                if inc_min and sd < inc_min:
+                    continue
+                if inc_max and sd > inc_max:
+                    continue
+
             # Always store-only: never collect ads without a real store link.
             if not ad.store_domain:
                 continue
