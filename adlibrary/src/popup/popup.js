@@ -6,6 +6,7 @@ const ADRA_LANDING_FILTER_KEY = "adra_landing_url_filter";
 const ADRA_MIN_PAGE_LIKES_KEY = "adra_min_page_likes";
 const ADRA_CLOUD_URL_KEY = "adra_cloud_api_url";
 const ADRA_CLOUD_TOKEN_KEY = "adra_cloud_token";
+const ADRA_CLOUD_EMAIL_KEY = "adra_cloud_email";
 const ADRA_CLOUD_STATUS_KEY = "adra_cloud_status";
 const adraCount = document.querySelector("#adra-saved-count");
 const adraTrackedCount = document.querySelector("#adra-tracked-count");
@@ -130,24 +131,27 @@ function adraValidCloudUrl(value) {
 }
 
 function adraLoadCloudSettings() {
-  chrome.storage.local.get([ADRA_CLOUD_URL_KEY, ADRA_CLOUD_TOKEN_KEY, ADRA_CLOUD_STATUS_KEY], (result) => {
-    if (chrome.runtime.lastError) return;
-    const url = String(result[ADRA_CLOUD_URL_KEY] || "");
-    document.querySelector("#adra-cloud-url").value = url;
-    document.querySelector("#adra-cloud-token").value = String(result[ADRA_CLOUD_TOKEN_KEY] || "");
-    adraRenderCloudStatus(url, String(result[ADRA_CLOUD_STATUS_KEY] || ""));
-  });
+  chrome.storage.local.get(
+    [ADRA_CLOUD_URL_KEY, ADRA_CLOUD_TOKEN_KEY, ADRA_CLOUD_EMAIL_KEY, ADRA_CLOUD_STATUS_KEY],
+    (result) => {
+      if (chrome.runtime.lastError) return;
+      const url = String(result[ADRA_CLOUD_URL_KEY] || "");
+      document.querySelector("#adra-cloud-url").value = url;
+      adraRenderCloudStatus(url, String(result[ADRA_CLOUD_STATUS_KEY] || ""));
+      const signedIn = Boolean(String(result[ADRA_CLOUD_TOKEN_KEY] || "").trim());
+      adraRenderAccount(signedIn ? String(result[ADRA_CLOUD_EMAIL_KEY] || "") : "");
+    }
+  );
 }
 
 document.querySelector("#adra-save-cloud-url").addEventListener("click", () => {
   const url = document.querySelector("#adra-cloud-url").value.trim();
-  const token = document.querySelector("#adra-cloud-token").value.trim();
   if (url && !adraValidCloudUrl(url)) {
     adraCloudStatus.textContent = "الحالة: رابط غير صالح (http/https فقط)";
     adraCloudStatus.classList.add("adra-cloud-error");
     return;
   }
-  chrome.storage.local.set({ [ADRA_CLOUD_URL_KEY]: url, [ADRA_CLOUD_TOKEN_KEY]: token, [ADRA_CLOUD_STATUS_KEY]: "" }, () => {
+  chrome.storage.local.set({ [ADRA_CLOUD_URL_KEY]: url, [ADRA_CLOUD_STATUS_KEY]: "" }, () => {
     if (chrome.runtime.lastError) {
       adraStatus.textContent = "تعذر حفظ إعداد Cloud";
       return;
@@ -196,6 +200,62 @@ document.querySelector("#adra-test-cloud").addEventListener("click", () => {
       const detail = response && !response.ok ? (response.error || "") : "";
       adraRenderCloudStatus(url, connected ? "connected" : "error", detail);
     });
+  });
+});
+
+// --- ADRA Cloud account (each user signs in with their dashboard account) ---
+const adraLoginStatus = document.querySelector("#adra-cloud-login-status");
+
+function adraRenderAccount(email) {
+  document.querySelector("#adra-cloud-login-form").hidden = Boolean(email);
+  document.querySelector("#adra-cloud-account").hidden = !email;
+  document.querySelector("#adra-cloud-account-email").textContent = email || "";
+}
+
+const ADRA_LOGIN_ERRORS = {
+  NOT_CONFIGURED: "احفظ رابط ADRA Cloud أولًا",
+  INVALID_URL: "رابط ADRA Cloud غير صالح",
+  MISSING_CREDENTIALS: "أدخل البريد الإلكتروني وكلمة المرور",
+  NETWORK_ERROR: "تعذر الاتصال بالخادم",
+  TIMEOUT: "انتهت مهلة الاتصال"
+};
+
+document.querySelector("#adra-cloud-login").addEventListener("click", () => {
+  const url = document.querySelector("#adra-cloud-url").value.trim();
+  if (!url || !adraValidCloudUrl(url)) {
+    adraLoginStatus.textContent = ADRA_LOGIN_ERRORS.NOT_CONFIGURED;
+    return;
+  }
+  const email = document.querySelector("#adra-cloud-email").value.trim();
+  const password = document.querySelector("#adra-cloud-password").value;
+  const button = document.querySelector("#adra-cloud-login");
+  button.disabled = true;
+  adraLoginStatus.textContent = "جارٍ تسجيل الدخول…";
+  chrome.storage.local.set({ [ADRA_CLOUD_URL_KEY]: url }, () => {
+    chrome.runtime.sendMessage({ type: "ADRA_CLOUD_LOGIN", email, password }, (response) => {
+      button.disabled = false;
+      if (chrome.runtime.lastError || !response) {
+        adraLoginStatus.textContent = "فشل تسجيل الدخول";
+        return;
+      }
+      if (!response.ok) {
+        const code = String(response.error || response.reason || "");
+        const detail = code.includes(":") ? code.slice(code.indexOf(":") + 1).trim() : "";
+        adraLoginStatus.textContent = ADRA_LOGIN_ERRORS[code] || ADRA_LOGIN_ERRORS[response.reason] || detail || "فشل تسجيل الدخول";
+        return;
+      }
+      document.querySelector("#adra-cloud-password").value = "";
+      adraLoginStatus.textContent = "تم تسجيل الدخول";
+      adraRenderAccount(response.data.email);
+    });
+  });
+});
+
+document.querySelector("#adra-cloud-logout").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "ADRA_CLOUD_LOGOUT" }, () => {
+    void chrome.runtime.lastError;
+    adraLoginStatus.textContent = "تم تسجيل الخروج";
+    adraRenderAccount("");
   });
 });
 

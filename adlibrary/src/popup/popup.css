@@ -78,3 +78,21 @@ body {
   text-align: center;
 }
 .adra-popup-signature a { color: var(--adra-primary-dark); }
+.adra-cloud-account { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--adra-border); }
+.adra-cloud-account[hidden] { display: none; }
+.adra-cloud-account h3 { margin: 0 0 8px; font-size: 13px; color: var(--adra-primary-dark); }
+.adra-cloud-account label { display: block; margin-bottom: 4px; font-weight: 700; }
+.adra-cloud-account input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 9px;
+  border: 1px solid #b7c9e2;
+  border-radius: 9px;
+  background: #fff;
+  color: #172b4d;
+  font: inherit;
+  direction: ltr;
+}
+.adra-cloud-account small { display: block; margin-bottom: 8px; }
+#adra-cloud-login-status { display: block; min-height: 16px; margin-top: 6px; color: var(--adra-muted); }

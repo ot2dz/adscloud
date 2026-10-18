@@ -75,8 +75,8 @@
 
 <main id="main-content" class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
-  <!-- Manual Scrape Bar -->
-  <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+  <!-- Manual Scrape Bar (admin only) -->
+  <section id="engine-bar" data-admin-only class="hidden bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
     <div class="flex items-center justify-between">
       <h2 class="font-bold text-[#102a56] text-sm flex items-center gap-2">⚙️ إطلاق سحب فوري مباشر</h2>
       <span id="engine-state" class="text-xs px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200">متوقف</span>
@@ -163,13 +163,16 @@
   <!-- Navigation Tabs -->
   <div class="flex gap-2.5 border-b border-[#cfe0f5] pb-3 flex-wrap items-center">
     <button onclick="showTab('ads')" id="tab-ads" class="px-5 py-2.5 rounded-xl bg-blue-600 text-sm font-bold text-white shadow-sm transition">🛍️ بنك الإعلانات والتجسس</button>
-    <button onclick="showTab('targets')" id="tab-targets" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🎯 الأهداف والمنافسين</button>
+    <button onclick="showTab('targets')" id="tab-targets" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🎯 الأهداف والمنافسين</button>
     <button onclick="showTab('tracked')" id="tab-tracked" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📡 الصفحات المتتبعة</button>
     <button onclick="showTab('stores')" id="tab-stores" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🏪 المتاجر المكتشفة</button>
-    <button onclick="showTab('jobs')" id="tab-jobs" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📋 قائمة المهام</button>
-    <button onclick="showTab('settings')" id="tab-settings" class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">⚙️ الإعدادات والربط</button>
-    <button onclick="showTab('users')" id="tab-users" class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">👥 إدارة المستخدمين</button>
-    <div class="ms-auto flex gap-2">
+    <button onclick="showTab('jobs')" id="tab-jobs" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📋 قائمة المهام</button>
+    <button onclick="showTab('settings')" id="tab-settings" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">⚙️ الإعدادات والربط</button>
+    <button onclick="showTab('users')" id="tab-users" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">👥 إدارة المستخدمين</button>
+    <div class="ms-auto flex gap-2 items-center">
+      <select id="admin-user-filter" data-admin-only onchange="onAdminUserFilterChange()" title="عرض بيانات مستخدم محدد" class="hidden text-xs bg-white text-slate-700 font-bold rounded-lg px-3 py-2 border border-[#b7c9e2] shadow-sm">
+        <option value="">👥 كل المستخدمين</option>
+      </select>
       <button onclick="exportData('csv')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير CSV</button>
       <button onclick="exportData('json')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير JSON</button>
     </div>
@@ -452,6 +455,8 @@
               <th class="text-right px-5 font-bold">البريد الإلكتروني</th>
               <th class="text-right px-5 font-bold">الصلاحية</th>
               <th class="text-right px-5 font-bold">الحالة</th>
+              <th class="text-right px-5 font-bold">إعلانات محفوظة</th>
+              <th class="text-right px-5 font-bold">صفحات متتبعة</th>
               <th class="text-right px-5 font-bold">تاريخ التسجيل</th>
               <th class="text-right px-5 font-bold">آخر دخول</th>
               <th class="text-center px-5 font-bold">الإجراءات</th>
@@ -491,10 +496,7 @@ async function checkAuth() {
       currentUser = data.user;
       renderAuthUser();
       hideAuthModal();
-      loadStats();
-      loadAds();
-      loadTargets();
-      loadJobs();
+      loadDashboardData();
     } else {
       currentUser = null;
       showAuthModal();
@@ -503,6 +505,55 @@ async function checkAuth() {
     currentUser = null;
     showAuthModal();
   }
+}
+
+function isAdmin() {
+  return Boolean(currentUser && currentUser.role === 'admin');
+}
+
+function loadDashboardData() {
+  loadStats();
+  loadAds();
+  if (isAdmin()) {
+    loadTargets();
+    loadJobs();
+    loadAdminUserFilter();
+    startEventStream();
+  }
+}
+
+// Admin: whose data to show ('' = everyone). Regular users are always scoped server-side.
+function adminUserParam(prefix) {
+  const sel = document.getElementById('admin-user-filter');
+  const v = isAdmin() && sel ? sel.value : '';
+  return v ? `${prefix}user_id=${encodeURIComponent(v)}` : '';
+}
+
+async function loadAdminUserFilter() {
+  const sel = document.getElementById('admin-user-filter');
+  try {
+    const res = await fetch('/api/admin/users');
+    const data = await res.json();
+    const current = sel.value;
+    sel.innerHTML = '<option value="">👥 كل المستخدمين</option>' + (data.users || []).map(u =>
+      `<option value="${u.id}">${escT(u.email)} (${u.saved_ads_count || 0} إعلان، ${u.tracked_pages_count || 0} صفحة)</option>`
+    ).join('');
+    sel.value = current;
+  } catch (err) { /* the filter is optional */ }
+}
+
+function onAdminUserFilterChange() {
+  loadStats();
+  loadAds();
+  loadTrackedPages();
+  loadStores();
+}
+
+function viewUserData(userId) {
+  const sel = document.getElementById('admin-user-filter');
+  sel.value = String(userId);
+  onAdminUserFilterChange();
+  showTab('ads');
 }
 
 function showAuthModal() {
@@ -558,10 +609,7 @@ async function handleAuthSubmit(e) {
       currentUser = data.user;
       renderAuthUser();
       hideAuthModal();
-      loadStats();
-      loadAds();
-      loadTargets();
-      loadJobs();
+      loadDashboardData();
     } else {
       errBox.innerText = data.error || 'حدث خطأ في المصادقة';
       errBox.classList.remove('hidden');
@@ -586,25 +634,24 @@ function renderAuthUser() {
   if (!currentUser) return;
   const emailEl = document.getElementById('auth-user-email');
   const badgeEl = document.getElementById('auth-user-badge');
-  const tabUsers = document.getElementById('tab-users');
-  const tabSettings = document.getElementById('tab-settings');
   const resetBtn = document.getElementById('btn-reset-db');
 
   emailEl.innerText = currentUser.email;
 
-  if (currentUser.role === 'admin') {
+  if (isAdmin()) {
     badgeEl.innerText = '👑 مدير النظام';
     badgeEl.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 border border-amber-300';
-    tabUsers.classList.remove('hidden');
-    tabSettings.classList.remove('hidden');
     resetBtn.classList.remove('hidden');
   } else {
     badgeEl.innerText = '👤 مستخدم';
     badgeEl.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800 border border-blue-300';
-    tabUsers.classList.add('hidden');
-    tabSettings.classList.add('hidden');
     resetBtn.classList.add('hidden');
   }
+  applyAdminVisibility();
+}
+
+function applyAdminVisibility() {
+  document.querySelectorAll('[data-admin-only]').forEach(el => el.classList.toggle('hidden', !isAdmin()));
 }
 
 // ── Admin Users Management ──
@@ -616,7 +663,7 @@ async function loadAdminUsers() {
     const data = await res.json();
     const users = data.users || [];
     if (!users.length) {
-      el.innerHTML = '<tr><td colspan="7" class="py-6 text-center text-slate-400">لا يوجد مستخدمون مسجلون.</td></tr>';
+      el.innerHTML = '<tr><td colspan="9" class="py-6 text-center text-slate-400">لا يوجد مستخدمون مسجلون.</td></tr>';
       return;
     }
     el.innerHTML = users.map(u => {
@@ -634,11 +681,16 @@ async function loadAdminUsers() {
         <td class="px-5 font-bold text-[#102a56]">${u.email} ${isSelf ? '<span class="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">(أنت)</span>' : ''}</td>
         <td class="px-5">${roleBadge}</td>
         <td class="px-5">${statusBadge}</td>
+        <td class="px-5 num font-bold text-slate-800">${u.saved_ads_count || 0}</td>
+        <td class="px-5 num font-bold text-slate-800">${u.tracked_pages_count || 0}</td>
         <td class="px-5 text-xs text-slate-500 font-mono">${(u.created_at || '').slice(0, 10) || '—'}</td>
         <td class="px-5 text-xs text-slate-500 font-mono">${(u.last_login_at || '').slice(0, 16).replace('T', ' ') || 'لم يدخل بعد'}</td>
         <td class="px-5 text-center">
           ${isSelf ? '<span class="text-xs text-slate-400 italic">حسابك الحالي</span>' : `
             <div class="flex items-center justify-center gap-2">
+              <button onclick="viewUserData(${u.id})" class="text-xs px-2.5 py-1 rounded-lg bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100 font-bold transition">
+                عرض بياناته
+              </button>
               <button onclick="toggleUserStatus(${u.id})" class="text-xs px-2.5 py-1 rounded-lg border font-bold transition ${u.is_active ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}">
                 ${u.is_active ? 'تجميد' : 'تفعيل'}
               </button>
@@ -654,7 +706,7 @@ async function loadAdminUsers() {
       </tr>`;
     }).join('');
   } catch (err) {
-    el.innerHTML = '<tr><td colspan="7" class="py-6 text-center text-rose-600 font-bold">فشل تحميل المستخدمين</td></tr>';
+    el.innerHTML = '<tr><td colspan="9" class="py-6 text-center text-rose-600 font-bold">فشل تحميل المستخدمين</td></tr>';
   }
 }
 
@@ -773,7 +825,7 @@ function clearTargetFilter() {
 }
 
 async function loadStats() {
-  const r = await fetch('/api/stats'); const s = await r.json();
+  const r = await fetch('/api/stats' + adminUserParam('?')); const s = await r.json();
   document.getElementById('stat-total').innerText = s.total_ads;
   document.getElementById('stat-stores').innerText = s.total_stores;
   document.getElementById('db-backend').innerText = s.backend;
@@ -799,6 +851,7 @@ async function loadAds() {
     }
   }
 
+  url += adminUserParam('&');
   const r = await fetch(url);
   const d = await r.json();
   ads = d.ads;
@@ -1003,6 +1056,7 @@ async function scanTarget(id) {
 }
 
 function trackDomain(dom) {
+  if (!isAdmin()) return;
   showTab('targets');
   document.getElementById('new-target-type').value = 'domain';
   document.getElementById('new-target-value').value = dom;
@@ -1045,6 +1099,7 @@ function trackedCard(p){
     </div>
     ${trackedSparkline(p.snapshots)}
     <div class="text-xs text-slate-500">آخر لقطة: <b>${last}</b> · عدد اللقطات: <b>${p.snapshots_count||0}</b></div>
+    ${isAdmin() ? `<div class="text-xs text-slate-500">يتتبعها: <b dir="ltr">${(p.tracked_by||[]).map(escT).join('، ') || '—'}</b></div>` : ''}
     <div class="grid grid-cols-2 gap-2">
       <a href="${pageAdsUrl(p.page_id)}" target="_blank" rel="noopener" class="text-center text-xs bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] rounded-lg py-2 font-bold">فتح إعلانات الصفحة</a>
       <button onclick="toggleSnapshots('${escT(p.page_id)}')" class="text-xs bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] rounded-lg py-2 font-bold">تاريخ اللقطات</button>
@@ -1056,7 +1111,7 @@ function trackedCard(p){
 async function loadTrackedPages(){
   const el = document.getElementById('tracked-pages');
   try {
-    const r = await fetch('/api/tracked-pages'); const d = await r.json();
+    const r = await fetch('/api/tracked-pages' + adminUserParam('?')); const d = await r.json();
     const pages = d.pages || [];
     if (!pages.length) {
       el.innerHTML = '<div class="sm:col-span-2 lg:col-span-3 text-center py-10 text-slate-400 font-semibold bg-white border border-[#cfe0f5] rounded-2xl">لا توجد صفحات متتبعة بعد. تتبّع صفحة من إضافة المتصفح (زر «تتبع الصفحة») وستظهر هنا.</div>';
@@ -1080,8 +1135,8 @@ async function toggleSnapshots(pid){
     box.classList.remove('hidden');
   } catch (e) { box.textContent = 'تعذر تحميل اللقطات'; box.classList.remove('hidden'); }
 }
-async function untrackPage(pid){ if(!confirm('إلغاء تتبّع هذه الصفحة؟')) return; await fetch('/api/tracked-pages/'+encodeURIComponent(pid),{method:'DELETE'}); loadTrackedPages(); }
-async function untrackAllPages(){ if(!confirm('حذف جميع الصفحات المتتبعة؟')) return; await fetch('/api/tracked-pages',{method:'DELETE'}); loadTrackedPages(); }
+async function untrackPage(pid){ if(!confirm('إلغاء تتبّع هذه الصفحة؟')) return; await fetch('/api/tracked-pages/'+encodeURIComponent(pid)+adminUserParam('?'),{method:'DELETE'}); loadTrackedPages(); }
+async function untrackAllPages(){ if(!confirm('حذف جميع الصفحات المتتبعة؟')) return; await fetch('/api/tracked-pages'+adminUserParam('?'),{method:'DELETE'}); loadTrackedPages(); }
 
 // ── Tab switcher ──
 function showTab(t) {
@@ -1097,6 +1152,7 @@ function showTab(t) {
       } else {
         btn.className = 'px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition';
       }
+      if (btn.hasAttribute('data-admin-only') && !isAdmin()) btn.classList.add('hidden');
     }
   });
   if (t === 'targets') loadTargets();
@@ -1108,7 +1164,7 @@ function showTab(t) {
 }
 
 async function loadStores() {
-  const r = await fetch('/api/stores'); const d = await r.json();
+  const r = await fetch('/api/stores' + adminUserParam('?')); const d = await r.json();
   document.getElementById('stores').innerHTML = d.stores.map(s => `
     <tr class="hover:bg-slate-50 transition">
       <td class="py-3 px-4 font-bold text-blue-700 font-mono">${s.store_domain}</td>
@@ -1116,7 +1172,7 @@ async function loadStores() {
       <td class="num font-bold text-slate-800 px-4">${s.total_ads}</td>
       <td class="text-xs text-slate-500 font-mono px-4">${(s.last_seen || '').slice(0, 10)}</td>
       <td class="text-center px-4">
-        <button onclick="trackDomain('${s.store_domain}')" class="text-xs px-3 py-1.5 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">+ تتبع هذا المتجر</button>
+        <button onclick="trackDomain('${s.store_domain}')" data-admin-only class="${isAdmin() ? '' : 'hidden '}text-xs px-3 py-1.5 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">+ تتبع هذا المتجر</button>
       </td>
     </tr>`).join('') || '<tr><td colspan="5" class="text-center py-6 text-slate-400 font-semibold">لا توجد متاجر مكتشفة بعد.</td></tr>';
 }
@@ -1187,7 +1243,7 @@ async function startEngine() {
 }
 async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
 async function resetAll(){ if(!confirm('هل أنت متأكد من مسح جميع الإعلانات؟')) return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
-function exportData(f){ window.location = '/api/export/' + f; }
+function exportData(f){ window.location = '/api/export/' + f + adminUserParam('?'); }
 
 // ── Jobs loop ──
 const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف' };
@@ -1304,8 +1360,13 @@ async function runScheduleNow() {
 
 // ── SSE Events ──
 let logLines = [];
-const es = new EventSource('/api/stream');
-es.onmessage = (e) => {
+let es = null;
+function startEventStream() {
+  if (es) return;
+  es = new EventSource('/api/stream');
+  es.onmessage = onStreamMessage;
+}
+function onStreamMessage(e) {
   const m = JSON.parse(e.data); const d = m.data || {};
   if (m.type === 'log') {
     logLines.push(d.text); logLines = logLines.slice(-200);
@@ -1402,8 +1463,8 @@ setInterval(async () => {
 }, 2500);
 
 checkAuth();
-setInterval(loadJobs, 5000);
-setInterval(loadStats, 10000);
+setInterval(() => { if (isAdmin()) loadJobs(); }, 5000);
+setInterval(() => { if (currentUser) loadStats(); }, 10000);
 </script>
 </body>
 </html>
