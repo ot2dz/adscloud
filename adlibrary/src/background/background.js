@@ -92,6 +92,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 const ADRA_CLOUD_API_URL_KEY = "adra_cloud_api_url";
 const ADRA_CLOUD_TOKEN_KEY = "adra_cloud_token";
+const ADRA_CLOUD_EMAIL_KEY = "adra_cloud_email";
 const ADRA_CLOUD_TIMEOUT_MS = 8000;
 
 /** Validate + normalize the configured base URL (http/https only, no trailing slash). */
@@ -436,6 +437,33 @@ async function adraSyncHistory() {
   };
 }
 
+/**
+ * Sign in with the dashboard account. The old token is cleared first so the
+ * login request is sent without one; the personal token is stored on success.
+ */
+async function adraCloudLogin(email, password) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!cleanEmail || !password) return { ok: false, error: "MISSING_CREDENTIALS" };
+  try {
+    await adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: "", [ADRA_CLOUD_EMAIL_KEY]: "" });
+  } catch (_error) {
+    return { ok: false, error: "STORAGE_ERROR" };
+  }
+  const result = await adraCloudRequest("/api/v1/auth/login", {
+    method: "POST",
+    body: { email: cleanEmail, password: String(password) }
+  });
+  if (!result.ok) return result;
+  const token = result.data && result.data.token ? String(result.data.token) : "";
+  if (!token) return { ok: false, error: "INVALID_JSON" };
+  try {
+    await adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: token, [ADRA_CLOUD_EMAIL_KEY]: result.data.email || cleanEmail });
+  } catch (_error) {
+    return { ok: false, error: "STORAGE_ERROR" };
+  }
+  return { ok: true, data: { email: result.data.email || cleanEmail, role: result.data.role || "user" } };
+}
+
 /** Handle ADRA_CLOUD_* messages. Returns true when a response is pending. */
 function adraHandleCloudMessage(message, sendResponse) {
   const respond = (promise) => {
@@ -487,6 +515,12 @@ function adraHandleCloudMessage(message, sendResponse) {
       return respond(adraSyncHistory());
     case "ADRA_CLOUD_TEST_CONNECTION":
       return respond(adraCloudRequest("/api/v1/health", { method: "GET" }));
+    case "ADRA_CLOUD_LOGIN":
+      return respond(adraCloudLogin(message.email, message.password));
+    case "ADRA_CLOUD_LOGOUT":
+      return respond(
+        adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: "", [ADRA_CLOUD_EMAIL_KEY]: "" }).then(() => ({ ok: true }))
+      );
     default:
       return false;
   }

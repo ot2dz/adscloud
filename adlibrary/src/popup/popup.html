@@ -36,11 +36,22 @@
         <h2>ADRA Cloud</h2>
         <label for="adra-cloud-url">Cloud API URL</label>
         <input id="adra-cloud-url" type="text" inputmode="url" dir="ltr" placeholder="https://adra-cloud.example.workers.dev">
-        <label for="adra-cloud-token">Cloud Token (اختياري)</label>
-        <input id="adra-cloud-token" type="password" dir="ltr" placeholder="اتركه فارغًا إن لم تستخدم توثيقًا">
         <button id="adra-save-cloud-url" type="button">حفظ</button>
         <button id="adra-test-cloud" type="button">اختبار الاتصال</button>
         <small id="adra-cloud-status">الحالة: غير مهيأ</small>
+        <div id="adra-cloud-login-form" class="adra-cloud-account">
+          <h3>تسجيل الدخول بحسابك</h3>
+          <label for="adra-cloud-email">البريد الإلكتروني</label>
+          <input id="adra-cloud-email" type="email" dir="ltr" autocomplete="username">
+          <label for="adra-cloud-password">كلمة المرور</label>
+          <input id="adra-cloud-password" type="password" dir="ltr" autocomplete="current-password">
+          <button id="adra-cloud-login" type="button">دخول</button>
+        </div>
+        <div id="adra-cloud-account" class="adra-cloud-account" hidden>
+          <small>متصل بحساب: <strong id="adra-cloud-account-email" dir="ltr"></strong></small>
+          <button id="adra-cloud-logout" type="button">تسجيل الخروج</button>
+        </div>
+        <small id="adra-cloud-login-status" role="status"></small>
         <small>اترك الحقل فارغًا للعمل محليًا بدون مزامنة سحابية.</small>
         <div class="adra-history-sync">
           <h3>Historical Sync</h3>

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ad Library Research Assistant",
   "description": "Local research tools for ads displayed in Facebook Ad Library.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "permissions": [
     "storage",
     "downloads"

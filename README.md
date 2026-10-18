@@ -66,8 +66,21 @@ $env:INGEST_TOKEN="change-me"
 In the extension popup → **ADRA Cloud**:
 
 - **Cloud API URL** = your domain (e.g. `https://ads.botdz.com`).
-- **Cloud Token** = `INGEST_TOKEN` (if set).
+- Sign in with your dashboard email and password. The extension then gets a
+  personal token, so every saved ad and tracked page belongs to that account.
 - Test connection, then use **تتبع الصفحة** / **تحديث الرصد** / **حفظ الإعلان**.
+
+## Accounts
+
+- Each user sees only the ads they saved and the pages they track (plus every
+  ad the server collects for those pages).
+- A page tracked by several users is refreshed by the server once and shown to
+  all of them; it is only removed when the last user stops tracking it.
+- Admins see everything and can pick one user (by email) from the dashboard to
+  see just that user's data. Keyword scraping, targets, jobs and settings are
+  admin-only.
+- Keep `INGEST_TOKEN` set in production: it blocks anonymous writes. It still
+  works as a shared legacy token, but data sent with it has no owner.
 
 Tracked pages and their snapshots appear under the dashboard's
 **«الصفحات المتتبعة»** tab.

@@ -73,6 +73,18 @@ def admin_required(f):
     return decorated_function
 
 
+def _scope_user_id():
+    """Whose data the current dashboard request may see.
+
+    A regular user only ever sees their own saves and tracked pages. An admin
+    sees everything, or one user's data when ``?user_id=`` is given.
+    """
+    if session.get("user_role") == "admin":
+        raw = (request.args.get("user_id") or "").strip()
+        return int(raw) if raw.isdigit() else None
+    return int(session["user_id"])
+
+
 # Default targeting policy (DZ by default, can be overridden per request).
 DEFAULT_COUNTRY = os.environ.get("DEFAULT_COUNTRY", "DZ").strip().upper() or "DZ"
 FIXED_COUNTRY = DEFAULT_COUNTRY
@@ -385,7 +397,7 @@ def api_admin_delete_user(user_id):
 
 # ── Engine control ───────────────────────────────────────────────────
 @app.route("/api/start", methods=["POST"])
-@login_required
+@admin_required
 def api_start():
     cfg = request.get_json(force=True, silent=True) or {}
     url = (cfg.get("url") or "").strip()
@@ -451,7 +463,7 @@ def api_start():
 
 
 @app.route("/api/stop", methods=["POST"])
-@login_required
+@admin_required
 def api_stop():
     manager.stop()
     return jsonify({"ok": True})
@@ -463,6 +475,7 @@ def api_status():
 
 
 @app.route("/api/stream")
+@admin_required
 def api_stream():
     def gen():
         client_q: queue.Queue = queue.Queue()
@@ -511,20 +524,20 @@ def api_ads():
         query=query, store_domain=store_domain, page_id=page_id, preset=preset,
         active_only=active_only, start_date_min=start_date_min,
         start_date_max=start_date_max, min_days_active=min_days_active,
-        sort_by=sort_by, target_id=target_id_val,
+        sort_by=sort_by, target_id=target_id_val, user_id=_scope_user_id(),
     )
     total = db.count_ads(
         search=search, stores_only=stores_only, query=query,
         store_domain=store_domain, page_id=page_id, preset=preset,
         active_only=active_only, start_date_min=start_date_min,
         start_date_max=start_date_max, min_days_active=min_days_active,
-        target_id=target_id_val,
+        target_id=target_id_val, user_id=_scope_user_id(),
     )
     return jsonify({"ads": ads, "total": total})
 
 
 @app.route("/api/queries")
-@login_required
+@admin_required
 def api_queries():
     return jsonify({"queries": db.get_queries()})
 
@@ -532,12 +545,13 @@ def api_queries():
 @app.route("/api/stores")
 @login_required
 def api_stores():
-    return jsonify({"stores": db.get_stores(search=request.args.get("search", ""))})
+    return jsonify({"stores": db.get_stores(search=request.args.get("search", ""), user_id=_scope_user_id())})
 
 
 @app.route("/api/stats")
+@login_required
 def api_stats():
-    return jsonify(db.get_stats())
+    return jsonify(db.get_stats(user_id=_scope_user_id()))
 
 
 @app.route("/api/reset", methods=["POST"])
@@ -592,13 +606,13 @@ def _worker_ok() -> bool:
 
 
 @app.route("/api/jobs", methods=["GET"])
-@login_required
+@admin_required
 def api_jobs():
     return jsonify({"jobs": db.list_jobs(limit=60)})
 
 
 @app.route("/api/jobs", methods=["POST"])
-@login_required
+@admin_required
 def api_create_job():
     cfg = request.get_json(force=True, silent=True) or {}
     url = (cfg.get("url") or "").strip()
@@ -691,7 +705,7 @@ def api_worker_progress():
 
 
 @app.route("/api/jobs/<int:job_id>/stop", methods=["POST"])
-@login_required
+@admin_required
 def api_job_stop(job_id):
     db.request_stop(job_id)
     manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "stopping"}})
@@ -700,13 +714,13 @@ def api_job_stop(job_id):
 
 # ── Targets (Pages, Stores, Keywords, Custom URLs) ────────────────────
 @app.route("/api/targets", methods=["GET"])
-@login_required
+@admin_required
 def api_targets():
     return jsonify({"targets": db.list_targets()})
 
 
 @app.route("/api/targets", methods=["POST"])
-@login_required
+@admin_required
 def api_add_target():
     cfg = request.get_json(force=True, silent=True) or {}
     raw = (cfg.get("target_value") or cfg.get("query") or "").strip()
@@ -741,14 +755,14 @@ def api_add_target():
 
 
 @app.route("/api/targets/<int:target_id>", methods=["DELETE"])
-@login_required
+@admin_required
 def api_delete_target(target_id):
     db.delete_target(target_id)
     return jsonify({"ok": True})
 
 
 @app.route("/api/targets/<int:target_id>", methods=["PATCH"])
-@login_required
+@admin_required
 def api_toggle_target(target_id):
     cfg = request.get_json(force=True, silent=True) or {}
     db.toggle_target(target_id, bool(cfg.get("enabled", True)))
@@ -756,7 +770,7 @@ def api_toggle_target(target_id):
 
 
 @app.route("/api/targets/<int:target_id>/scan", methods=["POST"])
-@login_required
+@admin_required
 def api_scan_target(target_id):
     targets = [t for t in db.list_targets() if t["id"] == target_id]
     if not targets:
@@ -779,32 +793,32 @@ def api_scan_target(target_id):
 
 # Backward compatibility for keywords
 @app.route("/api/keywords", methods=["GET"])
-@login_required
+@admin_required
 def api_keywords():
     return jsonify({"keywords": db.list_keywords()})
 
 
 @app.route("/api/keywords", methods=["POST"])
-@login_required
+@admin_required
 def api_add_keyword():
     return api_add_target()
 
 
 @app.route("/api/keywords/<int:kw_id>", methods=["DELETE"])
-@login_required
+@admin_required
 def api_delete_keyword(kw_id):
     return api_delete_target(kw_id)
 
 
 @app.route("/api/keywords/<int:kw_id>", methods=["PATCH"])
-@login_required
+@admin_required
 def api_toggle_keyword(kw_id):
     return api_toggle_target(kw_id)
 
 
 # ── Settings / Schedule / Telegram ────────────────────────────────────
 @app.route("/api/settings", methods=["GET"])
-@login_required
+@admin_required
 def api_get_settings():
     s = db.get_settings()
     return jsonify({
@@ -884,13 +898,78 @@ def api_ext_health():
     return jsonify({"ok": True, "data": payload, **payload})
 
 
+def _ext_provided_token() -> str:
+    return (request.headers.get("X-Ingest-Token", "")
+            or request.headers.get("Authorization", "").replace("Bearer ", "")).strip()
+
+
+def _ext_user():
+    """The active user whose personal extension token was sent, else None."""
+    user = db.get_user_by_token(_ext_provided_token())
+    if user and user.get("is_active"):
+        return user
+    return None
+
+
 def _ext_token_ok() -> bool:
+    """Accept a personal user token, or (legacy) the shared INGEST_TOKEN."""
+    if _ext_user():
+        return True
     expected = (os.environ.get("INGEST_TOKEN") or "").strip()
     if not expected:
         return True
-    provided = (request.headers.get("X-Ingest-Token", "")
-                or request.headers.get("Authorization", "").replace("Bearer ", "")).strip()
+    provided = _ext_provided_token()
     return provided == expected or provided == "local-dev-token"
+
+
+def _ext_user_id():
+    user = _ext_user()
+    return int(user["id"]) if user else None
+
+
+def _track_page_for(uid, page_id: str, page_name: str = "") -> None:
+    """Link a page to a user and make sure the server refreshes it once for everyone."""
+    if uid:
+        db.link_user_page(uid, page_id)
+    db.add_target(type="page", target_value=page_id, label=page_name or page_id,
+                  country=FIXED_COUNTRY, interval_hours=12.0)
+
+
+def _drop_tracked_page(page_id) -> None:
+    """Remove a page for everyone (no one tracks it any more)."""
+    db.untrack_page(page_id)
+    for t in [t for t in db.list_targets() if t.get("type") == "page" and str(t.get("target_value")) == str(page_id)]:
+        db.delete_target(t["id"])
+
+
+def _untrack_for_user(uid: int, page_id) -> None:
+    """One user stops tracking; the page is only dropped when nobody else tracks it."""
+    if db.unlink_user_page(uid, str(page_id)) == 0:
+        _drop_tracked_page(page_id)
+
+
+@app.route("/api/v1/auth/login", methods=["POST"])
+def api_ext_login():
+    """Extension sign-in with the dashboard email/password -> personal token."""
+    data = request.get_json(force=True, silent=True) or {}
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "")
+    user = db.get_user_by_email(email) if email else None
+    if not user or not password or not check_password_hash(user["password_hash"], password):
+        return jsonify({"ok": False, "error": {"message": "البريد الإلكتروني أو كلمة المرور غير صحيحة"}}), 401
+    if not user.get("is_active"):
+        return jsonify({"ok": False, "error": {"message": "هذا الحساب معطل"}}), 403
+    db.update_user_login(user["id"])
+    token = db.get_or_create_api_token(user["id"])
+    return jsonify({"ok": True, "data": {"token": token, "email": user["email"], "role": user["role"]}})
+
+
+@app.route("/api/v1/auth/me", methods=["GET"])
+def api_ext_me():
+    user = _ext_user()
+    if not user:
+        return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
+    return jsonify({"ok": True, "data": {"email": user["email"], "role": user["role"]}})
 
 
 @app.route("/api/v1/ads", methods=["POST"])
@@ -919,6 +998,9 @@ def api_ext_save_ad():
         "preview_image_url": preview_img,
     }
     is_new = db.save_ad(ad_dict, query="chrome_extension", country=FIXED_COUNTRY)
+    uid = _ext_user_id()
+    if uid:
+        db.link_user_ad(uid, ad_id)
     manager.events.put({"type": "ad", "data": ad_dict})
     return jsonify({"ok": True, "data": {"saved": True, "is_new": is_new, "ad_id": ad_id}})
 
@@ -939,13 +1021,7 @@ def api_ext_track_page():
         page_likes=int(data.get("page_likes") or 0),
         platform=data.get("platform") or "",
         country=FIXED_COUNTRY, source="extension")
-    db.add_target(
-        type="page",
-        target_value=page_id,
-        label=page_name,
-        country=FIXED_COUNTRY,
-        interval_hours=12.0
-    )
+    _track_page_for(_ext_user_id(), page_id, page_name)
     logger.info("Chrome Extension tracked page: %s (%s)", page_name, page_id)
     return jsonify({"ok": True, "data": {"tracked": True, "page_id": page_id, "page_name": page_name}})
 
@@ -954,16 +1030,19 @@ def api_ext_track_page():
 def api_ext_untrack_page(page_id):
     if not _ext_token_ok():
         return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
-    db.untrack_page(page_id)
-    targets = [t for t in db.list_targets() if t.get("type") == "page" and str(t.get("target_value")) == str(page_id)]
-    for t in targets:
-        db.delete_target(t["id"])
+    uid = _ext_user_id()
+    if uid:
+        _untrack_for_user(uid, page_id)
+    else:
+        _drop_tracked_page(page_id)
     return jsonify({"ok": True, "data": {"untracked": True, "page_id": page_id}})
 
 
 @app.route("/api/v1/pages", methods=["GET", "OPTIONS"])
 def api_ext_list_pages():
-    pages = db.list_tracked_pages()
+    if not _ext_token_ok():
+        return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
+    pages = db.list_tracked_pages(user_id=_ext_user_id())
     for pg in pages:
         pg.pop("snapshots", None)
     return jsonify({"ok": True, "data": {"pages": pages}})
@@ -971,6 +1050,8 @@ def api_ext_list_pages():
 
 @app.route("/api/v1/pages/<page_id>/snapshots", methods=["GET", "OPTIONS"])
 def api_ext_page_snapshots(page_id):
+    if not _ext_token_ok():
+        return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
     return jsonify({"ok": True, "data": {"page_id": page_id, "snapshots": db.get_page_snapshots(page_id, limit=200)}})
 
 
@@ -995,7 +1076,7 @@ def api_ext_page_snapshot():
             total_ads_count=len(ads),
             ad_ids=[str(a.get("facebook_ad_id") or a.get("id") or "") for a in ads],
             source=data.get("source") or "extension_page_scan")
-        db.add_target(type="page", target_value=page_id, label=page_name, country=FIXED_COUNTRY, interval_hours=12.0)
+        _track_page_for(_ext_user_id(), page_id, page_name)
 
     saved_count = 0
     for ad in ads:
@@ -1038,6 +1119,7 @@ def api_ext_sync_ads():
         return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
     data = request.get_json(force=True, silent=True) or {}
     items = data.get("items") or []
+    uid = _ext_user_id()
     stored = 0
     for ad in items:
         aid = str(ad.get("facebook_ad_id") or ad.get("id") or "").strip()
@@ -1059,6 +1141,8 @@ def api_ext_sync_ads():
         }
         if db.save_ad(ad_dict, query="sync_history", country=FIXED_COUNTRY):
             stored += 1
+        if uid:
+            db.link_user_ad(uid, aid)
     return jsonify({"ok": True, "data": {"received": len(items), "stored": stored}})
 
 
@@ -1068,6 +1152,7 @@ def api_ext_sync_pages():
         return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
     data = request.get_json(force=True, silent=True) or {}
     items = data.get("items") or []
+    uid = _ext_user_id()
     for page in items:
         pid = str(page.get("facebook_page_id") or "").strip()
         if pid:
@@ -1076,7 +1161,7 @@ def api_ext_sync_pages():
                 page_url=page.get("page_url") or "",
                 page_likes=int(page.get("page_likes") or 0),
                 country=FIXED_COUNTRY, source="extension")
-            db.add_target(type="page", target_value=pid, label=page.get("page_name") or pid, country=FIXED_COUNTRY)
+            _track_page_for(uid, pid, page.get("page_name") or pid)
     return jsonify({"ok": True, "data": {"synced": len(items)}})
 
 
@@ -1084,37 +1169,47 @@ def api_ext_sync_pages():
 @app.route("/api/tracked-pages", methods=["GET"])
 @login_required
 def api_tracked_pages():
-    return jsonify({"pages": db.list_tracked_pages()})
+    return jsonify({"pages": db.list_tracked_pages(user_id=_scope_user_id())})
 
 
 @app.route("/api/tracked-pages/<page_id>/snapshots", methods=["GET"])
 @login_required
 def api_tracked_page_snapshots(page_id):
+    uid = _scope_user_id()
+    if uid is not None and session.get("user_role") != "admin" and str(page_id) not in db.list_user_page_ids(uid):
+        return jsonify({"ok": False, "error": "غير مسموح"}), 403
     return jsonify({"page_id": page_id, "snapshots": db.get_page_snapshots(page_id, limit=200)})
 
 
 @app.route("/api/tracked-pages/<page_id>", methods=["DELETE"])
 @login_required
 def api_untrack_page(page_id):
-    db.untrack_page(page_id)
-    for t in [t for t in db.list_targets() if t.get("type") == "page" and str(t.get("target_value")) == str(page_id)]:
-        db.delete_target(t["id"])
+    uid = _scope_user_id()
+    if uid is None:
+        _drop_tracked_page(page_id)
+    else:
+        _untrack_for_user(uid, page_id)
     return jsonify({"ok": True})
 
 
 @app.route("/api/tracked-pages", methods=["DELETE"])
 @login_required
 def api_untrack_all_pages():
-    db.delete_all_tracked_pages()
-    for t in [t for t in db.list_targets() if t.get("type") == "page"]:
-        db.delete_target(t["id"])
+    uid = _scope_user_id()
+    if uid is None:
+        db.delete_all_tracked_pages()
+        for t in [t for t in db.list_targets() if t.get("type") == "page"]:
+            db.delete_target(t["id"])
+    else:
+        for pid in db.list_user_page_ids(uid):
+            _untrack_for_user(uid, pid)
     return jsonify({"ok": True})
 
 
 @app.route("/api/export/<fmt>")
 @login_required
 def api_export(fmt: str):
-    ads = db.get_ads(limit=100000, stores_only=False)
+    ads = db.get_ads(limit=100000, stores_only=False, user_id=_scope_user_id())
     if fmt == "csv":
         buf = io.StringIO()
         cols = ["ad_id", "page_name", "page_id", "start_date", "store_domain",

@@ -179,6 +179,27 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_page ON page_snapshots (page_id)")
+
+        # ── Per-user ownership: who saved which ad / tracks which page ─────
+        # Ads and pages stay global (one scrape serves everyone); these link
+        # tables decide what each user sees.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_ads (
+            user_id INTEGER NOT NULL,
+            ad_id TEXT NOT NULL,
+            saved_at TEXT,
+            PRIMARY KEY (user_id, ad_id)
+        )
+        """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_pages (
+            user_id INTEGER NOT NULL,
+            page_id TEXT NOT NULL,
+            tracked_at TEXT,
+            PRIMARY KEY (user_id, page_id)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_pages_page ON user_pages (page_id)")
         conn.commit()
 
         # Idempotent migrations for the jobs table (progress + stop control + incremental + date filters).
@@ -215,6 +236,7 @@ class Database:
             ("targets", "country", "TEXT DEFAULT 'DZ'"),
             ("targets", "interval_hours", "REAL DEFAULT 12.0"),
             ("targets", "last_scraped_at", "TEXT"),
+            ("users", "api_token", "TEXT"),
         ]:
             try:
                 if self.is_postgres:
@@ -275,6 +297,48 @@ class Database:
     def _query_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
         rows = self._query(sql, params)
         return rows[0] if rows else None
+
+    # ── per-user scoping ──────────────────────────────────────────────────
+    def _user_scope_sql(self) -> str:
+        """WHERE fragment (2 params: user_id, user_id) for the ads a user sees:
+        the ads they saved plus every ad of the pages they track."""
+        p = self._ph()
+        return (f"(ad_id IN (SELECT ad_id FROM user_ads WHERE user_id = {p}) "
+                f"OR page_id IN (SELECT page_id FROM user_pages WHERE user_id = {p}))")
+
+    def link_user_ad(self, user_id: int, ad_id: str) -> None:
+        aid = str(ad_id or "").strip()
+        if not user_id or not aid:
+            return
+        p = self._ph()
+        conflict = "ON CONFLICT (user_id, ad_id) DO NOTHING"
+        self._execute(f"INSERT INTO user_ads (user_id, ad_id, saved_at) VALUES ({p},{p},{p}) {conflict}",
+                      (int(user_id), aid, _now()))
+
+    def link_user_page(self, user_id: int, page_id: str) -> None:
+        pid = str(page_id or "").strip()
+        if not user_id or not pid:
+            return
+        p = self._ph()
+        conflict = "ON CONFLICT (user_id, page_id) DO NOTHING"
+        self._execute(f"INSERT INTO user_pages (user_id, page_id, tracked_at) VALUES ({p},{p},{p}) {conflict}",
+                      (int(user_id), pid, _now()))
+
+    def unlink_user_page(self, user_id: int, page_id: str) -> int:
+        """Remove one user's tracking of a page. Returns how many users still track it."""
+        pid = str(page_id or "").strip()
+        p = self._ph()
+        self._execute(f"DELETE FROM user_pages WHERE user_id={p} AND page_id={p}", (int(user_id), pid))
+        return self.count_page_trackers(pid)
+
+    def count_page_trackers(self, page_id: str) -> int:
+        row = self._query_one(f"SELECT COUNT(*) AS c FROM user_pages WHERE page_id={self._ph()}",
+                              (str(page_id or "").strip(),))
+        return int(row["c"]) if row and row.get("c") else 0
+
+    def list_user_page_ids(self, user_id: int) -> list[str]:
+        rows = self._query(f"SELECT page_id FROM user_pages WHERE user_id={self._ph()}", (int(user_id),))
+        return [str(r["page_id"]) for r in rows]
 
     # ── public API ────────────────────────────────────────────────────────
     def _calc_days_active(self, start_date_str: str, first_seen_str: str) -> int:
@@ -377,10 +441,15 @@ class Database:
                            query: str = "", store_domain: str = "",
                            page_id: str = "", preset: str = "", active_only: bool = False,
                            start_date_min: str = "", start_date_max: str = "",
-                           min_days_active: int = 0, target_id: Optional[int] = None) -> tuple[str, list]:
+                           min_days_active: int = 0, target_id: Optional[int] = None,
+                           user_id: Optional[int] = None) -> tuple[str, list]:
         p = self._ph()
         where = []
         params: list = []
+
+        if user_id is not None:
+            where.append(self._user_scope_sql())
+            params.extend([int(user_id), int(user_id)])
 
         if stores_only:
             where.append("store_domain != '' AND store_domain IS NOT NULL")
@@ -429,14 +498,14 @@ class Database:
                 page_id: str = "", preset: str = "", active_only: bool = False,
                 start_date_min: str = "", start_date_max: str = "",
                 min_days_active: int = 0, sort_by: str = "collected_at",
-                target_id: Optional[int] = None) -> list[dict]:
+                target_id: Optional[int] = None, user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
-            target_id=target_id,
+            target_id=target_id, user_id=user_id,
         )
 
         order_map = {
@@ -461,13 +530,14 @@ class Database:
                   query: str = "", store_domain: str = "",
                   page_id: str = "", preset: str = "", active_only: bool = False,
                   start_date_min: str = "", start_date_max: str = "",
-                  min_days_active: int = 0, target_id: Optional[int] = None) -> int:
+                  min_days_active: int = 0, target_id: Optional[int] = None,
+                  user_id: Optional[int] = None) -> int:
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
-            target_id=target_id,
+            target_id=target_id, user_id=user_id,
         )
         row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
         return int(row["c"]) if row else 0
@@ -479,27 +549,37 @@ class Database:
                "WHERE query != '' GROUP BY query ORDER BY last_run DESC LIMIT 100")
         return self._query(sql)
 
-    def get_stores(self, search: str = "") -> list[dict]:
+    def get_stores(self, search: str = "", user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
-        clause = ""
-        params: tuple = ()
+        where = ["store_domain != '' AND store_domain IS NOT NULL"]
+        params: list = []
         if search:
-            clause = f"WHERE store_domain LIKE {p}"
-            params = ("%" + search + "%",)
+            where.append(f"store_domain LIKE {p}")
+            params.append("%" + search + "%")
+        if user_id is not None:
+            where.append(self._user_scope_sql())
+            params.extend([int(user_id), int(user_id)])
         sql = (f"SELECT store_domain, platform, COUNT(*) AS total_ads, "
                f"MAX(collected_at) AS last_seen FROM meta_ads "
-               f"WHERE store_domain != '' AND store_domain IS NOT NULL "
-               f"{('AND store_domain LIKE ' + p) if search else ''} "
+               f"WHERE {' AND '.join(where)} "
                f"GROUP BY store_domain, platform ORDER BY total_ads DESC LIMIT 300")
-        return self._query(sql, params)
+        return self._query(sql, tuple(params))
 
-    def get_stats(self) -> dict:
-        total = self.count_ads()
+    def get_stats(self, user_id: Optional[int] = None) -> dict:
+        p = self._ph()
+        total = self.count_ads(user_id=user_id)
+        scope, scope_params = "", ()
+        if user_id is not None:
+            scope = " AND " + self._user_scope_sql()
+            scope_params = (int(user_id), int(user_id))
         stores = self._query_one(
             "SELECT COUNT(DISTINCT store_domain) AS c FROM meta_ads "
-            "WHERE store_domain != '' AND store_domain IS NOT NULL")
-        last = self._query_one("SELECT MAX(collected_at) AS t FROM meta_ads")
-        tracked = self._query_one("SELECT COUNT(*) AS c FROM tracked_pages")
+            "WHERE store_domain != '' AND store_domain IS NOT NULL" + scope, scope_params)
+        last = self._query_one("SELECT MAX(collected_at) AS t FROM meta_ads WHERE 1=1" + scope, scope_params)
+        if user_id is not None:
+            tracked = self._query_one(f"SELECT COUNT(*) AS c FROM user_pages WHERE user_id={p}", (int(user_id),))
+        else:
+            tracked = self._query_one("SELECT COUNT(*) AS c FROM tracked_pages")
         return {
             "backend": "PostgreSQL" if self.is_postgres else "SQLite",
             "total_ads": total,
@@ -745,10 +825,12 @@ class Database:
         p = self._ph()
         self._execute(f"DELETE FROM tracked_pages WHERE page_id={p}", (pid,))
         self._execute(f"DELETE FROM page_snapshots WHERE page_id={p}", (pid,))
+        self._execute(f"DELETE FROM user_pages WHERE page_id={p}", (pid,))
 
     def delete_all_tracked_pages(self) -> None:
         self._execute("DELETE FROM tracked_pages")
         self._execute("DELETE FROM page_snapshots")
+        self._execute("DELETE FROM user_pages")
 
     def add_page_snapshot(self, page_id, active_ads_count: int = 0, total_ads_count: int = 0,
                           ad_ids=None, source: str = "extension") -> None:
@@ -768,12 +850,25 @@ class Database:
             f"snapshots_count=(SELECT COUNT(*) FROM page_snapshots WHERE page_id={p}) WHERE page_id={p}",
             (now, int(active_ads_count or 0), int(total_ads_count or 0), pid, pid))
 
-    def list_tracked_pages(self, limit: int = 500) -> list[dict]:
+    def list_tracked_pages(self, limit: int = 500, user_id: Optional[int] = None) -> list[dict]:
+        """All tracked pages, or only those one user tracks. Each page lists the
+        emails of the users tracking it (``tracked_by``)."""
         p = self._ph()
-        pages = self._query(
-            f"SELECT * FROM tracked_pages ORDER BY COALESCE(last_snapshot_at, first_tracked_at) DESC LIMIT {p}",
-            (limit,))
+        if user_id is not None:
+            pages = self._query(
+                f"SELECT * FROM tracked_pages WHERE page_id IN "
+                f"(SELECT page_id FROM user_pages WHERE user_id={p}) "
+                f"ORDER BY COALESCE(last_snapshot_at, first_tracked_at) DESC LIMIT {p}",
+                (int(user_id), limit))
+        else:
+            pages = self._query(
+                f"SELECT * FROM tracked_pages ORDER BY COALESCE(last_snapshot_at, first_tracked_at) DESC LIMIT {p}",
+                (limit,))
         for pg in pages:
+            owners = self._query(
+                f"SELECT u.email FROM user_pages up JOIN users u ON u.id = up.user_id "
+                f"WHERE up.page_id={p} ORDER BY up.tracked_at", (pg["page_id"],))
+            pg["tracked_by"] = [o["email"] for o in owners]
             snaps = self._query(
                 f"SELECT captured_at, active_ads_count, total_ads_count FROM page_snapshots "
                 f"WHERE page_id={p} ORDER BY id DESC LIMIT 20", (pg["page_id"],))
@@ -842,7 +937,27 @@ class Database:
         return self._query_one(f"SELECT * FROM users WHERE id = {self._ph()}", (int(user_id),))
 
     def list_users(self) -> list[dict]:
-        return self._query("SELECT id, email, role, is_active, created_at, last_login_at FROM users ORDER BY id ASC")
+        return self._query(
+            "SELECT id, email, role, is_active, created_at, last_login_at, "
+            "(SELECT COUNT(*) FROM user_ads ua WHERE ua.user_id = users.id) AS saved_ads_count, "
+            "(SELECT COUNT(*) FROM user_pages up WHERE up.user_id = users.id) AS tracked_pages_count "
+            "FROM users ORDER BY id ASC")
+
+    def get_or_create_api_token(self, user_id: int) -> str:
+        """Personal token the browser extension sends instead of the shared INGEST_TOKEN."""
+        import secrets
+        user = self.get_user_by_id(user_id)
+        if user and user.get("api_token"):
+            return user["api_token"]
+        token = "adra_" + secrets.token_urlsafe(32)
+        self._execute(f"UPDATE users SET api_token={self._ph()} WHERE id={self._ph()}", (token, int(user_id)))
+        return token
+
+    def get_user_by_token(self, token: str) -> Optional[dict]:
+        tok = (token or "").strip()
+        if not tok:
+            return None
+        return self._query_one(f"SELECT * FROM users WHERE api_token = {self._ph()}", (tok,))
 
     def update_user_status(self, user_id: int, is_active: bool) -> None:
         self._execute(f"UPDATE users SET is_active = {self._ph()} WHERE id = {self._ph()}", (1 if is_active else 0, int(user_id)))
@@ -854,7 +969,10 @@ class Database:
         self._execute(f"UPDATE users SET last_login_at = {self._ph()} WHERE id = {self._ph()}", (_now(), int(user_id)))
 
     def delete_user(self, user_id: int) -> None:
-        self._execute(f"DELETE FROM users WHERE id = {self._ph()}", (int(user_id),))
+        p = self._ph()
+        self._execute(f"DELETE FROM user_ads WHERE user_id = {p}", (int(user_id),))
+        self._execute(f"DELETE FROM user_pages WHERE user_id = {p}", (int(user_id),))
+        self._execute(f"DELETE FROM users WHERE id = {p}", (int(user_id),))
 
     def get_settings(self) -> dict:
         rows = self._query("SELECT key, value FROM settings")
