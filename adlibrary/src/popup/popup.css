@@ -1,0 +1,80 @@
+.adra-popup,
+body {
+  --adra-bg: #f8fbff;
+  --adra-surface: #ffffff;
+  --adra-border: #cfe0f5;
+  --adra-primary: #1f6feb;
+  --adra-primary-dark: #174ea6;
+  --adra-muted: #52657f;
+  margin: 0;
+  background: var(--adra-bg);
+  color: #172b4d;
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.adra-popup { box-sizing: border-box; width: 330px; padding: 18px; }
+.adra-popup h1 { margin: 0 0 14px; color: #102a56; font-size: 18px; letter-spacing: -.01em; }
+.adra-popup button {
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid #9fbbe0;
+  border-radius: 10px;
+  background: var(--adra-surface);
+  color: var(--adra-primary-dark);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+.adra-popup button:hover { background: #e8f1ff; border-color: var(--adra-primary); }
+.adra-popup .adra-danger { color: #b42318; }
+#adra-popup-status { min-height: 21px; margin-bottom: 0; color: #18794e; }
+.adra-url-filter-settings,
+.adra-likes-filter-settings,
+.adra-cloud-settings { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--adra-border); }
+.adra-url-filter-settings h2,
+.adra-likes-filter-settings h2,
+.adra-cloud-settings h2 { margin: 0 0 9px; color: var(--adra-primary-dark); font-size: 15px; }
+.adra-url-filter-settings > label:not(.adra-checkbox-label),
+.adra-likes-filter-settings > label,
+.adra-cloud-settings > label { display: block; margin-bottom: 4px; font-weight: 700; }
+.adra-url-filter-settings > input[type="text"],
+.adra-likes-filter-settings > input[type="number"],
+.adra-cloud-settings > input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px;
+  border: 1px solid #b7c9e2;
+  border-radius: 9px;
+  background: #fff;
+  color: #172b4d;
+  font: inherit;
+  direction: ltr;
+}
+.adra-url-filter-settings > input[type="text"]:focus,
+.adra-likes-filter-settings > input[type="number"]:focus,
+.adra-cloud-settings > input[type="text"]:focus {
+  outline: 2px solid #74a7ff;
+  outline-offset: 1px;
+}
+.adra-checkbox-label { display: flex; align-items: center; gap: 7px; margin: 9px 0 2px; cursor: pointer; }
+.adra-url-filter-settings small { display: block; margin-top: 7px; color: var(--adra-muted); }
+.adra-likes-filter-settings small { display: block; margin-top: 7px; color: var(--adra-muted); }
+.adra-cloud-settings small { display: block; margin-top: 7px; color: var(--adra-muted); }
+.adra-cloud-settings #adra-cloud-status { font-weight: 800; }
+.adra-cloud-settings #adra-cloud-status.adra-cloud-ok { color: #18794e; }
+.adra-cloud-settings #adra-cloud-status.adra-cloud-error { color: #b42318; }
+.adra-history-sync { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--adra-border); }
+.adra-history-sync h3 { margin: 0 0 6px; color: var(--adra-primary-dark); font-size: 13px; }
+.adra-history-sync small { display: block; margin-top: 6px; color: var(--adra-muted); min-height: 16px; }
+.adra-history-sync #adra-sync-progress { font-weight: 700; color: var(--adra-primary-dark); }
+#adra-sync-history:disabled { opacity: 0.6; cursor: wait; }
+.adra-popup-signature {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--adra-border);
+  color: var(--adra-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+.adra-popup-signature a { color: var(--adra-primary-dark); }

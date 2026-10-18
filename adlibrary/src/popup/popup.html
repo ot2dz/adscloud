@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ad Library Research Assistant</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="adra-popup">
+      <h1>Ad Library Research Assistant</h1>
+      <p>الإعلانات المحفوظة: <strong id="adra-saved-count">0</strong></p>
+      <p>الصفحات المتتبعة: <strong id="adra-tracked-count">0</strong></p>
+      <button id="adra-view-saved" type="button">عرض الإعلانات المحفوظة</button>
+      <button id="adra-view-tracked" type="button">عرض الصفحات المتتبعة</button>
+      <button id="adra-clear-saved" type="button" class="adra-danger">مسح الكل</button>
+      <section class="adra-url-filter-settings">
+        <h2>My Landing-URL Filter</h2>
+        <label for="adra-url-filter-text">النص الموجود داخل الرابط</label>
+        <input id="adra-url-filter-text" type="text" placeholder="مثال: product">
+        <label class="adra-checkbox-label">
+          <input id="adra-url-filter-case" type="checkbox">
+          <span>حساس لحالة الأحرف</span>
+        </label>
+        <button id="adra-save-url-filter" type="button">حفظ الفلتر</button>
+        <small>بعد الحفظ فعّل خيار My Filter داخل صفحة Ad Library.</small>
+      </section>
+      <section class="adra-likes-filter-settings">
+        <h2>Min Page Likes Filter</h2>
+        <label for="adra-min-page-likes">الحد الأدنى لإعجابات الصفحة</label>
+        <input id="adra-min-page-likes" type="number" min="0" step="1" inputmode="numeric" placeholder="مثال: 1000">
+        <button id="adra-save-min-page-likes" type="button">حفظ الفلتر</button>
+        <small>بعد الحفظ سيتم تطبيق الفلتر داخل صفحة Ad Library.</small>
+      </section>
+      <section class="adra-cloud-settings">
+        <h2>ADRA Cloud</h2>
+        <label for="adra-cloud-url">Cloud API URL</label>
+        <input id="adra-cloud-url" type="text" inputmode="url" dir="ltr" placeholder="https://adra-cloud.example.workers.dev">
+        <label for="adra-cloud-token">Cloud Token (اختياري)</label>
+        <input id="adra-cloud-token" type="password" dir="ltr" placeholder="اتركه فارغًا إن لم تستخدم توثيقًا">
+        <button id="adra-save-cloud-url" type="button">حفظ</button>
+        <button id="adra-test-cloud" type="button">اختبار الاتصال</button>
+        <small id="adra-cloud-status">الحالة: غير مهيأ</small>
+        <small>اترك الحقل فارغًا للعمل محليًا بدون مزامنة سحابية.</small>
+        <div class="adra-history-sync">
+          <h3>Historical Sync</h3>
+          <button id="adra-sync-history" type="button">مزامنة الإعلانات والصفحات المحفوظة</button>
+          <small id="adra-sync-progress" role="status"></small>
+          <small id="adra-sync-last"></small>
+        </div>
+      </section>
+      <p id="adra-popup-status" role="status"></p>
+      <footer class="adra-popup-signature">
+        Powered by Othmane Djoualil<br>
+        Telegram: <a href="https://t.me/ot2dz" target="_blank" rel="noopener noreferrer">@ot2dz</a>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
