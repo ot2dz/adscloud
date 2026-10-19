@@ -18,6 +18,7 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Callable, Optional
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -117,17 +118,29 @@ class ScrapeManager:
               stores_only: bool = False, sort_mode: str = "total_impressions",
               sweep: bool = False, url: str = "", start_date_min: str = "",
               start_date_max: str = "", date_label: str = "",
-              date_scope: str = "impressions") -> bool:
+              date_scope: str = "impressions", resume: Optional[dict] = None,
+              on_checkpoint: Optional[Callable[[Optional[dict]], None]] = None,
+              job_id: Optional[int] = None, base_count: int = 0) -> bool:
+        """Start a scrape thread.
+
+        ``resume`` is a checkpoint ``{"pass": n, "cursor": "..."}`` from an
+        earlier interrupted run; ``on_checkpoint`` receives the new one after
+        every fully-processed page (``None`` once everything is done).
+        ``base_count`` = ads already collected by earlier runs of the same
+        job, so counters continue instead of restarting at zero.
+        """
         if self.state["running"]:
             return False
         self.stop_event.clear()
         while not self.events.empty():
             self.events.get_nowait()
-        self.state.update({"running": True, "query": query or url, "scraped": 0,
-                           "stored": 0, "stores": 0, "reported": None, "log": []})
+        self.state.update({"running": True, "query": query or url, "scraped": base_count,
+                           "stored": 0, "stores": 0, "reported": None, "log": [],
+                           "outcome": None, "job_id": job_id})
         self.thread = threading.Thread(
             target=self._run,
             args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
+            kwargs={"resume": resume, "on_checkpoint": on_checkpoint, "base_count": base_count},
             daemon=True)
         self.thread.start()
         return True
@@ -135,11 +148,40 @@ class ScrapeManager:
     def stop(self) -> None:
         self.stop_event.set()
 
-    def _run(self, query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope="impressions") -> None:
+    def _run(self, query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope="impressions",
+             resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0) -> None:
         country = (country or DEFAULT_COUNTRY).strip().upper()
         languages = FIXED_LANGS
         seen_stores: set = set()
         seen_ad_ids: set = set()
+        resume = resume if isinstance(resume, dict) else {}
+        # Outcome read by the job runner: done | stopped | interrupted | failed.
+        # Start from the incoming checkpoint so an immediate failure keeps it.
+        outcome = {"status": "done", "checkpoint": resume or None, "error": ""}
+
+        def make_checkpointer(pass_idx: int):
+            def _cp(cursor):
+                # Cursor None = this pass is exhausted -> next pass from scratch.
+                cp = {"pass": pass_idx, "cursor": cursor} if cursor else {"pass": pass_idx + 1, "cursor": None}
+                outcome["checkpoint"] = cp
+                if on_checkpoint:
+                    try:
+                        on_checkpoint(cp)
+                    except Exception:
+                        logger.exception("checkpoint persist failed")
+            return _cp
+
+        def absorb(result) -> bool:
+            """Fold a ScrapeResult into the outcome; True = keep going."""
+            if result.stopped:
+                outcome["status"] = "stopped"
+            elif result.failed:
+                outcome.update(status="failed", error=result.error)
+            elif result.interrupted:
+                outcome.update(status="interrupted", error=result.error)
+            else:
+                return True
+            return False
 
         def progress(msg):
             print(f"  ▶ [SCRAPER] {msg}", flush=True)
@@ -155,7 +197,7 @@ class ScrapeManager:
         def on_scanned(n):
             self.state["scanned"] = n
             self._emit("scrape_progress", {
-                "scraped": len(seen_ad_ids),
+                "scraped": (base_count + len(seen_ad_ids)),
                 "scanned": n,
                 "reported": self.state["reported"],
                 "stores": len(seen_stores),
@@ -171,14 +213,14 @@ class ScrapeManager:
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
                 stored = db.save_ad(d, query=query, country=country)
-                self.state["scraped"] = len(seen_ad_ids)
+                self.state["scraped"] = (base_count + len(seen_ad_ids))
                 if stored:
                     self.state["stored"] += 1
                 if ad.store_domain:
                     seen_stores.add(ad.store_domain)
                 self.state["stores"] = len(seen_stores)
                 self._emit("scrape_progress", {
-                    "scraped": len(seen_ad_ids),
+                    "scraped": (base_count + len(seen_ad_ids)),
                     "scanned": self.state.get("scanned", 0),
                     "reported": self.state["reported"],
                     "stores": len(seen_stores),
@@ -197,26 +239,38 @@ class ScrapeManager:
                                            exact=exact, sort_mode=sort_mode, months_back=12)
                 total_passes = len(passes)
                 progress(f"🚀 بدء التغطية الموسعة (Deep Sweep): تقسيم البحث إلى {total_passes} شريحة شهرية.")
+                start_pass = max(1, int(resume.get("pass") or 1))
+                if start_pass > 1:
+                    progress(f"↩️ استئناف التغطية من الشريحة {start_pass}/{total_passes}.")
 
                 for idx, p in enumerate(passes, 1):
+                    if idx < start_pass:
+                        continue
                     if self.stop_event.is_set():
+                        outcome["status"] = "stopped"
                         progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
                         break
-                    progress(f"↪ شريحة {idx}/{total_passes} (شهر {p['label']}) — إجمالي مجمع: {len(seen_ad_ids)} إعلان.")
+                    progress(f"↪ شريحة {idx}/{total_passes} (شهر {p['label']}) — إجمالي مجمع: {(base_count + len(seen_ad_ids))} إعلان.")
                     self._emit("slice_update", {
                         "pass": idx,
                         "total_passes": total_passes,
                         "label": p["label"],
-                        "accumulated": len(seen_ad_ids)
+                        "accumulated": (base_count + len(seen_ad_ids))
                     })
-                    try:
-                        scrape(query=query, country=country, url=p["url"],
+                    r = scrape(query=query, country=country, url=p["url"],
                                stores_only=False, progress=progress, on_ad=on_ad,
                                on_reported=on_reported, on_scanned=on_scanned,
                                date_scope=date_scope,
-                               should_stop=lambda: self.stop_event.is_set())
-                    except Exception as pass_err:
-                        progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ: {pass_err}")
+                               should_stop=lambda: self.stop_event.is_set(),
+                               resume_cursor=(resume.get("cursor") if idx == start_pass else None),
+                               on_checkpoint=make_checkpointer(idx))
+                    if r.failed:
+                        # A broken slice must not block the rest of the sweep.
+                        progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
+                        make_checkpointer(idx)(None)
+                        continue
+                    if not absorb(r):
+                        break
 
             else:
                 if date_label:
@@ -229,27 +283,37 @@ class ScrapeManager:
                                 progress=progress, on_ad=on_ad, on_reported=on_reported,
                                 on_scanned=on_scanned,
                                 should_stop=lambda: self.stop_event.is_set(),
-                                date_scope=date_scope)
-                self.state["reported"] = result.reported_count
+                                date_scope=date_scope,
+                                resume_cursor=resume.get("cursor"),
+                                on_checkpoint=make_checkpointer(1))
+                if result.reported_count is not None:
+                    self.state["reported"] = result.reported_count
+                absorb(result)
 
             self._emit("finished", {
+                "status": outcome["status"],
+                "error": outcome["error"],
                 "query": query or url,
-                "scraped": len(seen_ad_ids),
-                "store_ads": len(seen_ad_ids),
+                "scraped": (base_count + len(seen_ad_ids)),
+                "store_ads": (base_count + len(seen_ad_ids)),
                 "stored": self.state["stored"],
                 "stores": len(seen_stores),
                 "reported": self.state["reported"],
             })
-            logger.info("Scrape finished: %s ads, %s stores", len(seen_ad_ids), len(seen_stores))
+            logger.info("Scrape finished: %s ads, %s stores", (base_count + len(seen_ad_ids)), len(seen_stores))
         except Exception as exc:  # pragma: no cover
             logger.exception("scrape failed")
+            outcome.update(status="interrupted", error=str(exc))
             self._emit("error", {"message": str(exc)})
         finally:
+            self.state["outcome"] = outcome
             self.state["running"] = False
             self._emit("done", {})
 
 
 manager = ScrapeManager()
+# Set when a job is queued so the runner claims it at once (no polling delay).
+job_wakeup = threading.Event()
 
 
 # ── Pages ─────────────────────────────────────────────────────────────
@@ -423,50 +487,48 @@ def api_start():
     if date_scope not in ("impressions", "launch"):
         date_scope = "launch" if (start_date_min or start_date_max) else "impressions"
 
-    # No local browser on this host -> queue the job for a remote worker.
-    if not SCRAPE_ENABLED:
-        job_id = db.create_job(
-            query=query,
-            url=url,
-            country=country,
-            exact_phrase=bool(cfg.get("exact", False)),
-            stores_only=bool(cfg.get("stores_only", False)),
-            sweep=bool(cfg.get("sweep", False)),
-            sort_mode=cfg.get("sort", "total_impressions"),
-            source="manual",
-            start_date_min=start_date_min,
-            start_date_max=start_date_max,
-            date_scope=date_scope,
-        )
-        manager.events.put({"type": "queued", "data": {"job_id": job_id, "query": query or url}})
-        return jsonify({"ok": True, "queued": True, "job_id": job_id, "date_label": date_label})
-
     # If date window is specified, default to relevancy_monthly_grouped so Meta serves recent ads first
     chosen_sort = cfg.get("sort", "total_impressions")
     if (start_date_min or start_date_max) and chosen_sort == "total_impressions":
         chosen_sort = "relevancy_monthly_grouped"
 
-    ok = manager.start(
+    # Every scrape from the main button is a saved job: its progress is
+    # checkpointed, so a dropped connection or a server restart resumes it
+    # from the same page instead of starting over. The live view is unchanged
+    # (the job runs through the same ScrapeManager and stream).
+    busy = bool(manager.state.get("running")) or db.has_pending_jobs()
+    job_id = db.create_job(
         query=query,
-        country=country,
-        exact=bool(cfg.get("exact", False)),
-        stores_only=bool(cfg.get("stores_only", False)),
-        sort_mode=chosen_sort,
-        sweep=bool(cfg.get("sweep", False)),
         url=url,
+        country=country,
+        exact_phrase=bool(cfg.get("exact", False)),
+        stores_only=bool(cfg.get("stores_only", False)),
+        sweep=bool(cfg.get("sweep", False)),
+        sort_mode=chosen_sort,
+        source="manual",
         start_date_min=start_date_min,
         start_date_max=start_date_max,
-        date_label=date_label,
         date_scope=date_scope,
     )
-    return jsonify({"ok": ok, "date_label": date_label, "date_scope": date_scope})
+    job_wakeup.set()
+    if busy:
+        manager._emit("log", {"text": f"🕒 أُضيف السحب «{query or url}» إلى قائمة الانتظار وسيبدأ بعد انتهاء السحب الحالي."})
+    return jsonify({"ok": True, "queued": busy, "job_id": job_id,
+                    "date_label": date_label, "date_scope": date_scope})
 
 
 @app.route("/api/stop", methods=["POST"])
 @admin_required
 def api_stop():
+    """Stop the running scrape and cancel manual scrapes waiting to resume."""
     manager.stop()
-    return jsonify({"ok": True})
+    jid = manager.state.get("job_id")
+    if jid and manager.state.get("running"):
+        db.request_stop(jid)
+    cancelled = db.cancel_pending_jobs(source="manual")
+    if cancelled:
+        manager._emit("log", {"text": f"⏹ أُلغي {cancelled} سحب كان ينتظر الاستئناف."})
+    return jsonify({"ok": True, "cancelled": cancelled})
 
 
 @app.route("/api/status")
@@ -870,6 +932,8 @@ def api_schedule_run_now():
     targets = [t for t in db.list_targets() if t.get("enabled")]
     count = 0
     for t in targets:
+        if db.has_open_job(t.get("id")):
+            continue
         t_url = resolve_target_url(t.get("type", "keyword"), t.get("target_value", ""), country=t.get("country", "DZ"))
         db.create_job(
             query=t.get("target_value", ""),
@@ -1272,6 +1336,11 @@ def scheduler_loop() -> None:
                         except Exception:
                             due = True
 
+                    if due and db.has_open_job(t.get("id")):
+                        # Still queued / running / waiting to resume: don't
+                        # start the same work twice.
+                        due = False
+
                     if due:
                         t_url = resolve_target_url(
                             t.get("type", "keyword"),
@@ -1301,17 +1370,46 @@ def scheduler_loop() -> None:
         time.sleep(60)
 
 
+# Job-level resume: an interrupted job goes back to the queue and continues
+# from its checkpoint after these delays (minutes); then it is marked failed.
+JOB_RETRY_DELAYS_MIN = (5, 20, 60)
+CHECKPOINT_EVERY_SEC = 10
+INPROC_WORKER_PREFIX = "inproc-"
+
+
 def job_worker_loop() -> None:
-    worker_id = f"inproc-{os.getpid()}"
+    worker_id = f"{INPROC_WORKER_PREFIX}{os.getpid()}"
     while True:
         try:
             job = db.claim_next_job(worker_id)
             if not job:
-                time.sleep(3)
+                job_wakeup.wait(3)
+                job_wakeup.clear()
                 continue
             jid = job.get("id")
-            logger.info("job %s: in-process scrape start", jid)
-            db.update_job_progress(jid, 1, "بدء السحب عبر HTTP")
+            try:
+                resume = json.loads(job.get("checkpoint") or "null")
+            except ValueError:
+                resume = None
+            attempts = int(job.get("attempts") or 0)
+            # Ads already collected by earlier (interrupted) runs of this job.
+            base_count = int(job.get("result_count") or 0) if resume else 0
+            d_min, d_max = job.get("start_date_min") or "", job.get("start_date_max") or ""
+            logger.info("job %s: in-process scrape start (attempt %s, resume=%s)", jid, attempts + 1, resume)
+            db.update_job_progress(jid, 1, "استئناف من آخر نقطة" if resume else "بدء السحب عبر HTTP")
+
+            last_write = [0.0]
+
+            def persist(cp, _jid=jid):
+                # Throttled: a few re-fetched pages after a crash are cheap,
+                # a DB write per page is not. The final checkpoint is always
+                # written below from the outcome.
+                now = time.monotonic()
+                if now - last_write[0] >= CHECKPOINT_EVERY_SEC:
+                    last_write[0] = now
+                    db.save_checkpoint(_jid, json.dumps(cp) if cp else None,
+                                       result_count=manager.state.get("scraped", 0))  # cumulative
+
             started = manager.start(
                 query=job.get("query") or "",
                 country=job.get("country") or DEFAULT_COUNTRY,
@@ -1322,19 +1420,60 @@ def job_worker_loop() -> None:
                 url=job.get("url") or "",
                 start_date_min=job.get("start_date_min") or "",
                 start_date_max=job.get("start_date_max") or "",
-                date_label="",
+                date_label=(f"{d_min or 'البداية'} ← {d_max or 'اليوم'}" if (d_min or d_max) else ""),
                 date_scope=job.get("date_scope") or "impressions",
+                resume=resume,
+                on_checkpoint=persist,
+                job_id=jid,
+                base_count=base_count,
             )
             if not started:
-                db._execute(f"UPDATE jobs SET status={db._ph()} WHERE id={db._ph()}", ("pending", jid))
+                db.release_job(jid)
                 time.sleep(5)
                 continue
+
+            last_stop_check = 0.0
             while manager.state.get("running"):
-                if job.get("stop_requested"):
-                    manager.stop()
+                # Re-read the job: the stop flag is set by another request.
+                if time.monotonic() - last_stop_check >= 3:
+                    last_stop_check = time.monotonic()
+                    fresh = db.get_job(jid)
+                    if fresh and fresh.get("stop_requested"):
+                        manager.stop()
                 time.sleep(1)
-            db.finish_job(jid, status="done", result_count=manager.state.get("scraped", 0))
-            logger.info("job %s: done (%s ads)", jid, manager.state.get("scraped", 0))
+
+            outcome = manager.state.get("outcome") or {"status": "done"}
+            count = manager.state.get("scraped", 0)
+            cp = outcome.get("checkpoint")
+            cp_json = json.dumps(cp) if cp else None
+            status = outcome.get("status")
+
+            if status == "interrupted":
+                if attempts < len(JOB_RETRY_DELAYS_MIN):
+                    delay = JOB_RETRY_DELAYS_MIN[attempts]
+                    db.schedule_retry(jid, delay, cp_json, result_count=count,
+                                      error=outcome.get("error", ""))
+                    manager._emit("paused", {
+                        "job_id": jid, "scraped": count, "delay_min": delay,
+                        "attempt": attempts + 1, "max_attempts": len(JOB_RETRY_DELAYS_MIN),
+                        "error": outcome.get("error", "")})
+                    manager._emit("log", {
+                        "text": f"⏸ انقطع السحب بعد {count} إعلان وسيُستأنف تلقائياً من نفس النقطة بعد {delay} دقيقة "
+                                f"(محاولة {attempts + 1}/{len(JOB_RETRY_DELAYS_MIN)})."})
+                    logger.info("job %s: interrupted, retry in %s min from %s", jid, delay, cp)
+                else:
+                    db.finish_job(jid, status="failed", result_count=count,
+                                  error=outcome.get("error", ""), checkpoint=cp_json)
+                    manager._emit("log", {"text": f"⛔ توقف السحب نهائياً بعد {attempts + 1} محاولات: {outcome.get('error', '')}"})
+                    logger.warning("job %s: failed after %s attempts", jid, attempts + 1)
+            elif status == "failed":
+                db.finish_job(jid, status="failed", result_count=count,
+                              error=outcome.get("error", ""), checkpoint=cp_json)
+            elif status == "stopped":
+                db.finish_job(jid, status="stopped", result_count=count)
+            else:
+                db.finish_job(jid, status="done", result_count=count)
+                logger.info("job %s: done (%s ads)", jid, count)
         except Exception:
             logger.exception("job worker loop error")
             time.sleep(5)
@@ -1348,6 +1487,12 @@ def start_background_threads() -> None:
     if _bg_started:
         return
     _bg_started = True
+    try:
+        n = db.requeue_orphaned_jobs(INPROC_WORKER_PREFIX)
+        if n:
+            logger.info("requeued %s job(s) left running by a previous process", n)
+    except Exception:
+        logger.exception("orphaned job requeue failed")
     threading.Thread(target=scheduler_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
 

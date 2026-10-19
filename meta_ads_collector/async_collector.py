@@ -258,8 +258,8 @@ class AsyncMetaAdsCollector:
         had_parse_errors = False
         search_start_time = time.monotonic()
 
+        # Fresh collation_token per page (see collector.py).
         search_session_id = str(uuid.uuid4())
-        search_collation_token = str(uuid.uuid4())
 
         logger.info("Starting async search: query='%s', country=%s", query, country)
 
@@ -298,7 +298,7 @@ class AsyncMetaAdsCollector:
                                 first=page_size,
                                 sort_mode=sort_by,
                                 session_id=search_session_id,
-                                collation_token=search_collation_token,
+                                collation_token=str(uuid.uuid4()),
                             )
                         except MetaAdsError as client_error:
                             self.stats["errors"] += 1

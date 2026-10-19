@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Callable, Optional
@@ -59,6 +60,15 @@ class ScrapeResult:
     total_ads: int = 0
     reported_count: Optional[int] = None
     stopped: bool = False
+    # True only when Meta reported no further pages (search exhausted).
+    completed: bool = False
+    # Set when the run gave up on a transient error; resume from `cursor`.
+    interrupted: bool = False
+    # Set when the error is permanent (retrying would just burn requests).
+    failed: bool = False
+    error: str = ""
+    # Resume point: cursor of the next unfetched page (None = start/finished).
+    cursor: Optional[str] = None
 
 
 def _proxy_arg():
@@ -68,6 +78,41 @@ def _proxy_arg():
         return None
     parts = [p.strip() for p in spec.split(",") if p.strip()]
     return parts if len(parts) > 1 else parts[0]
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float((os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+# Meta answers in ~0.5s; the library default (2s + up to 1s jitter) spent
+# ~80% of the run sleeping. Tunable per deployment.
+REQUEST_DELAY = _env_float("META_ADS_DELAY", 0.3)
+REQUEST_JITTER = _env_float("META_ADS_JITTER", 0.3)
+
+# In-run recovery: after a transient failure, wait then resume from the last
+# cursor with a fresh session (and a fresh proxy IP). Beyond these attempts the
+# run returns `interrupted` and the job queue retries later.
+IN_RUN_RETRY_WAITS = (30, 120)
+
+# Errors that will not go away by retrying the same cursor.
+_PERMANENT_ERRORS = ("Repeated pagination cursor", "consecutive empty pages")
+
+
+def _is_permanent(exc: Exception) -> bool:
+    return any(m in str(exc) for m in _PERMANENT_ERRORS)
+
+
+def _sleep_unless_stopped(seconds: float, should_stop) -> bool:
+    """Sleep in 1s steps; return True if a stop was requested meanwhile."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if should_stop and should_stop():
+            return True
+        time.sleep(1)
+    return bool(should_stop and should_stop())
 
 
 def _parse_ads_url(url: Optional[str]) -> dict:
@@ -155,8 +200,14 @@ def scrape(
     max_results: Optional[int] = None,
     date_scope: str = "impressions",
     on_scanned: Optional[Callable[[int], None]] = None,
+    resume_cursor: Optional[str] = None,
+    on_checkpoint: Optional[Callable[[Optional[str]], None]] = None,
 ) -> ScrapeResult:
-    """Collect ads for a keyword / page / domain / custom URL over HTTP."""
+    """Collect ads for a keyword / page / domain / custom URL over HTTP.
+
+    ``resume_cursor`` continues a previous run; ``on_checkpoint(cursor)`` is
+    called after each fully-processed page (``None`` once exhausted).
+    """
     progress = progress or (lambda _m: None)
     parsed = _parse_ads_url(url)
 
@@ -190,70 +241,114 @@ def scrape(
         f"date={inc_min or '-'}..{inc_max or '-'} | scope={date_scope}"
     )
 
-    collector = MetaAdsCollector(proxy=_proxy_arg())
-    reported: Optional[int] = None
+    res = ScrapeResult(query=q, url=url or "", cursor=resume_cursor or None)
     total = 0
     scanned = 0
-    stopped = False
-    try:
-        # Best-effort estimated count (one extra request; never fatal).
+    exhausted = False
+
+    def _checkpoint(next_cursor: Optional[str]) -> None:
+        nonlocal exhausted
+        res.cursor = next_cursor
+        exhausted = next_cursor is None
+        if on_checkpoint:
+            on_checkpoint(next_cursor)
+
+    if resume_cursor:
+        progress("↩️ استئناف السحب من آخر نقطة محفوظة (بدون إعادة الصفحات السابقة).")
+
+    attempt = 0
+    while True:
+        collector = MetaAdsCollector(proxy=_proxy_arg(), rate_limit_delay=REQUEST_DELAY,
+                                     jitter=REQUEST_JITTER)
         try:
-            reported = collector.count(
-                query=q, country=ctry, status=STATUS_ACTIVE, sort_by=sort_by,
-                start_date=gql_min, end_date=gql_max,
-            )
-            if reported is not None:
-                progress(f"📊 العدد التقديري من Meta: {reported}")
-                if on_reported:
-                    on_reported(reported)
+            # Best-effort estimated count (one extra request; never fatal).
+            # Skipped when resuming: it was already reported by the first run.
+            if not res.cursor and attempt == 0:
+                try:
+                    res.reported_count = collector.count(
+                        query=q, country=ctry, status=STATUS_ACTIVE, sort_by=sort_by,
+                        start_date=gql_min, end_date=gql_max,
+                    )
+                    if res.reported_count is not None:
+                        progress(f"📊 العدد التقديري من Meta: {res.reported_count}")
+                        if on_reported:
+                            on_reported(res.reported_count)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("count failed: %s", exc)
+
+            for m in collector.search(
+                query=q,
+                country=ctry,
+                status=STATUS_ACTIVE,
+                search_type=search_type,
+                page_ids=[page_id] if page_id else None,
+                sort_by=sort_by,
+                start_date=gql_min,
+                end_date=gql_max,
+                max_results=max_results,
+                start_cursor=res.cursor,
+                on_checkpoint=_checkpoint,
+            ):
+                if should_stop and should_stop():
+                    res.stopped = True
+                    progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
+                    break
+                scanned += 1
+                if on_scanned and (scanned == 1 or scanned % 5 == 0):
+                    on_scanned(scanned)
+                ad = _adapt(m)
+
+                if date_scope == "launch":
+                    sd = ad.start_date or ""
+                    if not sd:
+                        continue
+                    if inc_min and sd < inc_min:
+                        continue
+                    if inc_max and sd > inc_max:
+                        continue
+
+                # Always store-only: never collect ads without a real store link.
+                if not ad.store_domain:
+                    continue
+                total += 1
+                if on_ad:
+                    on_ad(ad)
+                if total % 25 == 0:
+                    progress(f"… تم جمع {total} إعلان")
+            # Generator ended normally: exhausted, max_results reached, or stopped.
+            res.completed = exhausted and not res.stopped
+            break
         except Exception as exc:  # noqa: BLE001
-            logger.debug("count failed: %s", exc)
-
-        for m in collector.search(
-            query=q,
-            country=ctry,
-            status=STATUS_ACTIVE,
-            search_type=search_type,
-            page_ids=[page_id] if page_id else None,
-            sort_by=sort_by,
-            start_date=gql_min,
-            end_date=gql_max,
-            max_results=max_results,
-        ):
+            res.error = str(exc)
             if should_stop and should_stop():
-                stopped = True
-                progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
+                res.stopped = True
                 break
-            scanned += 1
-            if on_scanned and (scanned == 1 or scanned % 5 == 0):
-                on_scanned(scanned)
-            ad = _adapt(m)
+            if _is_permanent(exc):
+                logger.error("HTTP scrape failed permanently: %s", exc)
+                progress(f"⛔ خطأ دائم، لن تتم إعادة المحاولة: {exc}")
+                res.failed = True
+                break
+            if attempt >= len(IN_RUN_RETRY_WAITS):
+                logger.warning("HTTP scrape interrupted after %s retries: %s", attempt, exc)
+                progress(f"⏸ انقطع السحب بعد {attempt} محاولات: {exc} — سيُستأنف لاحقاً من نفس النقطة.")
+                res.interrupted = True
+                break
+            wait = IN_RUN_RETRY_WAITS[attempt]
+            attempt += 1
+            progress(f"⚠️ {exc} — انتظار {wait} ثانية ثم استئناف من آخر صفحة "
+                     f"(محاولة {attempt}/{len(IN_RUN_RETRY_WAITS)}).")
+            if _sleep_unless_stopped(wait, should_stop):
+                res.stopped = True
+                break
+        finally:
+            try:
+                collector.close()
+            except Exception:
+                pass
 
-            if date_scope == "launch":
-                sd = ad.start_date or ""
-                if not sd:
-                    continue
-                if inc_min and sd < inc_min:
-                    continue
-                if inc_max and sd > inc_max:
-                    continue
-
-            # Always store-only: never collect ads without a real store link.
-            if not ad.store_domain:
-                continue
-            total += 1
-            if on_ad:
-                on_ad(ad)
-            if total % 25 == 0:
-                progress(f"… تم جمع {total} إعلان")
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("HTTP scrape failed")
-        progress(f"⚠️ خطأ أثناء السحب: {exc}")
-    finally:
-        try:
-            collector.close()
-        except Exception:
-            pass
-
-    progress(f"✅ انتهى السحب: {total} إعلان (بدون متصفح).")
-    return ScrapeResult(query=q, url=url or "", total_ads=total, reported_count=reported, stopped=stopped)
+    res.total_ads = total
+    if res.completed:
+        progress(f"✅ انتهى السحب: {total} إعلان (بدون متصفح).")
+    elif not (res.interrupted or res.failed):
+        progress(f"✅ توقف السحب: {total} إعلان.")
+    return res

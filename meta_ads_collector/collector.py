@@ -355,6 +355,8 @@ class MetaAdsCollector:
         dedup_tracker: Optional[DeduplicationTracker] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
+        start_cursor: Optional[str] = None,
+        on_checkpoint: Optional[Callable[[Optional[str]], None]] = None,
     ) -> Iterator[Ad]:
         """
         Search for ads and yield results as Ad objects.
@@ -376,6 +378,13 @@ class MetaAdsCollector:
                 (``YYYY-MM-DD``, ``date`` or ``datetime``). Only ads that
                 started on/after this date are returned.
             end_date: Optional server-side upper bound on ad delivery start date.
+            start_cursor: Resume pagination from this cursor (a value
+                previously passed to ``on_checkpoint``).  Cursors stay valid
+                across sessions.
+            on_checkpoint: Called with the cursor of the next page once every
+                ad of the current page has been yielded (and therefore
+                consumed by the caller), or with ``None`` when the search is
+                exhausted.  Persist it to resume after an interruption.
 
         Yields:
             Ad objects as they are collected
@@ -394,8 +403,8 @@ class MetaAdsCollector:
             )
 
         self.stats["start_time"] = datetime.now(timezone.utc)
-        cursor = None
-        seen_cursors: set[str] = set()
+        cursor = start_cursor or None
+        seen_cursors: set[str] = {cursor} if cursor else set()
         consecutive_empty_pages = 0
         collected = 0
         page_number = 0
@@ -403,9 +412,10 @@ class MetaAdsCollector:
         had_parse_errors = False
         search_start_time = time.monotonic()
 
-        # Generate consistent session_id and collation_token for the entire search
+        # One session_id for the entire search, but a FRESH collation_token per
+        # page: reusing it makes Meta collapse results page after page
+        # (10 -> 8 -> 6 -> ... -> 1-2 ads per request).
         search_session_id = str(uuid.uuid4())
-        search_collation_token = str(uuid.uuid4())
 
         logger.info(f"Starting search: query='{query}', country={country}, ad_type={ad_type}")
 
@@ -450,7 +460,7 @@ class MetaAdsCollector:
                                 first=page_size,
                                 sort_mode=sort_by,
                                 session_id=search_session_id,
-                                collation_token=search_collation_token,
+                                collation_token=str(uuid.uuid4()),
                                 start_date=start_date,
                                 end_date=end_date,
                             )
@@ -635,6 +645,10 @@ class MetaAdsCollector:
 
                 if limit_reached:
                     break
+
+                # Every ad of this page reached the caller: safe resume point.
+                if on_checkpoint is not None:
+                    on_checkpoint(next_cursor or None)
 
                 # Check for next page
                 if not next_cursor:

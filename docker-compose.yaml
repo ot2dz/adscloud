@@ -8,6 +8,8 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       META_ADS_PROXY: ${META_ADS_PROXY}
       INGEST_TOKEN: ${INGEST_TOKEN}
+      META_ADS_DELAY: ${META_ADS_DELAY:-0.3}
+      META_ADS_JITTER: ${META_ADS_JITTER:-0.3}
       SCRAPE_ENABLED: "true"
     expose:
       - "5002"

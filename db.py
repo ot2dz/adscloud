@@ -214,6 +214,12 @@ class Database:
             ("start_date_min", "TEXT"),
             ("start_date_max", "TEXT"),
             ("date_scope", "TEXT DEFAULT 'impressions'"),
+            # Resume support: JSON {"pass": n, "cursor": "..."} of the next
+            # unfetched page, retry bookkeeping and a liveness heartbeat.
+            ("checkpoint", "TEXT"),
+            ("attempts", "INTEGER DEFAULT 0"),
+            ("retry_at", "TEXT"),
+            ("heartbeat_at", "TEXT"),
         ]:
             try:
                 if self.is_postgres:
@@ -674,21 +680,26 @@ class Database:
         try:
             cur = conn.cursor()
             if self.is_postgres:
+                now = _now()
                 cur.execute(
-                    "UPDATE jobs SET status='running', worker_id=%s, started_at=%s "
-                    "WHERE id = (SELECT id FROM jobs WHERE status='pending' ORDER BY id LIMIT 1) "
-                    "RETURNING *", (worker_id, _now()))
+                    "UPDATE jobs SET status='running', worker_id=%s, started_at=%s, heartbeat_at=%s "
+                    "WHERE id = (SELECT id FROM jobs WHERE status='pending' "
+                    "AND (retry_at IS NULL OR retry_at <= %s) "
+                    "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                    "RETURNING *", (worker_id, now, now, now))
                 row = cur.fetchone()
                 if row:
                     cols = [c[0] for c in cur.description]
                     job = dict(zip(cols, row))
             else:
-                cur.execute("SELECT id FROM jobs WHERE status='pending' ORDER BY id LIMIT 1")
+                now = _now()
+                cur.execute("SELECT id FROM jobs WHERE status='pending' "
+                            "AND (retry_at IS NULL OR retry_at <= ?) ORDER BY id LIMIT 1", (now,))
                 r = cur.fetchone()
                 if r:
                     jid = r[0]
-                    cur.execute("UPDATE jobs SET status='running', worker_id=?, started_at=? WHERE id=?",
-                                (worker_id, _now(), jid))
+                    cur.execute("UPDATE jobs SET status='running', worker_id=?, started_at=?, heartbeat_at=? "
+                                "WHERE id=?", (worker_id, now, now, jid))
                     conn.commit()
                     job = self._query_one("SELECT * FROM jobs WHERE id=?", (jid,))
         finally:
@@ -701,11 +712,44 @@ class Database:
         return job
 
     def finish_job(self, job_id: int, status: str = "done", result_count: int = 0,
-                   error: str = "") -> None:
+                   error: str = "", checkpoint: Optional[str] = None) -> None:
+        """Close a job. ``checkpoint`` is kept on failure so it can be resumed."""
         p = self._ph()
         self._execute(
-            f"UPDATE jobs SET status={p}, finished_at={p}, result_count={p}, error={p} WHERE id={p}",
-            (status, _now(), result_count, error, job_id))
+            f"UPDATE jobs SET status={p}, finished_at={p}, result_count={p}, error={p}, "
+            f"checkpoint={p}, retry_at=NULL WHERE id={p}",
+            (status, _now(), result_count, error, checkpoint, job_id))
+
+    def save_checkpoint(self, job_id: int, checkpoint: Optional[str],
+                        result_count: Optional[int] = None) -> None:
+        """Persist the resume point and refresh the job heartbeat."""
+        p = self._ph()
+        if result_count is None:
+            self._execute(f"UPDATE jobs SET checkpoint={p}, heartbeat_at={p} WHERE id={p}",
+                          (checkpoint, _now(), job_id))
+        else:
+            self._execute(
+                f"UPDATE jobs SET checkpoint={p}, heartbeat_at={p}, result_count={p} WHERE id={p}",
+                (checkpoint, _now(), result_count, job_id))
+
+    def schedule_retry(self, job_id: int, delay_minutes: float, checkpoint: Optional[str],
+                       result_count: int = 0, error: str = "") -> None:
+        """Put an interrupted job back in the queue, to resume after a delay."""
+        from datetime import timedelta
+        p = self._ph()
+        retry_at = (datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)).isoformat()
+        self._execute(
+            f"UPDATE jobs SET status='pending', worker_id=NULL, started_at=NULL, "
+            f"attempts=COALESCE(attempts, 0) + 1, retry_at={p}, checkpoint={p}, "
+            f"result_count={p}, error={p} WHERE id={p}",
+            (retry_at, checkpoint, result_count, error, job_id))
+
+    def release_job(self, job_id: int) -> None:
+        """Hand a claimed-but-not-started job back to the queue untouched."""
+        p = self._ph()
+        self._execute(
+            f"UPDATE jobs SET status='pending', worker_id=NULL, started_at=NULL WHERE id={p}",
+            (job_id,))
 
     def update_job_progress(self, job_id: int, progress: int, note: str = "") -> None:
         p = self._ph()
@@ -720,18 +764,61 @@ class Database:
         return self._query_one(f"SELECT * FROM jobs WHERE id={self._ph()}", (job_id,))
 
     def requeue_stale_jobs(self, minutes: int = 20) -> int:
-        """Return jobs stuck in 'running' for too long back to 'pending'."""
+        """Return 'running' jobs with no heartbeat for too long back to 'pending'.
+
+        Long healthy jobs keep refreshing ``heartbeat_at`` so they are never
+        requeued (and re-run) while still working. Requeued jobs keep their
+        checkpoint and resume where they stopped.
+        """
         from datetime import timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
         p = self._ph()
         stale = self._query(
-            f"SELECT id FROM jobs WHERE status={p} AND started_at IS NOT NULL AND started_at < {p}",
+            f"SELECT id FROM jobs WHERE status={p} AND started_at IS NOT NULL "
+            f"AND COALESCE(heartbeat_at, started_at) < {p}",
             ("running", cutoff))
         for row in stale:
             self._execute(
                 f"UPDATE jobs SET status={p}, worker_id=NULL, started_at=NULL WHERE id={p}",
                 ("pending", row["id"]))
         return len(stale)
+
+    def has_pending_jobs(self) -> bool:
+        """True if a job is waiting to run now (not one scheduled for later)."""
+        p = self._ph()
+        return bool(self._query_one(
+            f"SELECT id FROM jobs WHERE status='pending' AND (retry_at IS NULL OR retry_at <= {p}) LIMIT 1",
+            (_now(),)))
+
+    def cancel_pending_jobs(self, source: str) -> int:
+        """Cancel queued jobs of a source (incl. ones waiting to resume)."""
+        p = self._ph()
+        rows = self._query(f"SELECT id FROM jobs WHERE status='pending' AND source={p}", (source,))
+        for row in rows:
+            self._execute(
+                f"UPDATE jobs SET status='stopped', finished_at={p}, retry_at=NULL WHERE id={p}",
+                (_now(), row["id"]))
+        return len(rows)
+
+    def has_open_job(self, target_id: Optional[int]) -> bool:
+        """True if the target already has a pending or running job."""
+        if target_id is None:
+            return False
+        p = self._ph()
+        return bool(self._query_one(
+            f"SELECT id FROM jobs WHERE target_id={p} AND status IN ('pending', 'running') LIMIT 1",
+            (target_id,)))
+
+    def requeue_orphaned_jobs(self, worker_prefix: str) -> int:
+        """At startup: jobs left 'running' by a previous process of this
+        worker (crash / redeploy) go straight back to the queue to resume."""
+        p = self._ph()
+        rows = self._query(
+            f"SELECT id FROM jobs WHERE status='running' AND worker_id LIKE {p}",
+            (worker_prefix + "%",))
+        for row in rows:
+            self.release_job(row["id"])
+        return len(rows)
 
     # ── targets (Pages, Domains, Keywords, Custom URLs) ───────────────────
     def add_target(self, type: str, target_value: str, label: str = "",

@@ -1238,10 +1238,18 @@ async function startEngine() {
     })
   });
   const d = await r.json();
-  if (d.queued) { alert('✅ تم إرسال أمر السحب بنجاح' + (d.date_label ? ` (${d.date_label})` : '') + '.'); loadJobs(); return; }
-  if (!d.ok) logLines.push('⚠️ السحب يعمل حالياً — انتظر انتهاءه.');
+  if (!d.ok) { alert('⚠️ ' + (d.error || 'تعذّر بدء السحب')); return; }
+  // Every scrape is a saved job (resumes by itself after a disconnect).
+  if (d.queued) {
+    document.getElementById('live-status-note').innerText = '🕒 السحب في قائمة الانتظار — سيبدأ تلقائياً بعد انتهاء السحب الحالي.';
+  }
+  loadJobs();
 }
-async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
+async function stopEngine(){
+  await fetch('/api/stop',{method:'POST'});
+  liveScrapeState.paused = false;
+  loadJobs();
+}
 async function resetAll(){ if(!confirm('هل أنت متأكد من مسح جميع الإعلانات؟')) return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
 function exportData(f){ window.location = '/api/export/' + f + adminUserParam('?'); }
 
@@ -1275,6 +1283,10 @@ async function loadJobs() {
       ${j.status === 'running' ? `
         <div class="text-xs text-sky-700 font-semibold">📥 ${j.progress || 0} إعلان مسحوب ${j.progress_note ? ('· ' + j.progress_note) : ''}</div>
         <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full bg-blue-600 animate-pulse" style="width:100%"></div></div>` : ''}
+      ${j.status === 'pending' && j.retry_at ? `
+        <div class="text-xs text-amber-700 font-semibold">⏸ انقطع بعد ${j.result_count || 0} إعلان · سيُستأنف من نفس النقطة ${new Date(j.retry_at).toLocaleTimeString('ar-DZ', {hour: '2-digit', minute: '2-digit'})} (محاولة ${j.attempts || 1})</div>` : ''}
+      ${j.status === 'failed' && j.error ? `
+        <div class="text-xs text-rose-700 font-semibold truncate" title="${escT(j.error)}">⚠️ ${escT(j.error)}</div>` : ''}
     </div>`).join('');
 }
 async function stopJob(id){ await fetch('/api/jobs/'+id+'/stop',{method:'POST'}); loadJobs(); }
@@ -1372,6 +1384,7 @@ function onStreamMessage(e) {
     logLines.push(d.text); logLines = logLines.slice(-200);
     const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight;
   } else if (m.type === 'started') {
+    liveScrapeState.paused = false;
     setState(true);
     liveScrapeState = { active: true, query: d.query || document.getElementById('q').value.trim(), reported: null, scraped: 0, stores: 0 };
     updateLiveProgressUI();
@@ -1408,13 +1421,29 @@ function onStreamMessage(e) {
     if (d.reported) liveScrapeState.reported = d.reported;
     if (d.stores) liveScrapeState.stores = d.stores;
     updateLiveProgressUI();
-    document.getElementById('live-status-note').innerText = `✅ اكتمل السحب بنجاح! تم حفظ ${d.scraped} إعلاناً و${d.stores} متجراً.`;
+    const note = document.getElementById('live-status-note');
+    if (d.status === 'interrupted') {
+      note.innerText = `⏸ انقطع الاتصال بعد ${d.scraped} إعلان — التقدم محفوظ وسيُستأنف تلقائياً من نفس النقطة.`;
+    } else if (d.status === 'stopped') {
+      note.innerText = `⏹ أُوقف السحب. تم حفظ ${d.scraped} إعلاناً.`;
+    } else if (d.status === 'failed') {
+      note.innerText = `⛔ توقف السحب بسبب خطأ: ${d.error || ''}`;
+    } else {
+      note.innerText = `✅ اكتمل السحب بنجاح! تم حفظ ${d.scraped} إعلاناً و${d.stores} متجراً.`;
+    }
+  } else if (m.type === 'paused') {
+    liveScrapeState.paused = true;
+    const at = new Date(Date.now() + d.delay_min * 60000).toLocaleTimeString('ar-DZ', {hour: '2-digit', minute: '2-digit'});
+    document.getElementById('live-progress-box').classList.remove('hidden');
+    document.getElementById('live-status-note').innerText =
+      `⏸ انقطع السحب بعد ${d.scraped} إعلان. التقدم محفوظ وسيُستأنف تلقائياً من نفس النقطة حوالي الساعة ${at} (محاولة ${d.attempt}/${d.max_attempts}). اضغط «إيقاف» لإلغائه.`;
+    loadJobs();
   } else if (m.type === 'done') {
     setState(false);
     loadAds();
     loadStats();
     setTimeout(() => {
-      if (!liveScrapeState.active) {
+      if (!liveScrapeState.active && !liveScrapeState.paused) {
         document.getElementById('live-progress-box').classList.add('hidden');
       }
     }, 12000);
@@ -1454,7 +1483,7 @@ setInterval(async () => {
       updateLiveProgressUI();
       loadAds(); loadStats();
       setTimeout(() => {
-        if (!liveScrapeState.active) {
+        if (!liveScrapeState.active && !liveScrapeState.paused) {
           document.getElementById('live-progress-box').classList.add('hidden');
         }
       }, 12000);
