@@ -97,6 +97,11 @@ REQUEST_JITTER = _env_float("META_ADS_JITTER", 0.3)
 # run returns `interrupted` and the job queue retries later.
 IN_RUN_RETRY_WAITS = (30, 120)
 
+# Launch-date scrapes: Meta returns the newest launches first, so once this
+# many scanned ads IN A ROW were launched before the window, the in-window ads
+# are exhausted and the rest of the scan is wasted requests. 0 disables it.
+LAUNCH_EARLY_STOP = int(_env_float("META_ADS_LAUNCH_EARLY_STOP", 500))
+
 # Errors that will not go away by retrying the same cursor.
 _PERMANENT_ERRORS = ("Repeated pagination cursor", "consecutive empty pages")
 
@@ -245,6 +250,10 @@ def scrape(
     total = 0
     scanned = 0
     exhausted = False
+    # Smart stop (launch scope only): consecutive ads launched before the window.
+    early_stop_after = LAUNCH_EARLY_STOP if (date_scope == "launch" and inc_min) else 0
+    older_streak = 0
+    early_stopped = False
 
     def _checkpoint(next_cursor: Optional[str]) -> None:
         nonlocal exhausted
@@ -303,7 +312,14 @@ def scrape(
                     if not sd:
                         continue
                     if inc_min and sd < inc_min:
+                        older_streak += 1
+                        if early_stop_after and older_streak >= early_stop_after:
+                            early_stopped = True
+                            progress(f"🧠 توقف ذكي: آخر {older_streak} إعلان كلها انطلقت قبل {inc_min} — "
+                                     f"انتهت إعلانات الفترة المطلوبة (فُحص {scanned} إعلان).")
+                            break
                         continue
+                    older_streak = 0
                     if inc_max and sd > inc_max:
                         continue
 
@@ -315,8 +331,11 @@ def scrape(
                     on_ad(ad)
                 if total % 25 == 0:
                     progress(f"… تم جمع {total} إعلان")
-            # Generator ended normally: exhausted, max_results reached, or stopped.
-            res.completed = exhausted and not res.stopped
+            # Generator ended normally: exhausted, max_results reached, smart
+            # stop, or user stop.
+            if early_stopped and not res.stopped:
+                _checkpoint(None)  # nothing left worth fetching for this window
+            res.completed = (exhausted or early_stopped) and not res.stopped
             break
         except Exception as exc:  # noqa: BLE001
             res.error = str(exc)
