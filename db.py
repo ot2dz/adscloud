@@ -230,6 +230,22 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_pages_page ON user_pages (page_id)")
+        # Competitors each user tracks (any target type). The target row is
+        # shared so a competitor followed by several users is scraped once;
+        # label / enabled / interval are the user's own settings.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_targets (
+            user_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            label TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            interval_hours REAL DEFAULT 12.0,
+            source TEXT DEFAULT 'dashboard',
+            created_at TEXT,
+            PRIMARY KEY (user_id, target_id)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_targets_target ON user_targets (target_id)")
         conn.commit()
 
         # Idempotent migrations for the jobs table (progress + stop control + incremental + date filters).
@@ -365,11 +381,20 @@ class Database:
 
     # ── per-user scoping ──────────────────────────────────────────────────
     def _user_scope_sql(self) -> str:
-        """WHERE fragment (2 params: user_id, user_id) for the ads a user sees:
-        the ads they saved plus every ad of the pages they track."""
+        """WHERE fragment for the ads a user sees (params: _user_scope_params):
+        ads they saved, every ad of the pages they track, and the ads
+        collected for their store / keyword / custom-link competitors."""
         p = self._ph()
+        mine = (f"SELECT t.target_value FROM targets t JOIN user_targets ut ON ut.target_id = t.id "
+                f"WHERE ut.user_id = {p}")
         return (f"(ad_id IN (SELECT ad_id FROM user_ads WHERE user_id = {p}) "
-                f"OR page_id IN (SELECT page_id FROM user_pages WHERE user_id = {p}))")
+                f"OR page_id IN (SELECT page_id FROM user_pages WHERE user_id = {p}) "
+                f"OR store_domain IN ({mine} AND t.type = 'domain') "
+                f"OR query IN ({mine} AND t.type IN ('keyword', 'custom_url', 'domain')))")
+
+    @staticmethod
+    def _user_scope_params(user_id: int) -> list:
+        return [int(user_id)] * 4
 
     def link_user_ad(self, user_id: int, ad_id: str) -> None:
         aid = str(ad_id or "").strip()
@@ -529,7 +554,7 @@ class Database:
 
         if user_id is not None:
             where.append(self._user_scope_sql())
-            params.extend([int(user_id), int(user_id)])
+            params.extend(self._user_scope_params(user_id))
 
         if stores_only:
             where.append("store_domain != '' AND store_domain IS NOT NULL")
@@ -730,7 +755,7 @@ class Database:
             params.append("%" + search + "%")
         if user_id is not None:
             where.append(self._user_scope_sql())
-            params.extend([int(user_id), int(user_id)])
+            params.extend(self._user_scope_params(user_id))
         sql = (f"SELECT store_domain, platform, COUNT(*) AS total_ads, "
                f"MAX(collected_at) AS last_seen FROM meta_ads "
                f"WHERE {' AND '.join(where)} "
@@ -743,7 +768,7 @@ class Database:
         scope, scope_params = "", ()
         if user_id is not None:
             scope = " AND " + self._user_scope_sql()
-            scope_params = (int(user_id), int(user_id))
+            scope_params = tuple(self._user_scope_params(user_id))
         stores = self._query_one(
             "SELECT COUNT(DISTINCT store_domain) AS c FROM meta_ads "
             "WHERE store_domain != '' AND store_domain IS NOT NULL" + scope, scope_params)
@@ -1036,6 +1061,162 @@ class Database:
         self._execute(f"UPDATE targets SET last_scraped_at={self._ph()} WHERE id={self._ph()}",
                       (_now(), target_id))
 
+    # ── competitors per user (shared targets + user_targets links) ────────
+    def get_target(self, target_id: int) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM targets WHERE id={self._ph()}", (int(target_id),))
+
+    def find_target(self, type: str, target_value: str) -> Optional[dict]:
+        p = self._ph()
+        return self._query_one(f"SELECT * FROM targets WHERE type={p} AND target_value={p}",
+                               ((type or "").strip().lower(), (target_value or "").strip()))
+
+    def _sync_target_from_links(self, target_id: int) -> None:
+        """Shared target settings follow its users: enabled if any user has it
+        enabled, scraped as often as the most demanding user asks."""
+        p = self._ph()
+        row = self._query_one(
+            f"SELECT MAX(enabled) AS en, MIN(interval_hours) AS iv FROM user_targets WHERE target_id={p}",
+            (int(target_id),))
+        if row and row.get("en") is not None:
+            self._execute(f"UPDATE targets SET enabled={p}, interval_hours={p} WHERE id={p}",
+                          (int(row["en"] or 0), float(row["iv"] or 12.0), int(target_id)))
+
+    def add_user_target(self, user_id: int, type: str, target_value: str, label: str = "",
+                        country: str = "DZ", interval_hours: float = 12.0,
+                        source: str = "dashboard") -> tuple[int, bool]:
+        """Track a competitor for one user. Returns (target_id, newly_linked)."""
+        typ = (type or "keyword").strip().lower()
+        val = (target_value or "").strip()
+        self.add_target(type=typ, target_value=val, label=label or val, country=country,
+                        interval_hours=interval_hours)
+        t = self.find_target(typ, val)
+        tid = int(t["id"])
+        p = self._ph()
+        existing = self._query_one(
+            f"SELECT target_id FROM user_targets WHERE user_id={p} AND target_id={p}", (int(user_id), tid))
+        if existing:
+            if label:
+                self._execute(f"UPDATE user_targets SET label={p} WHERE user_id={p} AND target_id={p}",
+                              (label, int(user_id), tid))
+            return tid, False
+        self._execute(
+            f"INSERT INTO user_targets (user_id, target_id, label, enabled, interval_hours, source, created_at) "
+            f"VALUES ({p},{p},{p},1,{p},{p},{p})",
+            (int(user_id), tid, label or val, float(interval_hours or 12.0), source, _now()))
+        if typ == "page":
+            self.link_user_page(user_id, val)
+        self._sync_target_from_links(tid)
+        return tid, True
+
+    def user_has_target(self, user_id: int, target_id: int) -> bool:
+        p = self._ph()
+        return self._query_one(f"SELECT 1 AS x FROM user_targets WHERE user_id={p} AND target_id={p}",
+                               (int(user_id), int(target_id))) is not None
+
+    def delete_target_everywhere(self, target_id: int) -> None:
+        """Remove a competitor for everyone (and its page history)."""
+        t = self.get_target(target_id)
+        p = self._ph()
+        self._execute(f"DELETE FROM user_targets WHERE target_id={p}", (int(target_id),))
+        self.delete_target(int(target_id))
+        if t and t.get("type") == "page":
+            self.untrack_page(t.get("target_value"))
+
+    def remove_user_target(self, user_id: int, target_id: int) -> None:
+        """One user stops tracking; the competitor is dropped when nobody follows it."""
+        t = self.get_target(target_id)
+        p = self._ph()
+        self._execute(f"DELETE FROM user_targets WHERE user_id={p} AND target_id={p}",
+                      (int(user_id), int(target_id)))
+        if t and t.get("type") == "page":
+            self._execute(f"DELETE FROM user_pages WHERE user_id={p} AND page_id={p}",
+                          (int(user_id), str(t.get("target_value"))))
+        left = self._query_one(f"SELECT COUNT(*) AS c FROM user_targets WHERE target_id={p}", (int(target_id),))
+        if not left or not int(left.get("c") or 0):
+            self.delete_target_everywhere(target_id)
+        else:
+            self._sync_target_from_links(target_id)
+
+    def set_user_target_enabled(self, user_id: Optional[int], target_id: int, enabled: bool) -> None:
+        """Per user, or for the shared target itself when user_id is None (admin)."""
+        p = self._ph()
+        if user_id is None:
+            self._execute(f"UPDATE user_targets SET enabled={p} WHERE target_id={p}",
+                          (1 if enabled else 0, int(target_id)))
+            self.toggle_target(int(target_id), enabled)
+            return
+        self._execute(f"UPDATE user_targets SET enabled={p} WHERE user_id={p} AND target_id={p}",
+                      (1 if enabled else 0, int(user_id), int(target_id)))
+        self._sync_target_from_links(target_id)
+
+    def list_competitors(self, user_id: Optional[int] = None) -> list[dict]:
+        """Competitors of one user (their label/enabled), or all of them for
+        an admin overview (with the emails of the users following each)."""
+        self.list_targets()  # keeps the legacy keywords -> targets migration
+        p = self._ph()
+        if user_id is not None:
+            rows = self._query(
+                f"SELECT t.*, ut.label AS user_label, ut.enabled AS user_enabled, "
+                f"ut.interval_hours AS user_interval, ut.source AS source, ut.created_at AS tracked_at "
+                f"FROM targets t JOIN user_targets ut ON ut.target_id = t.id "
+                f"WHERE ut.user_id={p} ORDER BY ut.created_at DESC, t.id DESC", (int(user_id),))
+            for r in rows:
+                r["label"] = r.pop("user_label") or r.get("label")
+                r["enabled"] = r.pop("user_enabled")
+                r["interval_hours"] = r.pop("user_interval") or r.get("interval_hours")
+        else:
+            rows = self._query("SELECT * FROM targets ORDER BY id DESC")
+        for t in rows:
+            typ, val, tid = t.get("type") or "keyword", t.get("target_value") or "", t.get("id")
+            if typ == "page":
+                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE page_id = {p}", (val,))
+                pg = self._query_one(f"SELECT * FROM tracked_pages WHERE page_id={p}", (val,))
+                snaps = self._query(
+                    f"SELECT captured_at, active_ads_count, total_ads_count FROM page_snapshots "
+                    f"WHERE page_id={p} ORDER BY id DESC LIMIT 20", (val,))
+                t["activity"] = {
+                    "active_ads_count": (pg or {}).get("active_ads_count"),
+                    "last_snapshot_at": (pg or {}).get("last_snapshot_at"),
+                    "snapshots_count": (pg or {}).get("snapshots_count") or 0,
+                    "page_likes": (pg or {}).get("page_likes") or 0,
+                    "snapshots": list(reversed(snaps)),
+                }
+            elif typ == "domain":
+                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE store_domain = {p} OR query = {p}", (val, val))
+            else:
+                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE query = {p}", (val,))
+            t["ads_count"] = int(row["c"]) if row and row.get("c") else 0
+            owners = self._query(
+                f"SELECT u.email FROM user_targets ut JOIN users u ON u.id = ut.user_id "
+                f"WHERE ut.target_id={p} ORDER BY ut.created_at", (tid,))
+            t["tracked_by"] = [o["email"] for o in owners]
+        return rows
+
+    def migrate_user_targets(self) -> int:
+        """One-time move to per-user competitors: extension pages go to the
+        users tracking them, the remaining (admin-made) targets to the admins."""
+        if self._query_one("SELECT 1 AS x FROM user_targets LIMIT 1"):
+            return 0
+        p = self._ph()
+        moved = 0
+        for up in self._query("SELECT user_id, page_id, tracked_at FROM user_pages"):
+            name = (self._query_one(f"SELECT page_name FROM tracked_pages WHERE page_id={p}",
+                                    (up["page_id"],)) or {}).get("page_name") or ""
+            self.add_user_target(up["user_id"], "page", up["page_id"], label=name, source="extension")
+            moved += 1
+        admins = [r["id"] for r in self._query("SELECT id FROM users WHERE role='admin' ORDER BY id")]
+        for t in self._query("SELECT * FROM targets"):
+            if self._query_one(f"SELECT 1 AS x FROM user_targets WHERE target_id={p} LIMIT 1", (t["id"],)):
+                continue
+            for aid in admins:
+                self.add_user_target(aid, t["type"], t["target_value"], label=t.get("label") or "",
+                                     country=t.get("country") or "DZ",
+                                     interval_hours=t.get("interval_hours") or 12.0)
+                moved += 1
+            if admins and not t.get("enabled"):
+                self.set_user_target_enabled(None, t["id"], False)
+        return moved
+
     # ── tracked pages (browser-extension integration) ─────────────────────
     def upsert_tracked_page(self, page_id, page_name: str = "", page_url: str = "",
                             page_likes: int = 0, platform: str = "", country: str = "DZ",
@@ -1224,6 +1405,8 @@ class Database:
     def delete_user(self, user_id: int) -> None:
         p = self._ph()
         self._execute(f"DELETE FROM user_ads WHERE user_id = {p}", (int(user_id),))
+        for row in self._query(f"SELECT target_id FROM user_targets WHERE user_id = {p}", (int(user_id),)):
+            self.remove_user_target(int(user_id), int(row["target_id"]))
         self._execute(f"DELETE FROM user_pages WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM users WHERE id = {p}", (int(user_id),))
 

@@ -157,7 +157,7 @@ class ScrapeManager:
         resume = resume if isinstance(resume, dict) else {}
         # Outcome read by the job runner: done | stopped | interrupted | failed.
         # Start from the incoming checkpoint so an immediate failure keeps it.
-        outcome = {"status": "done", "checkpoint": resume or None, "error": ""}
+        outcome = {"status": "done", "checkpoint": resume or None, "error": "", "scanned": 0, "ad_ids": []}
 
         def make_checkpointer(pass_idx: int):
             def _cp(cursor):
@@ -173,6 +173,7 @@ class ScrapeManager:
 
         def absorb(result) -> bool:
             """Fold a ScrapeResult into the outcome; True = keep going."""
+            outcome["scanned"] += int(getattr(result, "scanned", 0) or 0)
             if result.stopped:
                 outcome["status"] = "stopped"
             elif result.failed:
@@ -306,6 +307,7 @@ class ScrapeManager:
             outcome.update(status="interrupted", error=str(exc))
             self._emit("error", {"message": str(exc)})
         finally:
+            outcome["ad_ids"] = sorted(seen_ad_ids)
             self.state["outcome"] = outcome
             self.state["running"] = False
             self._emit("done", {})
@@ -787,22 +789,49 @@ def api_job_stop(job_id):
     return jsonify({"ok": True})
 
 
-# ── Targets (Pages, Stores, Keywords, Custom URLs) ────────────────────
+# ── Competitors (per user: Pages, Stores, Keywords, Custom URLs) ──────
+def _competitor_access(target_id: int):
+    """(target, scope_user_id) when the current user may act on it, else (None, _)."""
+    t = db.get_target(target_id)
+    uid = _scope_user_id()
+    if not t:
+        return None, uid
+    if uid is not None and not db.user_has_target(uid, target_id):
+        return None, uid
+    return t, uid
+
+
+def _queue_target_scan(t: dict, source: str) -> Optional[int]:
+    """Queue one scrape for a competitor unless one is already waiting/running."""
+    if db.has_open_job(t["id"]):
+        return None
+    t_url = resolve_target_url(t["type"], t["target_value"], country=t.get("country", "DZ"))
+    job_id = db.create_job(
+        query=t["target_value"], url=t_url, country=t.get("country", "DZ"),
+        stores_only=True, source=source, target_id=t["id"], incremental=True,
+    )
+    db.update_target_scraped(t["id"])
+    job_wakeup.set()
+    return job_id
+
+
 @app.route("/api/targets", methods=["GET"])
-@admin_required
+@login_required
 def api_targets():
-    return jsonify({"targets": db.list_targets()})
+    s = db.get_settings()
+    return jsonify({"targets": db.list_competitors(user_id=_scope_user_id()),
+                    "schedule_enabled": s.get("schedule_enabled", "false") == "true"})
 
 
 @app.route("/api/targets", methods=["POST"])
-@admin_required
+@login_required
 def api_add_target():
     cfg = request.get_json(force=True, silent=True) or {}
     raw = (cfg.get("target_value") or cfg.get("query") or "").strip()
     typ = (cfg.get("type") or "keyword").strip().lower()
     country = (cfg.get("country") or "DZ").strip().upper()
     label = (cfg.get("label") or "").strip()
-    interval_hours = float(cfg.get("interval_hours") or 12.0)
+    interval_hours = max(1.0, float(cfg.get("interval_hours") or 12.0))
 
     if not raw:
         return jsonify({"ok": False, "error": "الهدف لا يمكن أن يكون فارغاً"}), 400
@@ -812,6 +841,7 @@ def api_add_target():
         target_val = pid
         if not label:
             label = f"صفحة {pid}"
+        db.upsert_tracked_page(page_id=pid, page_name=label, country=country, source="dashboard")
     elif typ == "domain":
         dom = clean_domain(raw)
         target_val = dom
@@ -822,48 +852,62 @@ def api_add_target():
         if not label:
             label = raw
 
-    ok = db.add_target(
-        type=typ, target_value=target_val, label=label,
-        country=country, interval_hours=interval_hours
-    )
-    return jsonify({"ok": ok})
+    tid, created = db.add_user_target(
+        int(session["user_id"]), typ, target_val, label=label,
+        country=country, interval_hours=interval_hours, source="dashboard")
+    if not created:
+        return jsonify({"ok": False, "error": "هذا المنافس موجود في قائمتك بالفعل"}), 400
+    # First scan right away so the competitor's ads show up without waiting.
+    _queue_target_scan(db.get_target(tid), "new_competitor")
+    return jsonify({"ok": True, "target_id": tid})
 
 
 @app.route("/api/targets/<int:target_id>", methods=["DELETE"])
-@admin_required
+@login_required
 def api_delete_target(target_id):
-    db.delete_target(target_id)
+    t, uid = _competitor_access(target_id)
+    if not t:
+        return jsonify({"ok": False, "error": "غير موجود"}), 404
+    if uid is None:
+        db.delete_target_everywhere(target_id)   # admin overview: remove for everyone
+    else:
+        db.remove_user_target(uid, target_id)
     return jsonify({"ok": True})
 
 
 @app.route("/api/targets/<int:target_id>", methods=["PATCH"])
-@admin_required
+@login_required
 def api_toggle_target(target_id):
+    t, uid = _competitor_access(target_id)
+    if not t:
+        return jsonify({"ok": False, "error": "غير موجود"}), 404
     cfg = request.get_json(force=True, silent=True) or {}
-    db.toggle_target(target_id, bool(cfg.get("enabled", True)))
+    db.set_user_target_enabled(uid, target_id, bool(cfg.get("enabled", True)))
     return jsonify({"ok": True})
 
 
 @app.route("/api/targets/<int:target_id>/scan", methods=["POST"])
-@admin_required
+@login_required
 def api_scan_target(target_id):
-    targets = [t for t in db.list_targets() if t["id"] == target_id]
-    if not targets:
+    t, _uid = _competitor_access(target_id)
+    if not t:
         return jsonify({"error": "target not found"}), 404
-    t = targets[0]
-    t_url = resolve_target_url(t["type"], t["target_value"], country=t.get("country", "DZ"))
-    job_id = db.create_job(
-        query=t["target_value"],
-        url=t_url,
-        country=t.get("country", "DZ"),
-        stores_only=True,
-        source="manual_target",
-        target_id=t["id"],
-        incremental=True,
-    )
-    db.update_target_scraped(t["id"])
-    manager.events.put({"type": "queued", "data": {"job_id": job_id, "query": t.get("label") or t["target_value"]}})
+    job_id = _queue_target_scan(t, "manual_target")
+    if job_id is None:
+        return jsonify({"ok": True, "already_queued": True})
+    manager._emit("log", {"text": f"⚡ أُضيف فحص «{t.get('label') or t['target_value']}» إلى قائمة الانتظار."})
     return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/targets/scan-all", methods=["POST"])
+@login_required
+def api_scan_all_targets():
+    """Scan every enabled competitor of the current user (all of them for an admin)."""
+    count = 0
+    for t in db.list_competitors(user_id=_scope_user_id()):
+        if t.get("enabled") and _queue_target_scan(t, "manual_all") is not None:
+            count += 1
+    return jsonify({"ok": True, "enqueued": count})
 
 
 # Backward compatibility for keywords
@@ -1005,24 +1049,32 @@ def _ext_user_id():
 
 
 def _track_page_for(uid, page_id: str, page_name: str = "") -> None:
-    """Link a page to a user and make sure the server refreshes it once for everyone."""
+    """The extension tracks a page: it becomes one of the user's competitors
+    (scraped by the server once for everyone who follows it)."""
     if uid:
-        db.link_user_page(uid, page_id)
-    db.add_target(type="page", target_value=page_id, label=page_name or page_id,
-                  country=FIXED_COUNTRY, interval_hours=12.0)
+        db.add_user_target(uid, "page", page_id, label=page_name or page_id,
+                           country=FIXED_COUNTRY, source="extension")
+    else:
+        db.add_target(type="page", target_value=page_id, label=page_name or page_id,
+                      country=FIXED_COUNTRY, interval_hours=12.0)
 
 
 def _drop_tracked_page(page_id) -> None:
     """Remove a page for everyone (no one tracks it any more)."""
-    db.untrack_page(page_id)
-    for t in [t for t in db.list_targets() if t.get("type") == "page" and str(t.get("target_value")) == str(page_id)]:
-        db.delete_target(t["id"])
+    t = db.find_target("page", str(page_id))
+    if t:
+        db.delete_target_everywhere(t["id"])
+    else:
+        db.untrack_page(page_id)
 
 
 def _untrack_for_user(uid: int, page_id) -> None:
     """One user stops tracking; the page is only dropped when nobody else tracks it."""
-    if db.unlink_user_page(uid, str(page_id)) == 0:
-        _drop_tracked_page(page_id)
+    t = db.find_target("page", str(page_id))
+    if t:
+        db.remove_user_target(uid, t["id"])
+    elif db.unlink_user_page(uid, str(page_id)) == 0:
+        db.untrack_page(page_id)
 
 
 @app.route("/api/v1/auth/login", methods=["POST"])
@@ -1274,9 +1326,9 @@ def api_untrack_page(page_id):
 def api_untrack_all_pages():
     uid = _scope_user_id()
     if uid is None:
-        db.delete_all_tracked_pages()
         for t in [t for t in db.list_targets() if t.get("type") == "page"]:
-            db.delete_target(t["id"])
+            db.delete_target_everywhere(t["id"])
+        db.delete_all_tracked_pages()
     else:
         for pid in db.list_user_page_ids(uid):
             _untrack_for_user(uid, pid)
@@ -1393,6 +1445,24 @@ def scheduler_loop() -> None:
         time.sleep(60)
 
 
+def _snapshot_page_target(job: dict, outcome: dict) -> None:
+    """After a complete scrape of a page competitor, record how many ads the
+    page runs right now, so its activity history grows without the extension."""
+    try:
+        tid = job.get("target_id")
+        t = db.get_target(int(tid)) if tid else None
+        if not t or t.get("type") != "page" or job.get("sweep"):
+            return
+        pid = str(t["target_value"])
+        db.upsert_tracked_page(page_id=pid, page_name=t.get("label") or "", country=t.get("country") or "DZ",
+                               source="server")
+        scanned = int(outcome.get("scanned") or 0)
+        db.add_page_snapshot(page_id=pid, active_ads_count=scanned, total_ads_count=scanned,
+                             ad_ids=outcome.get("ad_ids") or [], source="server_scrape")
+    except Exception:
+        logger.exception("page snapshot failed")
+
+
 # Job-level resume: an interrupted job goes back to the queue and continues
 # from its checkpoint after these delays (minutes); then it is marked failed.
 JOB_RETRY_DELAYS_MIN = (5, 20, 60)
@@ -1497,6 +1567,8 @@ def job_worker_loop() -> None:
             else:
                 db.finish_job(jid, status="done", result_count=count)
                 logger.info("job %s: done (%s ads)", jid, count)
+                if not resume:  # a resumed run only saw part of the page's ads
+                    _snapshot_page_target(job, outcome)
         except Exception:
             logger.exception("job worker loop error")
             time.sleep(5)
@@ -1510,6 +1582,12 @@ def start_background_threads() -> None:
     if _bg_started:
         return
     _bg_started = True
+    try:
+        moved = db.migrate_user_targets()
+        if moved:
+            logger.info("competitors migrated to per-user lists: %s links", moved)
+    except Exception:
+        logger.exception("competitor migration failed")
     try:
         n = db.requeue_orphaned_jobs(INPROC_WORKER_PREFIX)
         if n:

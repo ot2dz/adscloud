@@ -69,6 +69,8 @@ class ScrapeResult:
     error: str = ""
     # Resume point: cursor of the next unfetched page (None = start/finished).
     cursor: Optional[str] = None
+    # Ads returned by Meta in this run (before the store / date filters).
+    scanned: int = 0
 
 
 def _proxy_arg():
@@ -366,6 +368,7 @@ def scrape(
                 pass
 
     res.total_ads = total
+    res.scanned = scanned
     if res.completed:
         progress(f"✅ انتهى السحب: {total} إعلان (بدون متصفح).")
     elif not (res.interrupted or res.failed):
