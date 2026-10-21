@@ -429,6 +429,14 @@
           </label>
 
           <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
+            <input type="checkbox" id="cfg-registration-open" class="rounded text-blue-600">
+            <div>
+              <div class="font-bold text-[#102a56]">السماح بالتسجيل الذاتي (حساب جديد)</div>
+              <div class="text-[11px] text-slate-500 mt-0.5">معطّل افتراضياً للأمان. أثناء الإغلاق يُنشئ المدير الحسابات من «إدارة المستخدمين».</div>
+            </div>
+          </label>
+
+          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
             <input type="checkbox" id="cfg-entity-stats" class="rounded text-blue-600">
             <div>
               <div class="font-bold text-[#102a56]">عدّ إعلانات الصفحات والمتاجر</div>
@@ -473,6 +481,15 @@
         </div>
         <button onclick="loadAdminUsers()" class="text-xs bg-white hover:bg-[#eef6ff] text-slate-700 px-3.5 py-2 rounded-lg border border-[#cfe0f5] font-bold shadow-sm transition">تحديث القائمة</button>
       </div>
+      <div class="grid md:grid-cols-12 gap-2 mt-4 text-sm">
+        <input id="new-user-email" type="email" placeholder="بريد المستخدم الجديد" class="md:col-span-4 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2">
+        <input id="new-user-password" type="password" placeholder="كلمة مرور (10 أحرف على الأقل)" autocomplete="new-password" class="md:col-span-4 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2">
+        <select id="new-user-role" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 font-semibold">
+          <option value="user">مستخدم عادي</option>
+          <option value="admin">مدير</option>
+        </select>
+        <button onclick="adminCreateUser()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold px-3 py-2">+ إنشاء حساب</button>
+      </div>
     </div>
 
     <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
@@ -492,6 +509,28 @@
             </tr>
           </thead>
           <tbody id="admin-users-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Security audit log -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/60">
+        <h4 class="font-bold text-[#102a56] text-sm">🛡️ سجل الأحداث الأمنية</h4>
+        <button onclick="loadSecurityEvents()" class="text-xs text-slate-600 hover:text-blue-600 font-bold">تحديث</button>
+      </div>
+      <div class="overflow-x-auto max-h-96">
+        <table class="w-full text-xs">
+          <thead class="text-slate-500 bg-slate-50 border-b border-slate-200 sticky top-0">
+            <tr>
+              <th class="py-2 px-4 text-right font-bold">الوقت</th>
+              <th class="text-right px-4 font-bold">الحدث</th>
+              <th class="text-right px-4 font-bold">الحساب</th>
+              <th class="text-right px-4 font-bold">IP</th>
+              <th class="text-right px-4 font-bold">تفاصيل</th>
+            </tr>
+          </thead>
+          <tbody id="security-events" class="divide-y divide-slate-100"></tbody>
         </table>
       </div>
     </div>
@@ -587,6 +626,11 @@ function viewUserData(userId) {
 
 function showAuthModal() {
   document.getElementById('auth-modal').classList.remove('hidden');
+  fetch('/api/auth/config').then(r => r.json()).then(cfg => {
+    const reg = document.getElementById('tab-register-btn');
+    reg.classList.toggle('hidden', !cfg.registration_open);
+    if (!cfg.registration_open && currentAuthMode === 'register') setAuthMode('login');
+  }).catch(() => {});
 }
 
 function hideAuthModal() {
@@ -653,7 +697,7 @@ async function handleAuthSubmit(e) {
 }
 
 async function logoutAll() {
-  if (!confirm('سيتم إنهاء جلساتك على جميع الأجهزة والمتصفحات (بما فيها هذا). متابعة؟')) return;
+  if (!confirm('سيتم إنهاء جلساتك على جميع الأجهزة والمتصفحات (بما فيها هذا) وفصل إضافات المتصفح المرتبطة بحسابك. متابعة؟')) return;
   await fetch('/api/auth/logout-all', { method: 'POST' });
   location.reload();
 }
@@ -690,6 +734,48 @@ function applyAdminVisibility() {
 }
 
 // ── Admin Users Management ──
+const SEC_EVENT_AR = {
+  login_success: '✅ دخول', login_failed: '❌ كلمة مرور خاطئة', login_blocked: '⛔ حظر مؤقت (محاولات كثيرة)',
+  login_refused_disabled: '🚫 حساب معطل حاول الدخول', logout: 'خروج', logout_all: 'خروج من كل الأجهزة',
+  register: '🆕 تسجيل', user_created_by_admin: '🆕 حساب أنشأه المدير', user_disabled: '🔒 تعطيل حساب',
+  user_enabled: '🔓 تفعيل حساب', role_changed: '👑 تغيير صلاحية', user_deleted: '🗑️ حذف حساب',
+  user_signed_out_by_admin: '⏏️ إخراج مستخدم', api_token_created: '🔌 ربط إضافة', api_tokens_revoked: '🔌 فصل الإضافات',
+  settings_changed: '⚙️ تعديل الإعدادات'
+};
+async function loadSecurityEvents() {
+  const el = document.getElementById('security-events');
+  try {
+    const d = await (await fetch('/api/admin/security-events?limit=200')).json();
+    el.innerHTML = (d.events || []).map(e => `
+      <tr class="${/failed|blocked|refused/.test(e.event) ? 'bg-rose-50/50' : ''}">
+        <td class="py-1.5 px-4 font-mono text-slate-500 whitespace-nowrap">${escT((e.created_at || '').slice(0, 19).replace('T', ' '))}</td>
+        <td class="px-4 font-bold text-slate-700 whitespace-nowrap">${escT(SEC_EVENT_AR[e.event] || e.event)}</td>
+        <td class="px-4" dir="ltr">${escT(e.email || '—')}</td>
+        <td class="px-4 font-mono text-slate-500">${escT(e.ip || '')}</td>
+        <td class="px-4 text-slate-500">${escT(e.detail || '')}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="py-6 text-center text-slate-400">لا أحداث بعد.</td></tr>';
+  } catch (_e) { el.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-rose-600">تعذر التحميل</td></tr>'; }
+}
+async function adminCreateUser() {
+  const email = document.getElementById('new-user-email').value.trim();
+  const password = document.getElementById('new-user-password').value;
+  const role = document.getElementById('new-user-role').value;
+  const r = await fetch('/api/admin/users', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ email, password, role }) });
+  const d = await r.json();
+  if (!d.ok) return alert(d.error || 'فشل إنشاء الحساب');
+  document.getElementById('new-user-email').value = '';
+  document.getElementById('new-user-password').value = '';
+  alert('✅ تم إنشاء الحساب. أرسل بيانات الدخول للمستخدم بطريقة آمنة.');
+  loadAdminUsers();
+}
+async function adminSignOutUser(id) {
+  if (!confirm('إنهاء كل جلسات هذا المستخدم وفصل إضافات المتصفح لديه؟')) return;
+  const d = await (await fetch(`/api/admin/users/${id}/sign-out`, { method: 'POST' })).json();
+  if (d.ok) alert(`تم: ${d.sessions} جلسة و${d.tokens} إضافة.`);
+  loadSecurityEvents();
+}
+
 async function loadAdminUsers() {
   if (!currentUser || currentUser.role !== 'admin') return;
   const el = document.getElementById('admin-users-list');
@@ -731,6 +817,9 @@ async function loadAdminUsers() {
               </button>
               <button onclick="toggleUserRole(${Number(u.id)}, '${u.role === 'admin' ? 'admin' : 'user'}')" class="text-xs px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 font-bold transition">
                 ${u.role === 'admin' ? 'تنزيل لمستخدم' : 'ترقية لأدمن'}
+              </button>
+              <button onclick="adminSignOutUser(${Number(u.id)})" title="إنهاء كل جلساته وفصل إضافاته" class="text-xs px-2.5 py-1 rounded-lg bg-white text-rose-700 border border-rose-200 hover:bg-rose-50 font-bold transition">
+                تسجيل خروجه
               </button>
               <button onclick="deleteUser(${u.id})" class="text-xs px-2 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 font-bold transition">
                 حذف
@@ -1391,7 +1480,7 @@ function showTab(t) {
   if (t === 'stores') loadStores();
   if (t === 'jobs') loadJobs();
   if (t === 'settings') loadSettings();
-  if (t === 'users') loadAdminUsers();
+  if (t === 'users') { loadAdminUsers(); loadSecurityEvents(); }
 }
 
 async function loadStores() {
@@ -1527,6 +1616,7 @@ async function loadSettings() {
   const r = await fetch('/api/settings'); const s = await r.json();
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
+  document.getElementById('cfg-registration-open').checked = s.registration_open === 'true';
   document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
   document.getElementById('cfg-tg-token').value = s.telegram_token || '';
@@ -1548,6 +1638,7 @@ async function saveAllSettings() {
       schedule_enabled: schedEn,
       interval_hours: schedInt,
       entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
+      registration_open: document.getElementById('cfg-registration-open').checked,
       notify_enabled: notifEn,
       telegram_token: token,
       telegram_chat_id: chat

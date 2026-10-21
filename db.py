@@ -262,6 +262,42 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions (user_id)")
+        # Login / registration attempts, for brute-force throttling.
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS auth_attempts (
+            id {idcol},
+            kind TEXT,
+            email TEXT,
+            ip TEXT,
+            success INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_auth_attempts_time ON auth_attempts (created_at)")
+        # Audit log of security-relevant events (who did what, from where).
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS security_events (
+            id {idcol},
+            created_at TEXT,
+            event TEXT,
+            user_id INTEGER,
+            email TEXT,
+            ip TEXT,
+            detail TEXT
+        )
+        """)
+        # Browser-extension tokens: only a SHA-256 is stored, one row per
+        # extension login, individually revocable.
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id {idcol},
+            user_id INTEGER NOT NULL,
+            token_hash TEXT UNIQUE NOT NULL,
+            created_at TEXT,
+            last_used_at TEXT,
+            revoked_at TEXT
+        )
+        """)
         # How many ads a page / a store domain runs in total on Meta (not only
         # the ones our searches happened to collect). Column names are
         # prefixed so this table can be joined to meta_ads unambiguously.
@@ -1543,26 +1579,110 @@ class Database:
         cut = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
         self._execute(f"DELETE FROM user_sessions WHERE expires_at < {self._ph()}", (cut,))
 
-    def get_or_create_api_token(self, user_id: int) -> str:
-        """Personal token the browser extension sends instead of the shared INGEST_TOKEN."""
+    # ── brute-force throttling ────────────────────────────────────────────
+    def record_auth_attempt(self, kind: str, email: str, ip: str, success: bool) -> None:
+        p = self._ph()
+        self._execute(f"INSERT INTO auth_attempts (kind, email, ip, success, created_at) VALUES ({p},{p},{p},{p},{p})",
+                      (kind, (email or "")[:254], (ip or "")[:64], 1 if success else 0, _now()))
+
+    def count_failed_attempts(self, kind: str, minutes: int, email: str = "", ip: str = "") -> int:
+        p = self._ph()
+        cut = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        col, val = ("email", email) if email else ("ip", ip)
+        row = self._query_one(
+            f"SELECT COUNT(*) AS c FROM auth_attempts WHERE kind={p} AND success=0 AND {col}={p} AND created_at > {p}",
+            (kind, val, cut))
+        return int(row["c"]) if row else 0
+
+    def count_attempts(self, kind: str, minutes: int, ip: str) -> int:
+        p = self._ph()
+        cut = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        row = self._query_one(f"SELECT COUNT(*) AS c FROM auth_attempts WHERE kind={p} AND ip={p} AND created_at > {p}",
+                              (kind, ip, cut))
+        return int(row["c"]) if row else 0
+
+    def purge_auth_attempts(self, keep_days: int = 7) -> None:
+        cut = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        self._execute(f"DELETE FROM auth_attempts WHERE created_at < {self._ph()}", (cut,))
+
+    # ── security audit log ────────────────────────────────────────────────
+    def log_security_event(self, event: str, user_id: Optional[int] = None, email: str = "",
+                           ip: str = "", detail: str = "") -> None:
+        p = self._ph()
+        try:
+            self._execute(f"INSERT INTO security_events (created_at, event, user_id, email, ip, detail) "
+                          f"VALUES ({p},{p},{p},{p},{p},{p})",
+                          (_now(), event, user_id, (email or "")[:254], (ip or "")[:64], (detail or "")[:500]))
+        except Exception as exc:  # auditing must never break the request
+            logger.warning("security event not logged: %s", exc)
+
+    def list_security_events(self, limit: int = 200, event: str = "") -> list[dict]:
+        p = self._ph()
+        if event:
+            return self._query(f"SELECT * FROM security_events WHERE event={p} ORDER BY id DESC LIMIT {int(limit)}", (event,))
+        return self._query(f"SELECT * FROM security_events ORDER BY id DESC LIMIT {int(limit)}")
+
+    # ── extension tokens (hashed, revocable) ──────────────────────────────
+    def migrate_plain_api_tokens(self) -> int:
+        """Move tokens stored in clear (users.api_token) to hashed rows, so
+        installed extensions keep working but the database holds no token."""
+        p = self._ph()
+        moved = 0
+        for u in self._query("SELECT id, api_token FROM users WHERE api_token IS NOT NULL AND api_token != ''"):
+            h = self._sid_hash(u["api_token"])
+            if not self._query_one(f"SELECT id FROM api_tokens WHERE token_hash={p}", (h,)):
+                self._execute(f"INSERT INTO api_tokens (user_id, token_hash, created_at) VALUES ({p},{p},{p})",
+                              (int(u["id"]), h, _now()))
+            self._execute(f"UPDATE users SET api_token=NULL WHERE id={p}", (int(u["id"]),))
+            moved += 1
+        return moved
+
+    def create_api_token(self, user_id: int) -> str:
+        """A new extension token (shown once; only its hash is stored)."""
         import secrets
-        user = self.get_user_by_id(user_id)
-        if user and user.get("api_token"):
-            return user["api_token"]
         token = "adra_" + secrets.token_urlsafe(32)
-        self._execute(f"UPDATE users SET api_token={self._ph()} WHERE id={self._ph()}", (token, int(user_id)))
+        p = self._ph()
+        self._execute(f"INSERT INTO api_tokens (user_id, token_hash, created_at) VALUES ({p},{p},{p})",
+                      (int(user_id), self._sid_hash(token), _now()))
         return token
+
+    def revoke_api_tokens(self, user_id: int) -> int:
+        p = self._ph()
+        row = self._query_one(f"SELECT COUNT(*) AS c FROM api_tokens WHERE user_id={p} AND revoked_at IS NULL",
+                              (int(user_id),))
+        self._execute(f"UPDATE api_tokens SET revoked_at={p} WHERE user_id={p} AND revoked_at IS NULL",
+                      (_now(), int(user_id)))
+        return int(row["c"]) if row else 0
+
+    def count_api_tokens(self, user_id: int) -> int:
+        row = self._query_one(f"SELECT COUNT(*) AS c FROM api_tokens WHERE user_id={self._ph()} AND revoked_at IS NULL",
+                              (int(user_id),))
+        return int(row["c"]) if row else 0
+
+    def get_or_create_api_token(self, user_id: int) -> str:
+        """Kept for callers: tokens are no longer readable once issued, so this
+        always issues a new one (only its hash is stored)."""
+        return self.create_api_token(user_id)
 
     def get_user_by_token(self, token: str) -> Optional[dict]:
         tok = (token or "").strip()
         if not tok:
             return None
-        return self._query_one(f"SELECT * FROM users WHERE api_token = {self._ph()}", (tok,))
+        p = self._ph()
+        row = self._query_one(f"SELECT id, user_id, last_used_at FROM api_tokens WHERE token_hash={p} "
+                              f"AND revoked_at IS NULL", (self._sid_hash(tok),))
+        if not row:
+            return None
+        last = row.get("last_used_at") or ""
+        if not last or last < (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat():
+            self._execute(f"UPDATE api_tokens SET last_used_at={p} WHERE id={p}", (_now(), row["id"]))
+        return self.get_user_by_id(int(row["user_id"]))
 
     def update_user_status(self, user_id: int, is_active: bool) -> None:
         self._execute(f"UPDATE users SET is_active = {self._ph()} WHERE id = {self._ph()}", (1 if is_active else 0, int(user_id)))
         if not is_active:
             self.revoke_user_sessions(user_id)
+            self.revoke_api_tokens(user_id)
 
     def update_user_role(self, user_id: int, role: str) -> None:
         self._execute(f"UPDATE users SET role = {self._ph()} WHERE id = {self._ph()}", (role, int(user_id)))
@@ -1577,6 +1697,7 @@ class Database:
             self.remove_user_target(int(user_id), int(row["target_id"]))
         self._execute(f"DELETE FROM user_pages WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM user_sessions WHERE user_id = {p}", (int(user_id),))
+        self._execute(f"DELETE FROM api_tokens WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM users WHERE id = {p}", (int(user_id),))
 
     def get_settings(self) -> dict:

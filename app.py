@@ -90,6 +90,71 @@ def _start_session(user: dict) -> None:
     session["user_role"] = user["role"]
 
 
+def _int_arg(name: str, default: int) -> int:
+    try:
+        return int(request.args.get(name, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _client_ip() -> str:
+    """Client address (first X-Forwarded-For hop behind the Coolify proxy)."""
+    return (request.headers.get("X-Forwarded-For", "") or request.remote_addr or "").split(",")[0].strip()[:64]
+
+
+def _audit(event: str, detail: str = "", user: Optional[dict] = None, email: str = "") -> None:
+    u = user if user is not None else getattr(g, "user", None)
+    db.log_security_event(event, user_id=(int(u["id"]) if u else None),
+                          email=email or (u or {}).get("email", ""), ip=_client_ip(), detail=detail)
+
+
+# Brute-force limits (failed logins in a sliding window).
+LOGIN_MAX_PER_EMAIL = int(os.environ.get("LOGIN_MAX_PER_EMAIL", "5") or 5)
+LOGIN_MAX_PER_IP = int(os.environ.get("LOGIN_MAX_PER_IP", "20") or 20)
+LOGIN_WINDOW_MIN = int(os.environ.get("LOGIN_WINDOW_MIN", "15") or 15)
+REGISTER_MAX_PER_IP_HOUR = 5
+MIN_PASSWORD_LEN = 10
+
+
+def _login_blocked(email: str) -> bool:
+    ip = _client_ip()
+    return (db.count_failed_attempts("login", LOGIN_WINDOW_MIN, email=email) >= LOGIN_MAX_PER_EMAIL
+            or db.count_failed_attempts("login", LOGIN_WINDOW_MIN, ip=ip) >= LOGIN_MAX_PER_IP)
+
+
+def _check_credentials(email: str, password: str):
+    """Shared by dashboard and extension login: (user, error, status).
+    Every attempt is throttled and recorded; failures are audited."""
+    ip = _client_ip()
+    if _login_blocked(email):
+        _audit("login_blocked", "too many failed attempts", user=None, email=email)
+        return None, f"محاولات كثيرة فاشلة. حاول مجدداً بعد {LOGIN_WINDOW_MIN} دقيقة.", 429
+    user = db.get_user_by_email(email) if email else None
+    if not user or not password or not check_password_hash(user["password_hash"], password):
+        db.record_auth_attempt("login", email, ip, False)
+        _audit("login_failed", "", user=None, email=email)
+        return None, "البريد الإلكتروني أو كلمة المرور غير صحيحة", 401
+    if not user.get("is_active"):
+        db.record_auth_attempt("login", email, ip, False)
+        _audit("login_refused_disabled", "", user=user)
+        return None, "هذا الحساب معطل. يرجى التواصل مع المدير لتفعيله", 403
+    db.record_auth_attempt("login", email, ip, True)
+    return user, None, 200
+
+
+def _registration_open() -> bool:
+    return db.get_settings().get("registration_open", "false").lower() in ("1", "true", "yes", "on")
+
+
+@app.before_request
+def _limit_request_size():
+    """Refuse oversized bodies up front (before any handler reads them)."""
+    limit = app.config.get("MAX_CONTENT_LENGTH")
+    if limit and (request.content_length or 0) > limit:
+        return jsonify({"ok": False, "error": "حجم الطلب كبير جداً"}), 413
+    return None
+
+
 @app.before_request
 def _resolve_session() -> None:
     """Zero trust: every request re-checks its session in the database.
@@ -395,13 +460,52 @@ def index():
 
 
 # ── CORS & Private Network Access (Chrome Extensions support) ─────────
+# Requests bigger than this are refused (extension syncs included).
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_REQUEST_MB", "10") or 10) * 1024 * 1024
+
+_CSP = "; ".join([
+    "default-src 'self'",
+    # inline handlers + Tailwind's CDN build are still used by the dashboard
+    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: https:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+])
+
+
 @app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, DELETE, PUT"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Private-Network"] = "true"
+def add_security_headers(response):
+    # CORS only for the browser-extension API; the dashboard is same-origin.
+    if request.path.startswith("/api/v1/"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Ingest-Token"
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    if app.config.get("SESSION_COOKIE_SECURE"):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+
+@app.errorhandler(Exception)
+def _unhandled_error(exc):
+    """Never leak stack traces / internal messages to the client."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return jsonify({"ok": False, "error": exc.description or exc.name}), exc.code
+    logger.exception("unhandled error on %s", request.path)
+    return jsonify({"ok": False, "error": "حدث خطأ داخلي. حاول مرة أخرى."}), 500
 
 
 # ── Authentication Endpoints ──────────────────────────────────────────
@@ -428,15 +532,13 @@ def api_auth_login():
     if not email or not password:
         return jsonify({"ok": False, "error": "البريد الإلكتروني وكلمة المرور مطلوبان"}), 400
 
-    user = db.get_user_by_email(email)
-    if not user or not check_password_hash(user["password_hash"], password):
-        return jsonify({"ok": False, "error": "البريد الإلكتروني أو كلمة المرور غير صحيحة"}), 401
-
-    if not user.get("is_active"):
-        return jsonify({"ok": False, "error": "هذا الحساب معطل. يرجى التواصل مع المدير لتفعيله"}), 403
+    user, err, code = _check_credentials(email, password)
+    if not user:
+        return jsonify({"ok": False, "error": err}), code
 
     _start_session(user)
     db.update_user_login(user["id"])
+    _audit("login_success", "dashboard", user=user)
     return jsonify({
         "ok": True,
         "user": {
@@ -449,6 +551,10 @@ def api_auth_login():
 
 @app.route("/api/auth/register", methods=["POST"])
 def api_auth_register():
+    if not _registration_open():
+        return jsonify({"ok": False, "error": "التسجيل مغلق حالياً. اطلب من المدير فتحه أو إنشاء حسابك."}), 403
+    if db.count_attempts("register", 60, _client_ip()) >= REGISTER_MAX_PER_IP_HOUR:
+        return jsonify({"ok": False, "error": "محاولات تسجيل كثيرة من هذا الجهاز. حاول لاحقاً."}), 429
     data = request.get_json(force=True, silent=True) or {}
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
@@ -457,8 +563,11 @@ def api_auth_register():
     import re as _re
     if len(email) > 254 or not _re.fullmatch(r"[^@\s<>\"'`]+@[^@\s<>\"'`]+\.[A-Za-z]{2,}", email):
         return jsonify({"ok": False, "error": "البريد الإلكتروني غير صالح"}), 400
-    if len(password) < 6:
-        return jsonify({"ok": False, "error": "كلمة المرور يجب أن لا تقل عن 6 أحرف"}), 400
+    if len(password) < MIN_PASSWORD_LEN:
+        return jsonify({"ok": False, "error": f"كلمة المرور يجب أن لا تقل عن {MIN_PASSWORD_LEN} أحرف"}), 400
+    if password.lower() == email or password.lower() in email or len(set(password)) < 4:
+        return jsonify({"ok": False, "error": "كلمة المرور ضعيفة جداً"}), 400
+    db.record_auth_attempt("register", email, _client_ip(), True)
 
     existing = db.get_user_by_email(email)
     if existing:
@@ -470,6 +579,7 @@ def api_auth_register():
         return jsonify({"ok": False, "error": "فشل إنشاء الحساب، يرجى المحاولة لاحقاً"}), 500
 
     _start_session({"id": user_id, "email": email, "role": "user"})
+    _audit("register", "", user={"id": user_id, "email": email})
     return jsonify({
         "ok": True,
         "user": {
@@ -486,6 +596,7 @@ def api_auth_logout():
     sid = session.get("sid")
     if sid:
         db.revoke_session(sid)
+        _audit("logout")
     session.clear()
     return jsonify({"ok": True})
 
@@ -495,7 +606,30 @@ def api_auth_logout():
 def api_auth_logout_all():
     """Log the current user out on every device / browser."""
     n = db.revoke_user_sessions(int(g.user["id"]))
+    t = db.revoke_api_tokens(int(g.user["id"]))  # browser extensions too
+    _audit("logout_all", f"{n} sessions, {t} extension tokens revoked")
     session.clear()
+    return jsonify({"ok": True, "revoked": n, "extension_tokens": t})
+
+
+@app.route("/api/auth/config", methods=["GET"])
+def api_auth_config():
+    """Public: what the login screen may offer."""
+    return jsonify({"registration_open": _registration_open(), "min_password_length": MIN_PASSWORD_LEN})
+
+
+@app.route("/api/auth/extension-tokens", methods=["GET"])
+@login_required
+def api_my_extension_tokens():
+    return jsonify({"active": db.count_api_tokens(int(g.user["id"]))})
+
+
+@app.route("/api/auth/extension-tokens/revoke", methods=["POST"])
+@login_required
+def api_revoke_my_extension_tokens():
+    """Disconnect every browser extension signed in to this account."""
+    n = db.revoke_api_tokens(int(g.user["id"]))
+    _audit("api_tokens_revoked", f"{n} tokens (self)")
     return jsonify({"ok": True, "revoked": n})
 
 
@@ -516,6 +650,7 @@ def api_admin_toggle_user_status(user_id):
         return jsonify({"ok": False, "error": "المستخدم غير موجود"}), 404
     new_status = not bool(user.get("is_active"))
     db.update_user_status(user_id, new_status)
+    _audit("user_enabled" if new_status else "user_disabled", f"target={user['email']}")
     return jsonify({"ok": True, "is_active": new_status})
 
 
@@ -526,7 +661,11 @@ def api_admin_update_user_role(user_id):
         return jsonify({"ok": False, "error": "لا يمكنك تغيير رتبة حسابك الحالي"}), 400
     data = request.get_json(force=True, silent=True) or {}
     new_role = "admin" if data.get("role") == "admin" else "user"
+    target = db.get_user_by_id(user_id)
+    if not target:
+        return jsonify({"ok": False, "error": "المستخدم غير موجود"}), 404
     db.update_user_role(user_id, new_role)
+    _audit("role_changed", f"target={target['email']} {target.get('role')}->{new_role}")
     return jsonify({"ok": True, "role": new_role})
 
 
@@ -535,8 +674,49 @@ def api_admin_update_user_role(user_id):
 def api_admin_delete_user(user_id):
     if user_id == int(g.user["id"]):
         return jsonify({"ok": False, "error": "لا يمكنك حذف حسابك الحالي"}), 400
+    target = db.get_user_by_id(user_id)
     db.delete_user(user_id)
+    _audit("user_deleted", f"target={(target or {}).get('email', user_id)}")
     return jsonify({"ok": True})
+
+
+@app.route("/api/admin/users", methods=["POST"])
+@admin_required
+def api_admin_create_user():
+    """Admin adds an account (the way to onboard users while registration is closed)."""
+    import re as _re
+    data = request.get_json(force=True, silent=True) or {}
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "")
+    role = "admin" if data.get("role") == "admin" else "user"
+    if len(email) > 254 or not _re.fullmatch(r"[^@\s<>\"'`]+@[^@\s<>\"'`]+\.[A-Za-z]{2,}", email):
+        return jsonify({"ok": False, "error": "البريد الإلكتروني غير صالح"}), 400
+    if len(password) < MIN_PASSWORD_LEN:
+        return jsonify({"ok": False, "error": f"كلمة المرور يجب أن لا تقل عن {MIN_PASSWORD_LEN} أحرف"}), 400
+    if db.get_user_by_email(email):
+        return jsonify({"ok": False, "error": "البريد الإلكتروني مسجل مسبقاً"}), 400
+    uid = db.create_user(email=email, password_hash=generate_password_hash(password), role=role, is_active=1)
+    _audit("user_created_by_admin", f"target={email} role={role}")
+    return jsonify({"ok": True, "id": uid})
+
+
+@app.route("/api/admin/users/<int:user_id>/sign-out", methods=["POST"])
+@admin_required
+def api_admin_sign_out_user(user_id):
+    """Force a user out everywhere: dashboard sessions and extension tokens."""
+    target = db.get_user_by_id(user_id)
+    if not target:
+        return jsonify({"ok": False, "error": "المستخدم غير موجود"}), 404
+    s, t = db.revoke_user_sessions(user_id), db.revoke_api_tokens(user_id)
+    _audit("user_signed_out_by_admin", f"target={target['email']} sessions={s} tokens={t}")
+    return jsonify({"ok": True, "sessions": s, "tokens": t})
+
+
+@app.route("/api/admin/security-events", methods=["GET"])
+@admin_required
+def api_admin_security_events():
+    return jsonify({"events": db.list_security_events(limit=min(int(request.args.get("limit", 200) or 200), 1000),
+                                                      event=(request.args.get("event") or "").strip())})
 
 
 # ── Engine control ───────────────────────────────────────────────────
@@ -646,8 +826,8 @@ def api_stream():
 @app.route("/api/ads")
 @login_required
 def api_ads():
-    limit = int(request.args.get("limit", 60))
-    offset = int(request.args.get("offset", 0))
+    limit = max(1, min(_int_arg("limit", 60), 500))
+    offset = max(0, _int_arg("offset", 0))
     search = request.args.get("search", "")
     query = request.args.get("query", "")
     store_domain = request.args.get("store_domain", "")
@@ -658,8 +838,8 @@ def api_ads():
     start_date_min = request.args.get("start_date_min", "")
     start_date_max = request.args.get("start_date_max", "")
     sort_by = request.args.get("sort_by", "collected_at")
-    min_days_active = int(request.args.get("min_days_active", 0))
-    min_product_ads = int(request.args.get("min_product_ads", 0) or 0)
+    min_days_active = max(0, _int_arg("min_days_active", 0))
+    min_product_ads = max(0, _int_arg("min_product_ads", 0))
     target_id = request.args.get("target_id")
     target_id_val = int(target_id) if target_id and target_id.isdigit() else None
 
@@ -1037,6 +1217,7 @@ def api_get_settings():
         "telegram_chat_id": s.get("telegram_chat_id", ""),
         "notify_webhook": s.get("notify_webhook", ""),
         "entity_stats_enabled": s.get("entity_stats_enabled", "true"),
+        "registration_open": s.get("registration_open", "false"),
     })
 
 
@@ -1058,6 +1239,10 @@ def api_set_settings():
         db.set_setting("notify_webhook", cfg["notify_webhook"].strip())
     if "entity_stats_enabled" in cfg:
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
+    if "registration_open" in cfg:
+        db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
+    _audit("settings_changed", ",".join(sorted(k for k in cfg if k != "telegram_token")) +
+           (",telegram_token" if "telegram_token" in cfg else ""))
     return jsonify({"ok": True})
 
 
@@ -1170,13 +1355,12 @@ def api_ext_login():
     data = request.get_json(force=True, silent=True) or {}
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
-    user = db.get_user_by_email(email) if email else None
-    if not user or not password or not check_password_hash(user["password_hash"], password):
-        return jsonify({"ok": False, "error": {"message": "البريد الإلكتروني أو كلمة المرور غير صحيحة"}}), 401
-    if not user.get("is_active"):
-        return jsonify({"ok": False, "error": {"message": "هذا الحساب معطل"}}), 403
+    user, err, code = _check_credentials(email, password)
+    if not user:
+        return jsonify({"ok": False, "error": {"message": err}}), code
     db.update_user_login(user["id"])
-    token = db.get_or_create_api_token(user["id"])
+    token = db.create_api_token(user["id"])
+    _audit("api_token_created", "extension login", user=user)
     return jsonify({"ok": True, "data": {"token": token, "email": user["email"], "role": user["role"]}})
 
 
@@ -1476,6 +1660,7 @@ def scheduler_loop() -> None:
             if days_refreshed_for != today_dz:
                 changed = db.refresh_days_active()
                 db.purge_old_sessions()
+                db.purge_auth_attempts()
                 days_refreshed_for = today_dz
                 logger.info("days_active refreshed for %s: %s ads updated", today_dz, changed)
 
@@ -1727,6 +1912,12 @@ def start_background_threads() -> None:
     if _bg_started:
         return
     _bg_started = True
+    try:
+        n = db.migrate_plain_api_tokens()
+        if n:
+            logger.info("extension tokens moved to hashed storage: %s", n)
+    except Exception:
+        logger.exception("token migration failed")
     try:
         moved = db.migrate_user_targets()
         if moved:
