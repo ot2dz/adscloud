@@ -220,6 +220,14 @@
         </div>
       </div>
 
+      <!-- Keyword tags: the scrape keyword(s) that found each ad -->
+      <div class="flex items-start justify-between flex-wrap gap-2.5">
+        <span class="text-xs font-bold text-slate-500 shrink-0">🏷️ كلمات السحب:</span>
+        <div id="keyword-chips" class="flex items-center gap-2 flex-wrap flex-1 justify-end">
+          <span class="text-[11px] text-slate-400">…</span>
+        </div>
+      </div>
+
       <!-- Advanced Filter Inputs -->
       <div class="grid md:grid-cols-12 gap-3 pt-3 border-t border-slate-100 text-xs">
         <div class="md:col-span-4">
@@ -580,6 +588,7 @@ let currentAuthMode = 'login';
 let ads = [];
 let currentPreset = '';
 let currentTargetFilter = null; // { id, type, value, label }
+let currentKeywords = [];       // selected scrape-keyword tags (OR filter)
 let debounceTimer = null;
 
 // ── Auth Manager ──
@@ -609,6 +618,7 @@ function isAdmin() {
 function loadDashboardData() {
   loadStats();
   loadAds();
+  loadKeywordChips();
   if (isAdmin()) {
     loadTargets();
     loadJobs();
@@ -954,6 +964,74 @@ function setPreset(p) {
   loadAds();
 }
 
+// ── Keyword tags (which scrape keyword found each ad) ──
+const KW_PALETTE = [
+  'bg-rose-50 text-rose-700 border-rose-300',
+  'bg-amber-50 text-amber-700 border-amber-300',
+  'bg-emerald-50 text-emerald-700 border-emerald-300',
+  'bg-sky-50 text-sky-700 border-sky-300',
+  'bg-violet-50 text-violet-700 border-violet-300',
+  'bg-orange-50 text-orange-700 border-orange-300',
+  'bg-teal-50 text-teal-700 border-teal-300',
+  'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-300',
+];
+function kwTone(k) {
+  let h = 0;
+  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
+  return KW_PALETTE[h % KW_PALETTE.length];
+}
+function kwActive(k) {
+  return currentKeywords.some(x => x.toLowerCase() === String(k).toLowerCase());
+}
+function keywordChipHtml(k, opts = {}) {
+  const lbl = opts.label || k;
+  const active = kwActive(k);
+  const cnt = opts.count != null ? ` <span class="num opacity-70">${opts.count}</span>` : '';
+  return `<button type="button" data-kw="${escT(k)}" onclick="toggleKeyword(this.dataset.kw)" title="${escT(opts.title || 'فلترة بهذه الكلمة')}"
+    class="px-2.5 py-0.5 rounded-full border text-[11px] font-bold transition max-w-[240px] truncate ${kwTone(k)} ${active ? 'ring-2 ring-blue-400 ring-offset-1' : 'hover:brightness-95'}">🔍 ${escT(lbl)}${cnt}</button>`;
+}
+function adKeywordChips(a, opts = {}) {
+  const list = (opts.group && a.group && a.group.keywords) || a.keywords || [];
+  const ks = [...new Set(list.filter(Boolean))];
+  if (!ks.length) return '';
+  const max = 3;
+  const shown = ks.slice(0, max);
+  const rest = ks.length - shown.length;
+  return `<div class="flex flex-wrap gap-1.5 mb-2.5">${shown.map(k => keywordChipHtml(k)).join('')}${
+    rest > 0 ? `<span class="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 text-[11px] font-bold" title="${escT(ks.join(' · '))}">+${rest}</span>` : ''
+  }</div>`;
+}
+async function loadKeywordChips() {
+  const box = document.getElementById('keyword-chips');
+  if (!box) return;
+  try {
+    const r = await fetch('/api/ad-keywords');
+    if (r.status === 401) { box.innerHTML = ''; return; }
+    const d = await r.json();
+    const kws = d.keywords || [];
+    if (!kws.length) { box.innerHTML = '<span class="text-[11px] text-slate-400">لا توجد كلمات بعد.</span>'; return; }
+    const clear = currentKeywords.length
+      ? `<button type="button" onclick="clearKeywordFilter()" class="px-2.5 py-1 rounded-lg border border-rose-300 bg-rose-50 text-rose-700 text-[11px] font-bold hover:bg-rose-100">✕ مسح الفلتر</button>`
+      : '';
+    box.innerHTML = kws.map(k => keywordChipHtml(String(k.keyword), {
+      count: k.total_ads,
+      title: `إعلانات: ${k.total_ads} · متاجر: ${k.store_ads || 0} · رابحة: ${k.winning || 0} · جديدة: ${k.fresh || 0}`
+    })).join('') + clear;
+  } catch (_e) { box.innerHTML = ''; }
+}
+function toggleKeyword(k) {
+  const key = String(k);
+  const i = currentKeywords.findIndex(x => x.toLowerCase() === key.toLowerCase());
+  if (i >= 0) currentKeywords.splice(i, 1); else currentKeywords.push(key);
+  loadAds();
+  loadKeywordChips();
+}
+function clearKeywordFilter() {
+  currentKeywords = [];
+  loadAds();
+  loadKeywordChips();
+}
+
 // ── Ads-per-product filter ──
 let minProductAds = 0;
 const MIN_PRODUCT_ADS_CHOICES = [0, 2, 5, 10, 20];
@@ -1080,6 +1158,7 @@ async function loadAds(opts = {}) {
 
   let url = `/api/ads?search=${encodeURIComponent(q)}&preset=${currentPreset}&start_date_min=${encodeURIComponent(dmin)}&start_date_max=${encodeURIComponent(dmax)}&min_days_active=${mdays}&sort_by=${sort}`;
   if (minProductAds > 1) url += `&min_product_ads=${minProductAds}`;
+  if (currentKeywords.length) url += `&keywords=${encodeURIComponent(currentKeywords.join(','))}`;
 
   if (currentTargetFilter) {
     if (currentTargetFilter.id) url += `&target_id=${currentTargetFilter.id}`;
@@ -1263,6 +1342,7 @@ function adCardHtml(raw, opts = {}) {
             <div class="text-[11px] text-slate-400">بدون رابط متجر خارجي</div>
           `}
         </div>
+        ${adKeywordChips(a, { group: !!g })}
         ${entityBadges(a)}
 
         <!-- Metric Badges (Matching screenshot pills) -->
@@ -1503,6 +1583,7 @@ function showTab(t) {
       if (btn.hasAttribute('data-admin-only') && !isAdmin()) btn.classList.add('hidden');
     }
   });
+  if (t === 'ads') loadKeywordChips();
   if (t === 'targets') loadTargets();
   if (t === 'stores') loadStores();
   if (t === 'jobs') loadJobs();
@@ -1812,6 +1893,7 @@ function onStreamMessage(e) {
     updateLiveProgressUI();
   } else if (m.type === 'job') {
     loadJobs();
+    loadKeywordChips();
     if (d.stored) { loadStats(); loadStores(); }
   } else if (m.type === 'finished') {
     liveScrapeState.active = false;
@@ -1840,6 +1922,7 @@ function onStreamMessage(e) {
   } else if (m.type === 'done') {
     setState(false);
     loadAds();
+    loadKeywordChips();
     loadStats();
     setTimeout(() => {
       if (!liveScrapeState.active && !liveScrapeState.paused) {

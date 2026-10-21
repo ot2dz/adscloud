@@ -354,6 +354,7 @@ class ScrapeManager:
             if self.stop_event.is_set():
                 return
             d = ad.to_dict()
+            d["keywords"] = [query] if query else []
             aid = d.get("ad_id")
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
@@ -851,6 +852,7 @@ def api_ads():
     min_product_ads = max(0, _int_arg("min_product_ads", 0))
     target_id = request.args.get("target_id")
     target_id_val = int(target_id) if target_id and target_id.isdigit() else None
+    keywords = [k.strip() for k in (request.args.get("keywords") or "").split(",") if k.strip()]
 
     filters = dict(
         search=search, stores_only=stores_only, query=query,
@@ -858,7 +860,7 @@ def api_ads():
         active_only=active_only, start_date_min=start_date_min,
         start_date_max=start_date_max, min_days_active=min_days_active,
         target_id=target_id_val, user_id=_scope_user_id(),
-        min_product_ads=min_product_ads,
+        min_product_ads=min_product_ads, keywords=keywords,
     )
     total_ads = db.count_ads(**filters)
     if request.args.get("group", "0") == "1":
@@ -886,6 +888,13 @@ def api_ads_group():
 @admin_required
 def api_queries():
     return jsonify({"queries": db.get_queries()})
+
+
+@app.route("/api/ad-keywords")
+@login_required
+def api_ad_keywords():
+    """Per-keyword counters for the keyword filter bar."""
+    return jsonify({"keywords": db.get_keywords_overview(user_id=_scope_user_id())})
 
 
 @app.route("/api/stores")
@@ -1666,11 +1675,13 @@ def api_export(fmt: str):
     if fmt == "csv":
         buf = io.StringIO()
         cols = ["ad_id", "page_name", "page_id", "start_date", "store_domain",
-                "platform", "cta_text", "link_url", "body"]
+                "platform", "cta_text", "link_url", "keywords", "body"]
         w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for ad in ads:
-            w.writerow(ad)
+            row = dict(ad)
+            row["keywords"] = " | ".join(row.get("keywords") or [])
+            w.writerow(row)
         data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
         return send_file(data, mimetype="text/csv", as_attachment=True,
                          download_name=f"meta_ads_{int(datetime.now().timestamp())}.csv")

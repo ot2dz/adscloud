@@ -375,6 +375,34 @@ class Database:
             if self.is_postgres:
                 conn.rollback()
 
+        # Ad <-> keyword tags: one ad can be discovered by many keywords. This
+        # keeps every keyword that matched an ad, so re-scraping the same ad
+        # with another keyword never overwrites the earlier tag.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ad_keywords (
+            ad_id TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            target_id INTEGER,
+            first_seen TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (ad_id, keyword)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_keywords_keyword ON ad_keywords (keyword)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_keywords_ad ON ad_keywords (ad_id)")
+        try:
+            if self.is_postgres:
+                cur.execute("INSERT INTO ad_keywords (ad_id, keyword, first_seen, last_seen) "
+                            "SELECT ad_id, query, first_seen, collected_at FROM meta_ads "
+                            "WHERE query IS NOT NULL AND query <> '' "
+                            "ON CONFLICT (ad_id, keyword) DO NOTHING")
+            else:
+                cur.execute("INSERT OR IGNORE INTO ad_keywords (ad_id, keyword, first_seen, last_seen) "
+                            "SELECT ad_id, query, first_seen, collected_at FROM meta_ads "
+                            "WHERE query IS NOT NULL AND query <> ''")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ad_keywords backfill notice: %s", exc)
+
         # Seed the admin user from environment variables only (never hardcode a
         # password in the repository). Without ADMIN_PASSWORD no admin is seeded.
         try:
@@ -445,17 +473,20 @@ class Database:
         return rows[0] if rows else None
 
     # ── per-user scoping ──────────────────────────────────────────────────
-    def _user_scope_sql(self) -> str:
+    def _user_scope_sql(self, prefix: str = "") -> str:
         """WHERE fragment for the ads a user sees (params: _user_scope_params):
         ads they saved, every ad of the pages they track, and the ads
-        collected for their store / keyword / custom-link competitors."""
+        collected for their store / keyword / custom-link competitors.
+
+        ``prefix`` qualifies the ad columns (e.g. ``"m."``) when the fragment is
+        used in a join that also exposes an ``ad_id`` column."""
         p = self._ph()
         mine = (f"SELECT t.target_value FROM targets t JOIN user_targets ut ON ut.target_id = t.id "
                 f"WHERE ut.user_id = {p}")
-        return (f"(ad_id IN (SELECT ad_id FROM user_ads WHERE user_id = {p}) "
-                f"OR page_id IN (SELECT page_id FROM user_pages WHERE user_id = {p}) "
-                f"OR store_domain IN ({mine} AND t.type = 'domain') "
-                f"OR query IN ({mine} AND t.type IN ('keyword', 'custom_url', 'domain')))")
+        return (f"({prefix}ad_id IN (SELECT ad_id FROM user_ads WHERE user_id = {p}) "
+                f"OR {prefix}page_id IN (SELECT page_id FROM user_pages WHERE user_id = {p}) "
+                f"OR {prefix}store_domain IN ({mine} AND t.type = 'domain') "
+                f"OR {prefix}query IN ({mine} AND t.type IN ('keyword', 'custom_url', 'domain')))")
 
     @staticmethod
     def _user_scope_params(user_id: int) -> list:
@@ -602,6 +633,26 @@ class Database:
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT(ad_id) DO UPDATE SET {updates}")
             cur.execute(sql, values)
+            # Tag the ad with the keyword that found it (many per ad, kept).
+            kw = (query or "").strip()
+            if kw:
+                if self.is_postgres:
+                    cur.execute(
+                        f"INSERT INTO ad_keywords (ad_id, keyword, target_id, first_seen, last_seen) "
+                        f"VALUES ({p},{p},{p},{p},{p}) "
+                        f"ON CONFLICT (ad_id, keyword) DO UPDATE SET "
+                        f"last_seen = EXCLUDED.last_seen, "
+                        f"target_id = COALESCE(EXCLUDED.target_id, ad_keywords.target_id)",
+                        (ad_id, kw, target_id, now, now))
+                else:
+                    cur.execute(
+                        f"INSERT OR IGNORE INTO ad_keywords (ad_id, keyword, target_id, first_seen, last_seen) "
+                        f"VALUES ({p},{p},{p},{p},{p})", (ad_id, kw, target_id, now, now))
+                    cur.execute(
+                        f"UPDATE ad_keywords SET last_seen = {p}, "
+                        f"target_id = COALESCE({p}, target_id) "
+                        f"WHERE ad_id = {p} AND keyword = {p}",
+                        (now, target_id, ad_id, kw))
             conn.commit()
             return is_new
         except Exception as exc:
@@ -619,7 +670,8 @@ class Database:
                            start_date_min: str = "", start_date_max: str = "",
                            min_days_active: int = 0, target_id: Optional[int] = None,
                            user_id: Optional[int] = None,
-                           min_product_ads: int = 0) -> tuple[str, list]:
+                           min_product_ads: int = 0,
+                           keywords: Optional[list[str]] = None) -> tuple[str, list]:
         p = self._ph()
         where = []
         params: list = []
@@ -639,6 +691,14 @@ class Database:
         elif query:
             where.append(f"query = {p}")
             params.append(query)
+
+        if keywords:
+            ks = [str(k).strip() for k in keywords if str(k).strip()]
+            if ks:
+                in_list = ", ".join([p] * len(ks))
+                where.append(f"ad_id IN (SELECT ad_id FROM ad_keywords WHERE keyword IN ({in_list}))")
+                params.extend(ks)
+
         if target_id is not None and not (page_id or store_domain or query):
             where.append(f"target_id = {p}")
             params.append(target_id)
@@ -684,7 +744,8 @@ class Database:
                 start_date_min: str = "", start_date_max: str = "",
                 min_days_active: int = 0, sort_by: str = "collected_at",
                 target_id: Optional[int] = None, user_id: Optional[int] = None,
-                min_product_ads: int = 0) -> list[dict]:
+                min_product_ads: int = 0,
+                keywords: Optional[list[str]] = None) -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
@@ -692,6 +753,7 @@ class Database:
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
+            keywords=keywords,
         )
 
         order_map = {
@@ -712,6 +774,30 @@ class Database:
                 r["publisher_platforms"] = json.loads(r.get("publisher_platforms") or "[]")
             except Exception:
                 r["publisher_platforms"] = []
+        return self.attach_keywords(rows)
+
+    def attach_keywords(self, rows: list[dict]) -> list[dict]:
+        """Attach ``keywords`` (all scrape keywords that found each ad) to rows.
+
+        Falls back to the legacy ``meta_ads.query`` column when an ad predates
+        the ``ad_keywords`` table."""
+        if not rows:
+            return rows
+        p = self._ph()
+        ids = [str(r.get("ad_id") or "") for r in rows if r.get("ad_id")]
+        mapping: dict[str, list[str]] = {}
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            in_list = ", ".join([p] * len(chunk))
+            for r in self._query(
+                    f"SELECT ad_id, keyword FROM ad_keywords WHERE ad_id IN ({in_list}) "
+                    f"ORDER BY keyword", tuple(chunk)):
+                mapping.setdefault(str(r["ad_id"]), []).append(str(r["keyword"]))
+        for r in rows:
+            ks = mapping.get(str(r.get("ad_id") or ""), [])
+            if not ks and (r.get("query") or "").strip():
+                ks = [str(r["query"]).strip()]
+            r["keywords"] = ks
         return rows
 
     # ── page / domain totals on Meta ──────────────────────────────────────
@@ -843,6 +929,24 @@ class Database:
                 "max_days": int(g["max_days"] or 0),
             }
             out.append(ad)
+        # A product group can be found by several keywords: expose the union so
+        # the grouped card shows every keyword behind it.
+        if keys:
+            in_list = ", ".join([p] * len(keys))
+            kmap: dict = {}
+            for r in self._query(
+                    f"SELECT m.product_key AS pk, ak.keyword AS kw FROM ad_keywords ak "
+                    f"JOIN meta_ads m ON m.ad_id = ak.ad_id "
+                    f"WHERE m.product_key IN ({in_list}) "
+                    f"GROUP BY m.product_key, ak.keyword ORDER BY ak.keyword",
+                    tuple(keys)):
+                kmap.setdefault(str(r["pk"]), []).append(str(r["kw"]))
+            for ad in out:
+                gk = kmap.get(str(ad["group"]["key"]))
+                if not gk and (ad.get("query") or "").strip():
+                    gk = [str(ad["query"]).strip()]
+                ad["keywords"] = gk or []
+                ad["group"]["keywords"] = ad["keywords"]
         return out
 
     def count_ad_groups(self, **filters) -> int:
@@ -866,20 +970,22 @@ class Database:
                 r["publisher_platforms"] = json.loads(r.get("publisher_platforms") or "[]")
             except Exception:
                 r["publisher_platforms"] = []
-        return rows
+        return self.attach_keywords(rows)
 
     def count_ads(self, search: str = "", stores_only: bool = False,
                   query: str = "", store_domain: str = "",
                   page_id: str = "", preset: str = "", active_only: bool = False,
                   start_date_min: str = "", start_date_max: str = "",
                   min_days_active: int = 0, target_id: Optional[int] = None,
-                  user_id: Optional[int] = None, min_product_ads: int = 0) -> int:
+                  user_id: Optional[int] = None, min_product_ads: int = 0,
+                  keywords: Optional[list[str]] = None) -> int:
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
+            keywords=keywords,
         )
         row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
         return int(row["c"]) if row else 0
@@ -890,6 +996,28 @@ class Database:
                "MAX(collected_at) AS last_run FROM meta_ads "
                "WHERE query != '' GROUP BY query ORDER BY last_run DESC LIMIT 100")
         return self._query(sql)
+
+    def get_keywords_overview(self, user_id: Optional[int] = None,
+                              limit: int = 300) -> list[dict]:
+        """Per-keyword counters for the keyword filter bar (ads, store ads,
+        winning ads, recent launches, last run)."""
+        p = self._ph()
+        where = ["ak.keyword <> ''"]
+        params: list = []
+        if user_id is not None:
+            where.append(self._user_scope_sql(prefix="m."))
+            params.extend(self._user_scope_params(user_id))
+        clause = "WHERE " + " AND ".join(where)
+        sql = (
+            "SELECT ak.keyword AS keyword, COUNT(*) AS total_ads, "
+            "SUM(CASE WHEN m.store_domain != '' AND m.store_domain IS NOT NULL THEN 1 ELSE 0 END) AS store_ads, "
+            "SUM(CASE WHEN m.days_active >= 5 AND m.is_active = 1 THEN 1 ELSE 0 END) AS winning, "
+            "SUM(CASE WHEN m.days_active <= 3 AND m.is_active = 1 THEN 1 ELSE 0 END) AS fresh, "
+            "MAX(m.collected_at) AS last_run "
+            f"FROM ad_keywords ak JOIN meta_ads m ON m.ad_id = ak.ad_id {clause} "
+            f"GROUP BY ak.keyword ORDER BY total_ads DESC, ak.keyword LIMIT {int(limit)}"
+        )
+        return self._query(sql, tuple(params))
 
     def get_stores(self, search: str = "", user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
