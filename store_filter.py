@@ -96,3 +96,41 @@ def extract_store_domain(url: str) -> tuple[Optional[str], Optional[str]]:
     elif host.endswith(".dz"):
         platform = "Algerian (.dz)"
     return host, platform
+
+
+# Query parameters that only track the click, never identify the product.
+_TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "ttclid", "ref", "source", "campaign",
+                    "ad_id", "adset", "fbc", "fbp", "mc_", "_ga")
+
+
+def product_key(page_id: str, link_url: str, body: str = "", store_domain: str = "") -> str:
+    """Stable key for "the same product from the same advertiser".
+
+    Ads of one advertiser pointing to the same product page (host + path,
+    tracking parameters dropped) share a key. When the link is only the store
+    homepage, the ad text tells products apart instead.
+    """
+    import hashlib
+    from urllib.parse import parse_qsl, unquote, urlsplit
+
+    owner = str(page_id or "").strip() or (store_domain or "").strip().lower() or "?"
+    path = ""
+    host = ""
+    query = ""
+    try:
+        parts = urlsplit((link_url or "").strip())
+        host = parts.netloc.lower().split("@")[-1].split(":")[0]
+        if host.startswith("www."):
+            host = host[4:]
+        path = unquote(parts.path or "").rstrip("/").lower()
+        kept = sorted((k.lower(), v) for k, v in parse_qsl(parts.query, keep_blank_values=False)
+                      if not k.lower().startswith(_TRACKING_PARAMS))
+        query = "&".join(f"{k}={v}" for k, v in kept)
+    except Exception:
+        pass
+    if host and (path or query):
+        return f"{owner}|u:{host}{path}{('?' + query) if query else ''}"
+    # Homepage link (or no link): fall back to the ad text.
+    text = " ".join((body or "").split())[:200].lower()
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    return f"{owner}|t:{host}:{digest}"

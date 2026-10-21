@@ -237,6 +237,7 @@ class Database:
             ("meta_ads", "days_active", "INTEGER DEFAULT 1"),
             ("meta_ads", "target_id", "INTEGER"),
             ("meta_ads", "preview_image_url", "TEXT"),
+            ("meta_ads", "product_key", "TEXT"),
             ("keywords", "type", "TEXT DEFAULT 'keyword'"),
             ("keywords", "label", "TEXT DEFAULT ''"),
             ("targets", "country", "TEXT DEFAULT 'DZ'"),
@@ -253,6 +254,16 @@ class Database:
                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             except Exception:
                 pass
+        # Product grouping: one key per "same advertiser + same product".
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_product ON meta_ads (product_key)")
+            conn.commit()
+            self._backfill_product_keys(cur, conn)
+        except Exception as exc:
+            logger.warning("product_key backfill notice: %s", exc)
+            if self.is_postgres:
+                conn.rollback()
+
         # Seed the admin user from environment variables only (never hardcode a
         # password in the repository). Without ADMIN_PASSWORD no admin is seeded.
         try:
@@ -276,6 +287,24 @@ class Database:
 
         conn.commit()
         conn.close()
+
+    def _backfill_product_keys(self, cur, conn, batch: int = 2000) -> None:
+        """Compute product_key for ads stored before grouping existed."""
+        from store_filter import product_key
+        p = self._ph()
+        total = 0
+        while True:
+            cur.execute(f"SELECT ad_id, page_id, link_url, body, store_domain FROM meta_ads "
+                        f"WHERE product_key IS NULL OR product_key = '' LIMIT {int(batch)}")
+            rows = cur.fetchall()
+            if not rows:
+                break
+            updates = [(product_key(r[1], r[2], r[3], r[4]), r[0]) for r in rows]
+            cur.executemany(f"UPDATE meta_ads SET product_key={p} WHERE ad_id={p}", updates)
+            conn.commit()
+            total += len(rows)
+        if total:
+            logger.info("product_key backfilled for %s ads", total)
 
     # ── low-level helpers ─────────────────────────────────────────────────
     def _execute(self, sql: str, params: tuple = ()) -> None:
@@ -391,10 +420,14 @@ class Database:
         days_active = self._calc_days_active(start_date, first_seen)
 
         preview_img = str(ad.get("preview_image_url") or "").strip()
+        from store_filter import product_key
+        pkey = product_key(str(ad.get("page_id") or ""), ad.get("link_url") or "",
+                           ad.get("body") or "", ad.get("store_domain") or "")
         cols = ("ad_id", "page_name", "page_id", "start_date", "is_active", "link_url",
                 "store_domain", "platform", "body", "cta_text", "collation_count",
                 "publisher_platforms", "query", "country", "collected_at", "first_seen",
-                "last_seen_active", "days_active", "target_id", "preview_image_url")
+                "last_seen_active", "days_active", "target_id", "preview_image_url",
+                "product_key")
         values = (
             ad_id,
             ad.get("page_name") or "",
@@ -416,6 +449,7 @@ class Database:
             days_active,
             target_id,
             preview_img,
+            pkey,
         )
         placeholders = ", ".join([p] * len(cols))
         col_list = ", ".join(cols)
@@ -525,6 +559,89 @@ class Database:
         sql = f"SELECT * FROM meta_ads {clause} ORDER BY {order_clause} LIMIT {p} OFFSET {p}"
         params.extend([limit, offset])
         rows = self._query(sql, tuple(params))
+        for r in rows:
+            try:
+                r["publisher_platforms"] = json.loads(r.get("publisher_platforms") or "[]")
+            except Exception:
+                r["publisher_platforms"] = []
+        return rows
+
+    # ── product groups (same advertiser + same product) ───────────────────
+    _GROUP_ORDER = {
+        "longest_running": "max_days DESC, active DESC",
+        "newest_launch": "last_launch DESC",
+        "most_collated": "ads_count DESC, active DESC",
+        "collected_at": "last_collected DESC",
+    }
+
+    def get_ad_groups(self, limit: int = 60, offset: int = 0, sort_by: str = "collected_at",
+                      **filters) -> list[dict]:
+        """One item per product: a representative ad plus a ``group`` summary.
+
+        Filters are the same as :meth:`get_ads` and apply to the ads before
+        grouping, so counts reflect only the matching ads.
+        """
+        p = self._ph()
+        clause, params = self._build_ads_filter(**filters)
+        order = self._GROUP_ORDER.get(sort_by, self._GROUP_ORDER["collected_at"])
+        groups = self._query(
+            f"SELECT product_key, COUNT(*) AS ads_count, SUM(is_active) AS active, "
+            f"MIN(start_date) AS first_launch, MAX(start_date) AS last_launch, "
+            f"COUNT(DISTINCT body) AS texts, MAX(days_active) AS max_days, "
+            f"MAX(collected_at) AS last_collected "
+            f"FROM meta_ads {clause} GROUP BY product_key "
+            f"ORDER BY {order}, product_key LIMIT {p} OFFSET {p}",
+            tuple(params) + (limit, offset))
+        if not groups:
+            return []
+        keys = [g["product_key"] for g in groups]
+        in_list = ", ".join([p] * len(keys))
+        joiner = " AND " if clause else "WHERE "
+        rows = self._query(
+            f"SELECT * FROM meta_ads {clause}{joiner}product_key IN ({in_list})",
+            tuple(params) + tuple(keys))
+        # Representative: an active ad first, then the most recently launched.
+        best: dict = {}
+        for r in rows:
+            k = r["product_key"]
+            rank = (int(r.get("is_active") or 0), r.get("start_date") or "", r.get("collected_at") or "")
+            if k not in best or rank > best[k][0]:
+                best[k] = (rank, r)
+        out = []
+        for g in groups:
+            ad = dict(best[g["product_key"]][1])
+            try:
+                ad["publisher_platforms"] = json.loads(ad.get("publisher_platforms") or "[]")
+            except Exception:
+                ad["publisher_platforms"] = []
+            ad["group"] = {
+                "key": g["product_key"],
+                "count": int(g["ads_count"] or 0),
+                "active": int(g["active"] or 0),
+                "first_launch": g["first_launch"] or "",
+                "last_launch": g["last_launch"] or "",
+                "texts": int(g["texts"] or 0),
+                "max_days": int(g["max_days"] or 0),
+            }
+            out.append(ad)
+        return out
+
+    def count_ad_groups(self, **filters) -> int:
+        clause, params = self._build_ads_filter(**filters)
+        row = self._query_one(
+            f"SELECT COUNT(DISTINCT product_key) AS c FROM meta_ads {clause}", tuple(params))
+        return int(row["c"]) if row else 0
+
+    def get_group_ads(self, product_key: str, user_id: Optional[int] = None,
+                      limit: int = 500) -> list[dict]:
+        """All ads of one product group (newest launch first)."""
+        p = self._ph()
+        clause, params = self._build_ads_filter(user_id=user_id)
+        joiner = " AND " if clause else "WHERE "
+        rows = self._query(
+            f"SELECT * FROM meta_ads {clause}{joiner}product_key = {p} "
+            f"ORDER BY is_active DESC, start_date DESC LIMIT {int(limit)}",
+            tuple(params) + (product_key,))
         for r in rows:
             try:
                 r["publisher_platforms"] = json.loads(r.get("publisher_platforms") or "[]")

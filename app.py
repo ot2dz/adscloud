@@ -581,21 +581,32 @@ def api_ads():
     target_id = request.args.get("target_id")
     target_id_val = int(target_id) if target_id and target_id.isdigit() else None
 
-    ads = db.get_ads(
-        limit=limit, offset=offset, search=search, stores_only=stores_only,
-        query=query, store_domain=store_domain, page_id=page_id, preset=preset,
-        active_only=active_only, start_date_min=start_date_min,
-        start_date_max=start_date_max, min_days_active=min_days_active,
-        sort_by=sort_by, target_id=target_id_val, user_id=_scope_user_id(),
-    )
-    total = db.count_ads(
+    filters = dict(
         search=search, stores_only=stores_only, query=query,
         store_domain=store_domain, page_id=page_id, preset=preset,
         active_only=active_only, start_date_min=start_date_min,
         start_date_max=start_date_max, min_days_active=min_days_active,
         target_id=target_id_val, user_id=_scope_user_id(),
     )
-    return jsonify({"ads": ads, "total": total})
+    total_ads = db.count_ads(**filters)
+    if request.args.get("group", "0") == "1":
+        # One card per product (same advertiser + same product link); paging
+        # and ``total`` count products, ``total_ads`` the ads behind them.
+        items = db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters)
+        return jsonify({"ads": items, "total": db.count_ad_groups(**filters),
+                        "total_ads": total_ads, "grouped": True})
+    ads = db.get_ads(limit=limit, offset=offset, sort_by=sort_by, **filters)
+    return jsonify({"ads": ads, "total": total_ads, "total_ads": total_ads, "grouped": False})
+
+
+@app.route("/api/ads/group")
+@login_required
+def api_ads_group():
+    """Every ad of one product group, for the "show all N ads" view."""
+    key = (request.args.get("key") or "").strip()
+    if not key:
+        return jsonify({"error": "key required"}), 400
+    return jsonify({"ads": db.get_group_ads(key, user_id=_scope_user_id())})
 
 
 @app.route("/api/queries")

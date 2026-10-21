@@ -240,8 +240,12 @@
 
     <!-- Active Ads Count Label -->
     <div class="flex items-center justify-between text-xs text-slate-600 px-1 font-semibold">
-      <span>عدد الإعلانات المعروضة: <b class="num text-blue-700 text-sm font-bold" id="ads-total">0</b></span>
+      <span><span id="ads-total-label">عدد الإعلانات المعروضة:</span> <b class="num text-blue-700 text-sm font-bold" id="ads-total">0</b> <span id="ads-total-sub" class="text-slate-500"></span></span>
       <span id="active-filter-indicator" class="text-blue-600 font-bold"></span>
+      <label class="flex items-center gap-2 cursor-pointer select-none bg-white border border-[#cfe0f5] rounded-lg px-3 py-1.5 shadow-sm">
+        <input id="group-toggle" type="checkbox" class="accent-blue-600" onchange="setGroupMode(this.checked)">
+        <span class="font-bold text-slate-700">🧩 دمج إعلانات نفس المنتج</span>
+      </label>
     </div>
 
     <!-- Pagination (top) -->
@@ -253,6 +257,17 @@
     <!-- Pagination (bottom) -->
     <div class="ads-pager flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-slate-600 px-1 pt-2"></div>
   </section>
+
+  <!-- Product group: all ads of one product from one advertiser -->
+  <div id="group-modal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto" onclick="if (event.target === this) closeGroupModal()">
+    <div class="max-w-7xl mx-auto bg-[#f4f8fd] rounded-2xl shadow-2xl border border-[#cfe0f5]">
+      <div class="sticky top-0 z-10 flex items-center justify-between gap-3 bg-white rounded-t-2xl border-b border-[#cfe0f5] px-4 py-3">
+        <div id="group-modal-title" class="font-bold text-[#102a56] text-sm truncate"></div>
+        <button onclick="closeGroupModal()" class="shrink-0 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs">✕ إغلاق</button>
+      </div>
+      <div id="group-modal-ads" class="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 p-4"></div>
+    </div>
+  </div>
 
   <!-- VIEW: TARGETS (SPY ON PAGES, STORES, KEYWORDS) -->
   <section id="view-targets" class="hidden space-y-4">
@@ -843,6 +858,14 @@ let adsTotal = 0;
 let adsPageSize = 60;
 try { adsPageSize = parseInt(localStorage.getItem('adsPageSize')) || 60; } catch (_e) {}
 let adsFilterKey = '';
+let groupMode = true;
+try { groupMode = localStorage.getItem('adsGroupMode') !== '0'; } catch (_e) {}
+
+function setGroupMode(on) {
+  groupMode = !!on;
+  try { localStorage.setItem('adsGroupMode', groupMode ? '1' : '0'); } catch (_e) {}
+  loadAds();
+}
 
 function adsPageCount() { return Math.max(1, Math.ceil(adsTotal / adsPageSize)); }
 
@@ -911,6 +934,7 @@ async function loadAds(opts = {}) {
   }
 
   url += adminUserParam('&');
+  if (groupMode) url += '&group=1';
 
   // A change of filters/sort goes back to page 1; plain refreshes (after a
   // scrape, periodic reloads) keep the page the user is reading.
@@ -930,6 +954,9 @@ async function loadAds(opts = {}) {
   ads = d.ads;
   renderAds();
   renderAdsPager();
+  document.getElementById('group-toggle').checked = groupMode;
+  document.getElementById('ads-total-label').innerText = groupMode ? 'عدد المنتجات المعروضة:' : 'عدد الإعلانات المعروضة:';
+  document.getElementById('ads-total-sub').innerText = groupMode && d.total_ads != null ? `(من ${d.total_ads} إعلان)` : '';
   document.getElementById('ads-total').innerText = adsTotal;
   if (opts.scroll) document.getElementById('ads-total').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -945,15 +972,47 @@ function renderAds() {
     el.innerHTML = '<div class="col-span-full py-16 text-center text-slate-500 font-bold bg-white border border-[#cfe0f5] rounded-2xl">لا توجد إعلانات مطابقة للفلاتر المحددة.</div>';
     return;
   }
-  el.innerHTML = ads.map(a => {
-    const days = a.days_active || 1;
+  el.innerHTML = ads.map(a => adCardHtml(a)).join('');
+}
+
+// Colour band by how many ads one advertiser runs for the same product.
+function groupTone(n) {
+  if (n >= 10) return { ring: 'border-rose-400 ring-2 ring-rose-200', badge: 'bg-rose-600', label: 'توسّع قوي' };
+  if (n >= 5) return { ring: 'border-orange-400 ring-2 ring-orange-100', badge: 'bg-orange-500', label: 'يتوسّع' };
+  if (n >= 2) return { ring: 'border-blue-400 ring-1 ring-blue-100', badge: 'bg-blue-600', label: '' };
+  return null;
+}
+
+async function openGroupModal(key, title) {
+  const modal = document.getElementById('group-modal');
+  const box = document.getElementById('group-modal-ads');
+  document.getElementById('group-modal-title').innerText = title;
+  box.innerHTML = '<div class="col-span-full py-10 text-center text-slate-500 font-bold">… جاري التحميل</div>';
+  modal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  const r = await fetch('/api/ads/group?key=' + encodeURIComponent(key) + adminUserParam('&'));
+  const d = await r.json();
+  box.innerHTML = (d.ads || []).map(a => adCardHtml(a, { plain: true })).join('') ||
+    '<div class="col-span-full py-10 text-center text-slate-500 font-bold">لا توجد إعلانات.</div>';
+}
+
+function closeGroupModal() {
+  document.getElementById('group-modal').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGroupModal(); });
+
+function adCardHtml(a, opts = {}) {
+    const g = (!opts.plain && a.group && a.group.count > 1) ? a.group : null;
+    const tone = g ? groupTone(g.count) : null;
+    const days = Math.max(a.days_active || 1, g ? g.max_days : 0);
     const isWin = days >= 5 && a.is_active;
     const isNew = days <= 3 && a.is_active;
     const adFbUrl = `https://www.facebook.com/ads/library/?id=${a.ad_id}`;
     const previewImg = a.preview_image_url || '';
 
     return `
-    <article class="bg-white border border-[#d7e3f4] rounded-2xl p-4 flex flex-col justify-between shadow-[0_8px_22px_rgba(23,43,77,0.06)] hover:shadow-md transition">
+    <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl p-4 flex flex-col justify-between shadow-[0_8px_22px_rgba(23,43,77,0.06)] hover:shadow-md transition">
       <div>
         <!-- Top Media Container (Matching screenshot style) -->
         <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center">
@@ -971,9 +1030,20 @@ function renderAds() {
             ${isNew ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-500 text-white font-bold shadow-sm">🚀 جديد</span>' : ''}
           </div>
           <div class="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-white/90 backdrop-blur text-[11px] font-bold text-[#102a56] shadow-sm">
-            ${a.is_active ? '🟢 نشط' : '⏸️ متوقف'}
+            ${g ? `🟢 ${g.active} نشط من ${g.count}` : (a.is_active ? '🟢 نشط' : '⏸️ متوقف')}
           </div>
+          ${g ? `
+            <div class="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg ${tone.badge} text-white font-extrabold text-sm shadow-md">
+              📦 <span class="num">${g.count}</span> إعلان${tone.label ? ` <span class="text-[10px] font-bold opacity-90">· ${tone.label}</span>` : ''}
+            </div>` : ''}
         </div>
+
+        ${g ? `
+          <div class="grid grid-cols-3 gap-1.5 mb-2.5 text-center text-[10.5px] font-bold">
+            <div class="rounded-lg bg-slate-50 border border-slate-200 py-1"><div class="text-slate-500 font-semibold">أول إطلاق</div><div class="font-mono text-[#102a56]">${(g.first_launch || '').slice(0, 10) || '—'}</div></div>
+            <div class="rounded-lg bg-slate-50 border border-slate-200 py-1"><div class="text-slate-500 font-semibold">آخر إطلاق</div><div class="font-mono text-[#102a56]">${(g.last_launch || '').slice(0, 10) || '—'}</div></div>
+            <div class="rounded-lg bg-slate-50 border border-slate-200 py-1"><div class="text-slate-500 font-semibold">نصوص مختلفة</div><div class="num text-[#102a56]">${g.texts}</div></div>
+          </div>` : ''}
 
         <!-- Header: Page Name & Domain -->
         <div class="space-y-1 mb-2.5">
@@ -1046,8 +1116,13 @@ function renderAds() {
           نسخ النص 📋
         </button>
       </div>
+      ${g ? `
+        <button data-key="${escT(g.key)}" data-title="${escT((a.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
+          onclick="openGroupModal(this.dataset.key, this.dataset.title)"
+          class="mt-2 w-full py-2 rounded-lg ${tone.badge} hover:opacity-90 text-white font-bold text-xs shadow-sm transition">
+          👁️ عرض كل الـ ${g.count} إعلان
+        </button>` : ''}
     </article>`;
-  }).join('');
 }
 
 // ── Targets management ──
@@ -1481,7 +1556,7 @@ function onStreamMessage(e) {
     // Show live ads only on page 1 of the "newest scraped" view, so a user
     // reading another page is not shifted under their eyes.
     adsTotal++;
-    if (adsPage === 1 && document.getElementById('sort-by').value === 'collected_at') {
+    if (!groupMode && adsPage === 1 && document.getElementById('sort-by').value === 'collected_at') {
       ads.unshift(d); if (ads.length > adsPageSize) ads.pop(); renderAds();
     }
     renderAdsPager();
