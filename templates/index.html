@@ -208,6 +208,18 @@
         </div>
       </div>
 
+      <!-- Ads-per-product filter (combines with the presets above) -->
+      <div class="flex items-center justify-between flex-wrap gap-2.5">
+        <span class="text-xs font-bold text-slate-500">📦 عدد الإعلانات للمنتج:</span>
+        <div class="flex items-center gap-2 flex-wrap">
+          <div id="min-product-ads-btns" class="flex items-center gap-2 flex-wrap"></div>
+          <label class="flex items-center gap-1.5 text-xs font-bold text-slate-600">أو على الأقل:
+            <input id="min-product-ads" type="number" min="0" placeholder="—" onchange="setMinProductAds(this.value)"
+              class="w-16 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-center text-slate-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          </label>
+        </div>
+      </div>
+
       <!-- Advanced Filter Inputs -->
       <div class="grid md:grid-cols-12 gap-3 pt-3 border-t border-slate-100 text-xs">
         <div class="md:col-span-4">
@@ -824,6 +836,34 @@ function setPreset(p) {
   loadAds();
 }
 
+// ── Ads-per-product filter ──
+let minProductAds = 0;
+const MIN_PRODUCT_ADS_CHOICES = [0, 2, 5, 10, 20];
+
+function renderProductAdsFilter() {
+  const box = document.getElementById('min-product-ads-btns');
+  if (!box) return;
+  box.innerHTML = MIN_PRODUCT_ADS_CHOICES.map(n => {
+    const on = n === minProductAds;
+    const cls = on
+      ? 'bg-blue-600 text-white border-blue-600'
+      : n >= 10 ? 'bg-white text-rose-700 border-rose-300 hover:bg-rose-50'
+      : n >= 5 ? 'bg-white text-orange-700 border-orange-300 hover:bg-orange-50'
+      : 'bg-white text-slate-700 border-[#cfe0f5] hover:bg-[#eef6ff]';
+    return `<button onclick="setMinProductAds(${n})" class="text-xs px-3.5 py-1.5 rounded-lg border font-bold transition shadow-sm ${cls}">${n ? n + '+ إعلان' : 'الكل'}</button>`;
+  }).join('');
+  const input = document.getElementById('min-product-ads');
+  input.value = minProductAds && !MIN_PRODUCT_ADS_CHOICES.includes(minProductAds) ? minProductAds : '';
+}
+
+function setMinProductAds(n) {
+  n = parseInt(n) || 0;
+  minProductAds = n > 1 ? n : 0;
+  renderProductAdsFilter();
+  loadAds();
+}
+document.addEventListener('DOMContentLoaded', renderProductAdsFilter);
+
 function debounceLoadAds() {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(loadAds, 300);
@@ -921,6 +961,7 @@ async function loadAds(opts = {}) {
   const sort = document.getElementById('sort-by').value;
 
   let url = `/api/ads?search=${encodeURIComponent(q)}&preset=${currentPreset}&start_date_min=${encodeURIComponent(dmin)}&start_date_max=${encodeURIComponent(dmax)}&min_days_active=${mdays}&sort_by=${sort}`;
+  if (minProductAds > 1) url += `&min_product_ads=${minProductAds}`;
 
   if (currentTargetFilter) {
     if (currentTargetFilter.id) url += `&target_id=${currentTargetFilter.id}`;

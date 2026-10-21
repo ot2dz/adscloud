@@ -578,6 +578,7 @@ def api_ads():
     start_date_max = request.args.get("start_date_max", "")
     sort_by = request.args.get("sort_by", "collected_at")
     min_days_active = int(request.args.get("min_days_active", 0))
+    min_product_ads = int(request.args.get("min_product_ads", 0) or 0)
     target_id = request.args.get("target_id")
     target_id_val = int(target_id) if target_id and target_id.isdigit() else None
 
@@ -587,6 +588,7 @@ def api_ads():
         active_only=active_only, start_date_min=start_date_min,
         start_date_max=start_date_max, min_days_active=min_days_active,
         target_id=target_id_val, user_id=_scope_user_id(),
+        min_product_ads=min_product_ads,
     )
     total_ads = db.count_ads(**filters)
     if request.args.get("group", "0") == "1":

@@ -521,7 +521,8 @@ class Database:
                            page_id: str = "", preset: str = "", active_only: bool = False,
                            start_date_min: str = "", start_date_max: str = "",
                            min_days_active: int = 0, target_id: Optional[int] = None,
-                           user_id: Optional[int] = None) -> tuple[str, list]:
+                           user_id: Optional[int] = None,
+                           min_product_ads: int = 0) -> tuple[str, list]:
         p = self._ph()
         where = []
         params: list = []
@@ -569,6 +570,14 @@ class Database:
             where.append(f"(body LIKE {p} OR page_name LIKE {p} OR store_domain LIKE {p})")
             params.extend([like, like, like])
 
+        # Products (same advertiser + same product) with at least N ads that
+        # match all the filters above.
+        if min_product_ads and int(min_product_ads) > 1:
+            base = ("WHERE " + " AND ".join(where)) if where else ""
+            where.append(f"product_key IN (SELECT product_key FROM meta_ads {base} "
+                         f"GROUP BY product_key HAVING COUNT(*) >= {p})")
+            params = params + params + [int(min_product_ads)]
+
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         return clause, params
 
@@ -577,14 +586,15 @@ class Database:
                 page_id: str = "", preset: str = "", active_only: bool = False,
                 start_date_min: str = "", start_date_max: str = "",
                 min_days_active: int = 0, sort_by: str = "collected_at",
-                target_id: Optional[int] = None, user_id: Optional[int] = None) -> list[dict]:
+                target_id: Optional[int] = None, user_id: Optional[int] = None,
+                min_product_ads: int = 0) -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
-            target_id=target_id, user_id=user_id,
+            target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
         )
 
         order_map = {
@@ -693,13 +703,13 @@ class Database:
                   page_id: str = "", preset: str = "", active_only: bool = False,
                   start_date_min: str = "", start_date_max: str = "",
                   min_days_active: int = 0, target_id: Optional[int] = None,
-                  user_id: Optional[int] = None) -> int:
+                  user_id: Optional[int] = None, min_product_ads: int = 0) -> int:
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
-            target_id=target_id, user_id=user_id,
+            target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
         )
         row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
         return int(row["c"]) if row else 0
