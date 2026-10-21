@@ -596,10 +596,11 @@ def api_ads():
     if request.args.get("group", "0") == "1":
         # One card per product (same advertiser + same product link); paging
         # and ``total`` count products, ``total_ads`` the ads behind them.
-        items = db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters)
+        items = db.attach_entity_stats(
+            db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters))
         return jsonify({"ads": items, "total": db.count_ad_groups(**filters),
                         "total_ads": total_ads, "grouped": True})
-    ads = db.get_ads(limit=limit, offset=offset, sort_by=sort_by, **filters)
+    ads = db.attach_entity_stats(db.get_ads(limit=limit, offset=offset, sort_by=sort_by, **filters))
     return jsonify({"ads": ads, "total": total_ads, "total_ads": total_ads, "grouped": False})
 
 
@@ -610,7 +611,7 @@ def api_ads_group():
     key = (request.args.get("key") or "").strip()
     if not key:
         return jsonify({"error": "key required"}), 400
-    return jsonify({"ads": db.get_group_ads(key, user_id=_scope_user_id())})
+    return jsonify({"ads": db.attach_entity_stats(db.get_group_ads(key, user_id=_scope_user_id()))})
 
 
 @app.route("/api/queries")
@@ -949,6 +950,7 @@ def api_get_settings():
         "has_telegram_token": bool(s.get("telegram_token")),
         "telegram_chat_id": s.get("telegram_chat_id", ""),
         "notify_webhook": s.get("notify_webhook", ""),
+        "entity_stats_enabled": s.get("entity_stats_enabled", "true"),
     })
 
 
@@ -968,6 +970,8 @@ def api_set_settings():
         db.set_setting("telegram_chat_id", str(cfg["telegram_chat_id"]).strip())
     if "notify_webhook" in cfg:
         db.set_setting("notify_webhook", cfg["notify_webhook"].strip())
+    if "entity_stats_enabled" in cfg:
+        db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
     return jsonify({"ok": True})
 
 
@@ -1574,6 +1578,63 @@ def job_worker_loop() -> None:
             time.sleep(5)
 
 
+def _entity_stats_enabled() -> bool:
+    # ENTITY_STATS=off disables the counter outright (env wins over the setting).
+    if os.environ.get("ENTITY_STATS", "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    return db.get_settings().get("entity_stats_enabled", "true").lower() in ("1", "true", "yes", "on")
+
+
+def entity_stats_loop() -> None:
+    """Low-priority background counter: how many ads each page / store domain
+    in the bank runs in total on Meta (one request each, refreshed daily).
+    Yields to scraping: it only works while no scrape runs or waits."""
+    import random
+    from engine import entity_ad_count, new_count_client
+
+    def busy() -> bool:
+        return bool(manager.state.get("running")) or db.has_pending_jobs()
+
+    while True:
+        try:
+            if not _entity_stats_enabled():
+                time.sleep(300)
+                continue
+            if busy():
+                time.sleep(20)
+                continue
+            batch = db.stale_entities(limit=20)
+            if not batch:
+                time.sleep(600)
+                continue
+            client = new_count_client()
+            errors = 0
+            try:
+                for kind, key in batch:
+                    if busy():
+                        break
+                    try:
+                        n = entity_ad_count(client, kind, key, country=DEFAULT_COUNTRY)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("entity count %s %s failed: %s", kind, key, exc)
+                        n = None
+                    db.save_entity_stat(kind, key, n, "ok" if n is not None else "error")
+                    errors = errors + 1 if n is None else 0
+                    if errors >= 3:
+                        logger.warning("entity counts: repeated failures, pausing 10 min")
+                        time.sleep(600)
+                        break
+                    time.sleep(1 + random.random())
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("entity stats loop error")
+            time.sleep(60)
+
+
 _bg_started = False
 
 
@@ -1595,6 +1656,7 @@ def start_background_threads() -> None:
     except Exception:
         logger.exception("orphaned job requeue failed")
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
 
 

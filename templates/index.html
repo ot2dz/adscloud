@@ -244,6 +244,7 @@
             <option value="longest_running">الأطول عمراً (الأكثر ربحاً)</option>
             <option value="newest_launch">الأحدث إطلاقاً</option>
             <option value="most_collated">الأكثر انتشاراً (Scaling)</option>
+            <option value="biggest_page">📄 أكبر المعلنين (إعلانات الصفحة)</option>
           </select>
         </div>
       </div>
@@ -423,6 +424,14 @@
             <div>
               <div class="font-bold text-[#102a56]">تشغيل السحب المجدول الدوري</div>
               <div class="text-[11px] text-slate-500 mt-0.5">يفحص كل هدف في موعده المحدد بالساعات بنمط السحب التزايدي السريع.</div>
+            </div>
+          </label>
+
+          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
+            <input type="checkbox" id="cfg-entity-stats" class="rounded text-blue-600">
+            <div>
+              <div class="font-bold text-[#102a56]">عدّ إعلانات الصفحات والمتاجر</div>
+              <div class="text-[11px] text-slate-500 mt-0.5">يعرض في كل بطاقة كم إعلاناً نشطاً للصفحة وللمتجر على فيسبوك (طلب واحد لكل صفحة/متجر، يُحدَّث يومياً، ويعمل فقط عندما لا يوجد سحب).</div>
             </div>
           </label>
 
@@ -1002,6 +1011,32 @@ function renderAds() {
   el.innerHTML = ads.map(a => adCardHtml(a)).join('');
 }
 
+// Total active ads of the advertiser's page / store domain on Meta (not only
+// the ads our searches collected). Filled in by the background counter.
+function sizeTone(n) {
+  if (n >= 50) return 'bg-rose-50 text-rose-700 border-rose-300';
+  if (n >= 20) return 'bg-orange-50 text-orange-700 border-orange-300';
+  return 'bg-[#eef6ff] text-[#174ea6] border-[#cfe0f5]';
+}
+function domainAdsUrl(dom) {
+  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=DZ&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + dom + '"')}&search_type=keyword_exact_phrase&sort_data[direction]=desc&sort_data[mode]=total_impressions`;
+}
+function entityBadges(a) {
+  const parts = [];
+  if (a.page_id) {
+    parts.push(a.page_total_ads != null
+      ? `<a href="${pageAdsUrl(a.page_id)}" target="_blank" rel="noopener" title="كل إعلانات هذه الصفحة على فيسبوك" class="px-2 py-0.5 rounded-lg border font-bold ${sizeTone(a.page_total_ads)}">📄 <span class="num">${a.page_total_ads}</span> إعلان نشط للصفحة</a>`
+      : `<span class="px-2 py-0.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 font-semibold" title="سيُحسب تلقائياً عند توقف السحب">📄 ⏳ عدّ إعلانات الصفحة…</span>`);
+  }
+  if (a.store_domain) {
+    const pagesNote = a.domain_pages > 1 ? ` · عبر ${a.domain_pages} صفحات` : '';
+    parts.push(a.domain_total_ads != null
+      ? `<a href="${domainAdsUrl(a.store_domain)}" target="_blank" rel="noopener" title="كل إعلانات هذا المتجر في الجزائر (كل الصفحات)" class="px-2 py-0.5 rounded-lg border font-bold ${sizeTone(a.domain_total_ads)}">🌐 <span class="num">${a.domain_total_ads}</span> إعلان للمتجر${pagesNote}</a>`
+      : (pagesNote ? `<span class="px-2 py-0.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-500 font-semibold">🌐 ⏳${pagesNote}</span>` : ''));
+  }
+  return parts.length ? `<div class="flex flex-wrap gap-1.5 mb-2.5 text-[11px]">${parts.join('')}</div>` : '';
+}
+
 // Colour band by how many ads one advertiser runs for the same product.
 function groupTone(n) {
   if (n >= 10) return { ring: 'border-rose-400 ring-2 ring-rose-200', badge: 'bg-rose-600', label: 'توسّع قوي' };
@@ -1087,6 +1122,7 @@ function adCardHtml(a, opts = {}) {
             <div class="text-[11px] text-slate-400">بدون رابط متجر خارجي</div>
           `}
         </div>
+        ${entityBadges(a)}
 
         <!-- Metric Badges (Matching screenshot pills) -->
         <div class="flex flex-wrap gap-1.5 mb-3" dir="ltr">
@@ -1460,6 +1496,7 @@ async function stopJob(id){ await fetch('/api/jobs/'+id+'/stop',{method:'POST'})
 async function loadSettings() {
   const r = await fetch('/api/settings'); const s = await r.json();
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
+  document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
   document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
   document.getElementById('cfg-tg-token').value = s.telegram_token || '';
@@ -1480,6 +1517,7 @@ async function saveAllSettings() {
     body: JSON.stringify({
       schedule_enabled: schedEn,
       interval_hours: schedInt,
+      entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
       notify_enabled: notifEn,
       telegram_token: token,
       telegram_chat_id: chat

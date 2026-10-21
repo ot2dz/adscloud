@@ -246,6 +246,19 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_targets_target ON user_targets (target_id)")
+        # How many ads a page / a store domain runs in total on Meta (not only
+        # the ones our searches happened to collect). Column names are
+        # prefixed so this table can be joined to meta_ads unambiguously.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS entity_stats (
+            ent_kind TEXT NOT NULL,
+            ent_key TEXT NOT NULL,
+            ent_ads INTEGER,
+            ent_checked_at TEXT,
+            ent_status TEXT DEFAULT 'ok',
+            PRIMARY KEY (ent_kind, ent_key)
+        )
+        """)
         conn.commit()
 
         # Idempotent migrations for the jobs table (progress + stop control + incremental + date filters).
@@ -627,10 +640,12 @@ class Database:
             "newest_launch": "start_date DESC",
             "most_collated": "collation_count DESC",
             "collected_at": "collected_at DESC",
+            "biggest_page": "COALESCE(es.ent_ads, -1) DESC, collected_at DESC",
         }
         order_clause = order_map.get(sort_by, "collected_at DESC")
+        join = self._PAGE_STATS_JOIN if sort_by == "biggest_page" else ""
 
-        sql = f"SELECT * FROM meta_ads {clause} ORDER BY {order_clause} LIMIT {p} OFFSET {p}"
+        sql = f"SELECT meta_ads.* FROM meta_ads {join} {clause} ORDER BY {order_clause} LIMIT {p} OFFSET {p}"
         params.extend([limit, offset])
         rows = self._query(sql, tuple(params))
         for r in rows:
@@ -640,13 +655,84 @@ class Database:
                 r["publisher_platforms"] = []
         return rows
 
+    # ── page / domain totals on Meta ──────────────────────────────────────
+    def save_entity_stat(self, kind: str, key: str, ads: Optional[int], status: str = "ok") -> None:
+        p = self._ph()
+        sql = (f"INSERT INTO entity_stats (ent_kind, ent_key, ent_ads, ent_checked_at, ent_status) "
+               f"VALUES ({p},{p},{p},{p},{p}) ON CONFLICT (ent_kind, ent_key) DO UPDATE SET "
+               f"ent_ads = excluded.ent_ads, ent_checked_at = excluded.ent_checked_at, "
+               f"ent_status = excluded.ent_status")
+        self._execute(sql, (kind, str(key), ads, _now(), status))
+
+    def stale_entities(self, max_age_hours: float = 24.0, retry_hours: float = 6.0,
+                       limit: int = 50) -> list[tuple[str, str]]:
+        """Pages and store domains seen in the bank whose total is missing or
+        older than ``max_age_hours`` (failed checks retried after ``retry_hours``).
+        Never-checked entities of the most recently collected ads come first."""
+        p = self._ph()
+        ok_cut = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
+        err_cut = (datetime.now(timezone.utc) - timedelta(hours=retry_hours)).isoformat()
+        out: list[tuple[str, str]] = []
+        for kind, col in (("page", "page_id"), ("domain", "store_domain")):
+            rows = self._query(
+                f"SELECT m.{col} AS k, MAX(m.collected_at) AS last, MAX(es.ent_checked_at) AS checked "
+                f"FROM meta_ads m LEFT JOIN entity_stats es "
+                f"ON es.ent_kind = {p} AND es.ent_key = m.{col} "
+                f"WHERE m.{col} IS NOT NULL AND m.{col} != '' "
+                f"AND (es.ent_checked_at IS NULL "
+                f"OR (es.ent_status = 'ok' AND es.ent_checked_at < {p}) "
+                f"OR (es.ent_status != 'ok' AND es.ent_checked_at < {p})) "
+                f"GROUP BY m.{col} ORDER BY MAX(es.ent_checked_at) IS NOT NULL, MAX(m.collected_at) DESC "
+                f"LIMIT {int(limit)}", (kind, ok_cut, err_cut))
+            out += [(kind, r["k"]) for r in rows]
+        # interleave so pages and domains progress together
+        pages = [e for e in out if e[0] == "page"]
+        doms = [e for e in out if e[0] == "domain"]
+        mixed = []
+        for i in range(max(len(pages), len(doms))):
+            mixed += pages[i:i + 1] + doms[i:i + 1]
+        return mixed[:limit]
+
+    def attach_entity_stats(self, ads: list[dict]) -> list[dict]:
+        """Add page_total_ads / domain_total_ads (Meta totals) and
+        domain_pages (pages in our bank using that domain) to each ad."""
+        if not ads:
+            return ads
+        p = self._ph()
+        pages = sorted({str(a.get("page_id") or "") for a in ads} - {""})
+        doms = sorted({str(a.get("store_domain") or "") for a in ads} - {""})
+        stats: dict = {}
+        for kind, keys in (("page", pages), ("domain", doms)):
+            if keys:
+                rows = self._query(
+                    f"SELECT ent_key, ent_ads, ent_checked_at FROM entity_stats WHERE ent_kind={p} "
+                    f"AND ent_key IN ({', '.join([p] * len(keys))})", (kind, *keys))
+                for r in rows:
+                    stats[(kind, r["ent_key"])] = r
+        dom_pages = {}
+        if doms:
+            rows = self._query(
+                f"SELECT store_domain, COUNT(DISTINCT page_id) AS n FROM meta_ads "
+                f"WHERE store_domain IN ({', '.join([p] * len(doms))}) GROUP BY store_domain", tuple(doms))
+            dom_pages = {r["store_domain"]: int(r["n"] or 0) for r in rows}
+        for a in ads:
+            ps = stats.get(("page", str(a.get("page_id") or "")))
+            ds = stats.get(("domain", str(a.get("store_domain") or "")))
+            a["page_total_ads"] = ps["ent_ads"] if ps else None
+            a["domain_total_ads"] = ds["ent_ads"] if ds else None
+            a["domain_pages"] = dom_pages.get(a.get("store_domain") or "", 0)
+        return ads
+
     # ── product groups (same advertiser + same product) ───────────────────
     _GROUP_ORDER = {
         "longest_running": "max_days DESC, active DESC",
         "newest_launch": "last_launch DESC",
         "most_collated": "ads_count DESC, active DESC",
         "collected_at": "last_collected DESC",
+        "biggest_page": "page_ads DESC, ads_count DESC",
     }
+    _PAGE_STATS_JOIN = ("LEFT JOIN entity_stats es ON es.ent_kind = 'page' "
+                        "AND es.ent_key = meta_ads.page_id")
 
     def get_ad_groups(self, limit: int = 60, offset: int = 0, sort_by: str = "collected_at",
                       **filters) -> list[dict]:
@@ -662,8 +748,8 @@ class Database:
             f"SELECT product_key, COUNT(*) AS ads_count, SUM(is_active) AS active, "
             f"MIN(start_date) AS first_launch, MAX(start_date) AS last_launch, "
             f"COUNT(DISTINCT body) AS texts, MAX(days_active) AS max_days, "
-            f"MAX(collected_at) AS last_collected "
-            f"FROM meta_ads {clause} GROUP BY product_key "
+            f"MAX(collected_at) AS last_collected, MAX(COALESCE(es.ent_ads, -1)) AS page_ads "
+            f"FROM meta_ads {self._PAGE_STATS_JOIN} {clause} GROUP BY product_key "
             f"ORDER BY {order}, product_key LIMIT {p} OFFSET {p}",
             tuple(params) + (limit, offset))
         if not groups:

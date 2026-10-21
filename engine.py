@@ -108,6 +108,22 @@ LAUNCH_EARLY_STOP = int(_env_float("META_ADS_LAUNCH_EARLY_STOP", 500))
 _PERMANENT_ERRORS = ("Repeated pagination cursor", "consecutive empty pages")
 
 
+def new_count_client():
+    """A bare Meta client for one-request result counts (uses the proxy pool)."""
+    from meta_ads_collector.client import MetaAdsClient
+    return MetaAdsClient(proxy=_proxy_arg())
+
+
+def entity_ad_count(client, kind: str, key: str, country: str = "DZ") -> Optional[int]:
+    """Active ads Meta reports for a whole page (all countries, like the
+    page's Ad Library link) or for an exact store domain in ``country``."""
+    if kind == "page":
+        return client.get_result_count(country="ALL", page_id=str(key), active_status="ACTIVE",
+                                       sort_mode=SORT_IMPRESSIONS)
+    return client.get_result_count(country=country, query=f'"{key}"', active_status="ACTIVE",
+                                   search_type=SEARCH_EXACT, sort_mode=SORT_IMPRESSIONS)
+
+
 def _is_permanent(exc: Exception) -> bool:
     return any(m in str(exc) for m in _PERMANENT_ERRORS)
 

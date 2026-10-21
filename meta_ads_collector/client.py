@@ -1154,8 +1154,12 @@ class MetaAdsClient:
         sort_mode: Optional[str] = "SORT_BY_RELEVANCY_MONTHLY_GROUPED",
         start_date: Optional[Union[str, date, datetime]] = None,
         end_date: Optional[Union[str, date, datetime]] = None,
+        page_id: Optional[str] = None,
     ) -> Optional[int]:
         """Return the Ad Library's estimated result count for a query.
+
+        With ``page_id`` it counts the active ads of that page instead (the
+        Ad Library "all ads of this page" view); ``query`` is ignored then.
 
         Fetches the server-rendered Ad Library page (one HTTP request, plus a
         JS-challenge round-trip if needed) and reads
@@ -1194,6 +1198,11 @@ class MetaAdsClient:
             "sort_data[mode]": sort_mode_url,
             "sort_data[direction]": "desc",
         }
+        if page_id:
+            # "All ads of one page" view, as the Ad Library page link does.
+            params["view_all_page_id"] = str(page_id)
+            params["search_type"] = "page"
+            params.pop("q", None)
         start_min = _to_date_str(start_date)
         start_max = _to_date_str(end_date)
         if start_min:
