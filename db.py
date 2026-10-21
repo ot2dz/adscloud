@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger("meta_ads_db")
@@ -23,6 +23,36 @@ _SQLITE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Algeria is UTC+1 all year (no daylight saving), so a fixed offset is exact
+# and needs no tz database in the container.
+ALGERIA_TZ = timezone(timedelta(hours=1))
+
+
+def algeria_today() -> date:
+    return datetime.now(ALGERIA_TZ).date()
+
+
+def _to_algeria_date(value: str) -> Optional[date]:
+    """Parse 'YYYY-MM-DD', an ISO timestamp or an epoch (s/ms) into a date."""
+    v = str(value or "").strip()
+    if not v:
+        return None
+    try:
+        if v.replace(".", "", 1).isdigit():
+            sec = float(v)
+            if sec > 1e11:  # milliseconds
+                sec /= 1000.0
+            return datetime.fromtimestamp(sec, tz=timezone.utc).date()
+        if len(v) == 10:
+            return datetime.strptime(v, "%Y-%m-%d").date()
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ALGERIA_TZ).date()
+    except Exception:
+        return None
 
 
 class Database:
@@ -376,33 +406,42 @@ class Database:
         return [str(r["page_id"]) for r in rows]
 
     # ── public API ────────────────────────────────────────────────────────
-    def _calc_days_active(self, start_date_str: str, first_seen_str: str) -> int:
-        """Calculate how many days the ad has been running."""
-        ref_date = None
-        # Try parsing start_date
-        if start_date_str:
-            try:
-                # check if numeric epoch timestamp
-                if start_date_str.replace(".", "", 1).isdigit():
-                    sec = float(start_date_str)
-                    if sec > 1e11:  # milliseconds
-                        sec /= 1000.0
-                    ref_date = datetime.fromtimestamp(sec, tz=timezone.utc).date()
-                else:
-                    clean = start_date_str[:10]
-                    ref_date = datetime.strptime(clean, "%Y-%m-%d").date()
-            except Exception:
-                pass
-        if not ref_date and first_seen_str:
-            try:
-                ref_date = datetime.fromisoformat(first_seen_str).date()
-            except Exception:
-                pass
-        if not ref_date:
+    def _calc_days_active(self, start_date_str: str, first_seen_str: str,
+                          is_active: bool = True, last_seen_active: str = "") -> int:
+        """Days the ad has been running, launch day = day 1, in Algeria time.
+
+        A running ad counts up to today; a stopped one up to the last day it
+        was seen active. Stored values are refreshed daily
+        (:meth:`refresh_days_active`) so they never freeze at scrape time.
+        """
+        start = _to_algeria_date(start_date_str) or _to_algeria_date(first_seen_str)
+        if not start:
             return 1
-        today = datetime.now(timezone.utc).date()
-        diff = (today - ref_date).days
-        return max(1, diff + 1)
+        end = algeria_today()
+        if not is_active:
+            end = _to_algeria_date(last_seen_active) or end
+        return max(1, (end - start).days + 1)
+
+    def refresh_days_active(self) -> int:
+        """Recompute days_active for every ad (run once a day). Returns rows changed."""
+        p = self._ph()
+        rows = self._query("SELECT ad_id, start_date, first_seen, is_active, last_seen_active, "
+                           "days_active FROM meta_ads")
+        updates = []
+        for r in rows:
+            d = self._calc_days_active(r.get("start_date") or "", r.get("first_seen") or "",
+                                       bool(r.get("is_active")), r.get("last_seen_active") or "")
+            if d != r.get("days_active"):
+                updates.append((d, r["ad_id"]))
+        if updates:
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.executemany(f"UPDATE meta_ads SET days_active={p} WHERE ad_id={p}", updates)
+                conn.commit()
+            finally:
+                conn.close()
+        return len(updates)
 
     def save_ad(self, ad: dict[str, Any], query: str = "", country: str = "DZ",
                 target_id: Optional[int] = None) -> bool:

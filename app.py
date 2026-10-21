@@ -1325,8 +1325,18 @@ def api_reclassify_stores():
 
 def scheduler_loop() -> None:
     from datetime import timedelta
+    from db import algeria_today
+    days_refreshed_for = None
     while True:
         try:
+            # Ad age ("Active: X days") keeps counting: recompute it at
+            # startup and again each time the date changes in Algeria.
+            today_dz = algeria_today()
+            if days_refreshed_for != today_dz:
+                changed = db.refresh_days_active()
+                days_refreshed_for = today_dz
+                logger.info("days_active refreshed for %s: %s ads updated", today_dz, changed)
+
             n = db.requeue_stale_jobs(minutes=20)
             if n:
                 manager.events.put({"type": "log", "data": {"text": f"♻️ أُعيد {n} أمر عالق إلى قائمة الانتظار."}})
