@@ -33,6 +33,7 @@
         <span id="auth-user-badge" class="text-[11px] px-2.5 py-0.5 rounded-full font-bold"></span>
         <span id="auth-user-email" class="text-xs text-slate-700 font-bold max-w-[150px] truncate"></span>
         <button onclick="logout()" class="text-xs px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold transition">خروج</button>
+        <button onclick="logoutAll()" title="إنهاء جلساتك على كل الأجهزة والمتصفحات" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 font-bold transition">خروج من كل الأجهزة</button>
       </div>
     </div>
   </div>
@@ -651,6 +652,12 @@ async function handleAuthSubmit(e) {
   }
 }
 
+async function logoutAll() {
+  if (!confirm('سيتم إنهاء جلساتك على جميع الأجهزة والمتصفحات (بما فيها هذا). متابعة؟')) return;
+  await fetch('/api/auth/logout-all', { method: 'POST' });
+  location.reload();
+}
+
 async function logout() {
   if (!confirm('هل تريد تسجيل الخروج؟')) return;
   await fetch('/api/auth/logout', { method: 'POST' });
@@ -706,7 +713,7 @@ async function loadAdminUsers() {
       return `
       <tr class="hover:bg-slate-50 transition">
         <td class="py-3 px-5 text-slate-400 font-mono text-xs">${u.id}</td>
-        <td class="px-5 font-bold text-[#102a56]">${u.email} ${isSelf ? '<span class="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">(أنت)</span>' : ''}</td>
+        <td class="px-5 font-bold text-[#102a56]">${escT(u.email)} ${isSelf ? '<span class="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">(أنت)</span>' : ''}</td>
         <td class="px-5">${roleBadge}</td>
         <td class="px-5">${statusBadge}</td>
         <td class="px-5 num font-bold text-slate-800">${u.saved_ads_count || 0}</td>
@@ -722,7 +729,7 @@ async function loadAdminUsers() {
               <button onclick="toggleUserStatus(${u.id})" class="text-xs px-2.5 py-1 rounded-lg border font-bold transition ${u.is_active ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}">
                 ${u.is_active ? 'تجميد' : 'تفعيل'}
               </button>
-              <button onclick="toggleUserRole(${u.id}, '${u.role}')" class="text-xs px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 font-bold transition">
+              <button onclick="toggleUserRole(${Number(u.id)}, '${u.role === 'admin' ? 'admin' : 'user'}')" class="text-xs px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 font-bold transition">
                 ${u.role === 'admin' ? 'تنزيل لمستخدم' : 'ترقية لأدمن'}
               </button>
               <button onclick="deleteUser(${u.id})" class="text-xs px-2 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 font-bold transition">
@@ -1064,13 +1071,31 @@ function closeGroupModal() {
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGroupModal(); });
 
-function adCardHtml(a, opts = {}) {
+// Ad data comes from Facebook advertisers (and the extension): treat every
+// field as hostile. Text is HTML-escaped; links must be http(s).
+function safeUrl(u) {
+  const v = String(u == null ? '' : u).trim();
+  return /^https?:\/\//i.test(v) ? escT(v) : '';
+}
+function escAd(a) {
+  const out = Object.assign({}, a);
+  for (const k of ['ad_id', 'page_id', 'page_name', 'store_domain', 'platform', 'cta_text',
+                   'start_date', 'collected_at', 'body']) {
+    out[k] = a[k] == null ? a[k] : escT(a[k]);
+  }
+  out.link_url = safeUrl(a.link_url);
+  out.preview_image_url = safeUrl(a.preview_image_url);
+  return out;
+}
+
+function adCardHtml(raw, opts = {}) {
+    const a = escAd(raw);
     const g = (!opts.plain && a.group && a.group.count > 1) ? a.group : null;
     const tone = g ? groupTone(g.count) : null;
     const days = Math.max(a.days_active || 1, g ? g.max_days : 0);
     const isWin = days >= 5 && a.is_active;
     const isNew = days <= 3 && a.is_active;
-    const adFbUrl = `https://www.facebook.com/ads/library/?id=${a.ad_id}`;
+    const adFbUrl = `https://www.facebook.com/ads/library/?id=${encodeURIComponent(raw.ad_id || '')}`;
     const previewImg = a.preview_image_url || '';
 
     return `
@@ -1115,7 +1140,7 @@ function adCardHtml(a, opts = {}) {
           </div>
           ${a.store_domain ? `
             <div class="text-xs text-slate-600 flex items-center justify-between">
-              <span class="font-mono text-blue-700 truncate cursor-pointer hover:underline font-bold" onclick="trackDomain('${a.store_domain}')">🔗 ${a.store_domain}</span>
+              <span class="font-mono text-blue-700 truncate cursor-pointer hover:underline font-bold" data-domain="${a.store_domain}" onclick="trackDomain(this.dataset.domain)">🔗 ${a.store_domain}</span>
               <span class="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">${a.platform || 'Store'}</span>
             </div>
           ` : `
@@ -1147,7 +1172,7 @@ function adCardHtml(a, opts = {}) {
         <!-- Ad Copy Snippet -->
         ${a.body ? `
           <div class="text-xs text-slate-700 bg-slate-50 border border-slate-100 p-2.5 rounded-xl line-clamp-3 leading-relaxed mb-3">
-            ${a.body.slice(0, 180)}
+            ${escT((raw.body || '').slice(0, 180))}
           </div>
         ` : ''}
       </div>
@@ -1167,20 +1192,20 @@ function adCardHtml(a, opts = {}) {
           </button>
         `}
         ${a.page_id ? `
-          <button onclick="trackPage('${a.page_id}', '${(a.page_name || '').replace(/'/g, "\\'")}')" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+          <button data-page="${a.page_id}" data-name="${a.page_name || ''}" onclick="trackPage(this.dataset.page, this.dataset.name)" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
             + تتبع الصفحة
           </button>
         ` : `
-          <button onclick="copyAdText('${(a.body || '').replace(/'/g, "\\'")}')" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+          <button data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
             نسخ النص 📋
           </button>
         `}
-        <button onclick="copyAdText('${(a.body || '').replace(/'/g, "\\'")}')" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
+        <button data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
           نسخ النص 📋
         </button>
       </div>
       ${g ? `
-        <button data-key="${escT(g.key)}" data-title="${escT((a.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
+        <button data-key="${escT(g.key)}" data-title="${escT((raw.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
           onclick="openGroupModal(this.dataset.key, this.dataset.title)"
           class="mt-2 w-full py-2 rounded-lg ${tone.badge} hover:opacity-90 text-white font-bold text-xs shadow-sm transition">
           👁️ عرض كل الـ ${g.count} إعلان
@@ -1208,8 +1233,8 @@ async function loadTargets() {
   const typeAr = { page: 'صفحة', domain: 'متجر', keyword: 'كلمة', custom_url: 'رابط مخصص' };
 
   el.innerHTML = list.map(t => {
-    const safeLabel = (t.label || t.target_value || '').replace(/'/g, "\\'");
-    const safeVal = (t.target_value || '').replace(/'/g, "\\'");
+    // User-typed values: escaped for HTML and passed to handlers via data-*.
+    const dataAttrs = `data-id="${Number(t.id)}" data-type="${escT(t.type)}" data-val="${escT(t.target_value)}" data-label="${escT(t.label || t.target_value)}"`;
     const adsCount = t.ads_count || 0;
     const act = t.activity;
     const activityCell = act
@@ -1221,11 +1246,11 @@ async function loadTargets() {
       : '<span class="text-[11px] text-slate-400">—</span>';
     return `
     <tr class="hover:bg-slate-50/80 transition ${t.enabled ? '' : 'opacity-60'}">
-      <td class="py-3 px-5"><span class="text-[10px] px-2.5 py-0.5 rounded-full font-bold border ${typeBadge[t.type] || 'bg-slate-100 text-slate-700'}">${typeAr[t.type] || t.type}</span>
+      <td class="py-3 px-5"><span class="text-[10px] px-2.5 py-0.5 rounded-full font-bold border ${typeBadge[t.type] || 'bg-slate-100 text-slate-700'}">${typeAr[t.type] || escT(t.type)}</span>
         ${t.source === 'extension' ? '<div class="text-[10px] text-slate-400 mt-1">🧩 من الإضافة</div>' : ''}</td>
       <td class="px-5 py-2">
         <div class="flex items-center gap-2">
-          <div class="font-bold text-[#102a56] hover:text-blue-600 cursor-pointer flex items-center gap-1.5 transition text-sm" onclick="filterByTarget(${t.id}, '${t.type}', '${safeVal}', '${safeLabel}')" title="انقر لعرض إعلانات هذا المنافس فقط">
+          <div class="font-bold text-[#102a56] hover:text-blue-600 cursor-pointer flex items-center gap-1.5 transition text-sm" ${dataAttrs} onclick="filterByTargetEl(this)" title="انقر لعرض إعلانات هذا المنافس فقط">
             <span>${escT(t.label || t.target_value)}</span>
             <span class="text-blue-500 text-xs">↗</span>
           </div>
@@ -1239,8 +1264,8 @@ async function loadTargets() {
       <td class="px-5 text-xs text-slate-500 font-mono">${t.last_scraped_at ? t.last_scraped_at.slice(0, 16).replace('T', ' ') : 'لم يُفحص بعد'}</td>
       <td class="px-5 text-center">
         <div class="flex items-center justify-center gap-2 flex-wrap">
-          <button onclick="filterByTarget(${t.id}, '${t.type}', '${safeVal}', '${safeLabel}')" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">👁️ إعلاناته</button>
-          ${t.type === 'page' ? `<button onclick="toggleSnapshots('${escT(t.target_value)}')" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] font-bold transition shadow-sm">📈 سجل النشاط</button>` : ''}
+          <button ${dataAttrs} onclick="filterByTargetEl(this)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">👁️ إعلاناته</button>
+          ${t.type === 'page' ? `<button data-val="${escT(t.target_value)}" onclick="toggleSnapshots(this.dataset.val)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] font-bold transition shadow-sm">📈 سجل النشاط</button>` : ''}
           <button onclick="scanTarget(${t.id})" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition shadow-sm">⚡ فحص الآن</button>
           <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleTarget(${t.id}, this.checked)" title="تفعيل/إيقاف الفحص الدوري" class="cursor-pointer rounded text-blue-600">
           <button onclick="delTarget(${t.id})" class="text-rose-600 hover:text-rose-700 text-xs px-1.5 font-bold" title="إلغاء التتبع">✕</button>
@@ -1249,6 +1274,11 @@ async function loadTargets() {
     </tr>
     ${t.type === 'page' ? `<tr><td colspan="6" class="px-5"><div id="snap-${escT(t.target_value)}" class="hidden pb-3"></div></td></tr>` : ''}`;
   }).join('');
+}
+
+function filterByTargetEl(el) {
+  const d = el.dataset;
+  filterByTarget(Number(d.id), d.type, d.val, d.label);
 }
 
 function currentAdminUserFilter() {
@@ -1368,12 +1398,12 @@ async function loadStores() {
   const r = await fetch('/api/stores' + adminUserParam('?')); const d = await r.json();
   document.getElementById('stores').innerHTML = d.stores.map(s => `
     <tr class="hover:bg-slate-50 transition">
-      <td class="py-3 px-4 font-bold text-blue-700 font-mono">${s.store_domain}</td>
-      <td class="text-slate-600 px-4">${s.platform || ''}</td>
+      <td class="py-3 px-4 font-bold text-blue-700 font-mono">${escT(s.store_domain)}</td>
+      <td class="text-slate-600 px-4">${escT(s.platform || '')}</td>
       <td class="num font-bold text-slate-800 px-4">${s.total_ads}</td>
       <td class="text-xs text-slate-500 font-mono px-4">${(s.last_seen || '').slice(0, 10)}</td>
       <td class="text-center px-4">
-        <button onclick="trackDomain('${s.store_domain}')" data-admin-only class="${isAdmin() ? '' : 'hidden '}text-xs px-3 py-1.5 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">+ تتبع هذا المتجر</button>
+        <button data-domain="${escT(s.store_domain)}" onclick="trackDomain(this.dataset.domain)" class="text-xs px-3 py-1.5 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">+ تتبع هذا المتجر</button>
       </td>
     </tr>`).join('') || '<tr><td colspan="5" class="text-center py-6 text-slate-400 font-semibold">لا توجد متاجر مكتشفة بعد.</td></tr>';
 }
@@ -1472,17 +1502,17 @@ async function loadJobs() {
     <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl px-4 py-3 text-sm space-y-1.5 shadow-sm">
       <div class="flex items-center justify-between gap-2">
         <div class="truncate">
-          <span class="font-bold text-[#102a56]">${j.query || '🔗 رابط مخصص'}</span>
+          <span class="font-bold text-[#102a56]">${j.query ? escT(j.query) : '🔗 رابط مخصص'}</span>
           <span class="text-[11px] text-slate-500 font-medium"> · ${j.source === 'schedule' ? 'مجدول تلقائي' : 'يدوي'}</span>
         </div>
         <div class="flex items-center gap-2 shrink-0">
           ${(j.status === 'done' || j.status === 'stopped') ? `<span class="text-xs text-emerald-700 font-bold num">${j.result_count || 0} إعلان</span>` : ''}
-          <span class="text-[11px] px-2.5 py-0.5 rounded-full border font-bold ${color[j.status] || 'bg-slate-100'}">${JOB_AR[j.status] || j.status}</span>
+          <span class="text-[11px] px-2.5 py-0.5 rounded-full border font-bold ${color[j.status] || 'bg-slate-100'}">${JOB_AR[j.status] || escT(j.status)}</span>
           ${j.status === 'running' ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
         </div>
       </div>
       ${j.status === 'running' ? `
-        <div class="text-xs text-sky-700 font-semibold">📥 ${j.progress || 0} إعلان مسحوب ${j.progress_note ? ('· ' + j.progress_note) : ''}</div>
+        <div class="text-xs text-sky-700 font-semibold">📥 ${Number(j.progress) || 0} إعلان مسحوب ${j.progress_note ? ('· ' + escT(j.progress_note)) : ''}</div>
         <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full bg-blue-600 animate-pulse" style="width:100%"></div></div>` : ''}
       ${j.status === 'pending' && j.retry_at ? `
         <div class="text-xs text-amber-700 font-semibold">⏸ انقطع بعد ${j.result_count || 0} إعلان · سيُستأنف من نفس النقطة ${new Date(j.retry_at).toLocaleTimeString('ar-DZ', {hour: '2-digit', minute: '2-digit'})} (محاولة ${j.attempts || 1})</div>` : ''}
@@ -1552,15 +1582,15 @@ async function testTelegram() {
     resEl.classList.remove('hidden');
     if (d.ok) {
       resEl.className = 'p-3 rounded-xl text-xs bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold';
-      resEl.innerHTML = '✅ ' + d.message;
+      resEl.textContent = '✅ ' + d.message;
     } else {
       resEl.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold';
-      resEl.innerHTML = '❌ ' + d.message;
+      resEl.textContent = '❌ ' + d.message;
     }
   } catch (err) {
     resEl.classList.remove('hidden');
     resEl.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold';
-    resEl.innerHTML = '❌ فشل الاتصال بالخادم: ' + err.message;
+    resEl.textContent = '❌ فشل الاتصال بالخادم: ' + err.message;
   } finally {
     btn.disabled = false;
     btn.innerText = '🧪 فحص وإرسال رسالة تجريبية';

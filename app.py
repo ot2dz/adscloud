@@ -20,7 +20,8 @@ import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from flask import Flask, Response, jsonify, render_template, request, send_file, session
+from datetime import timedelta
+from flask import Flask, Response, g, jsonify, render_template, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from db import db
@@ -47,17 +48,84 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("web_app")
 
 app = Flask(__name__)
-app.secret_key = (
-    os.environ.get("SECRET_KEY")
-    or os.environ.get("FLASK_SECRET_KEY")
-    or secrets.token_hex(32)
+
+
+def _load_secret_key() -> str:
+    """The key that signs session cookies. Anyone who knows it can forge a
+    cookie, so production refuses to start without a strong one."""
+    key = (os.environ.get("SECRET_KEY") or os.environ.get("FLASK_SECRET_KEY") or "").strip()
+    if len(key) >= 32:
+        return key
+    if os.environ.get("ALLOW_INSECURE_SECRET_KEY", "").strip().lower() in ("1", "true", "yes"):
+        logging.getLogger("web_app").warning(
+            "SECRET_KEY missing/short: using a random key (dev only; sessions reset on restart)")
+        return secrets.token_hex(32)
+    raise RuntimeError(
+        "SECRET_KEY must be set to a random value of at least 32 characters "
+        "(e.g. python -c 'import secrets; print(secrets.token_hex(32))'). "
+        "For local development only, set ALLOW_INSECURE_SECRET_KEY=1.")
+
+
+app.secret_key = _load_secret_key()
+SESSION_DAYS = float(os.environ.get("SESSION_DAYS", "7") or 7)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,          # not readable from JavaScript
+    SESSION_COOKIE_SAMESITE="Lax",          # not sent on cross-site POSTs (CSRF)
+    # HTTPS only in production; set SESSION_COOKIE_SECURE=0 for plain-http local runs.
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no"),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS),
 )
+
+
+def _start_session(user: dict) -> None:
+    """Log a user in: a fresh server-side session (never reuse an old id)."""
+    session.clear()
+    session.permanent = True
+    session["sid"] = db.create_session(
+        int(user["id"]), days=SESSION_DAYS,
+        ip=request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip(),
+        user_agent=request.headers.get("User-Agent", ""))
+    session["user_id"] = int(user["id"])
+    session["user_email"] = user["email"]
+    session["user_role"] = user["role"]
+
+
+@app.before_request
+def _resolve_session() -> None:
+    """Zero trust: every request re-checks its session in the database.
+
+    A revoked / expired session, or a user that was disabled or deleted, is
+    logged out right here; the role always comes from the database, so a
+    demoted admin loses admin rights on the very next request. Cookies from
+    before server-side sessions (no ``sid``) are rejected too.
+    """
+    g.user = None
+    if not session:
+        return
+    sid = session.get("sid")
+    user = db.get_session_user(sid) if sid else None
+    if not user:
+        session.clear()
+        return
+    g.user = user
+    session["user_id"] = int(user["id"])
+    session["user_email"] = user["email"]
+    session["user_role"] = user["role"]
+    # Keep last-seen fresh without a write on every request.
+    last = (user["_session"].get("last_seen_at") or "")
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        stale = (_dt.now(_tz.utc) - _dt.fromisoformat(last)).total_seconds() > 300
+    except Exception:
+        stale = True
+    if stale:
+        db.touch_session(sid)
 
 
 def login_required(f):
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get("user_id"):
+        if not getattr(g, "user", None):
             return jsonify({"ok": False, "error": "يرجى تسجيل الدخول أولاً", "unauthorized": True}), 401
         return f(*args, **kwargs)
     return decorated_function
@@ -66,9 +134,9 @@ def login_required(f):
 def admin_required(f):
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get("user_id"):
+        if not getattr(g, "user", None):
             return jsonify({"ok": False, "error": "يرجى تسجيل الدخول أولاً", "unauthorized": True}), 401
-        if session.get("user_role") != "admin":
+        if g.user.get("role") != "admin":
             return jsonify({"ok": False, "error": "هذا الإجراء يتطلب صلاحيات مدير النظام (Admin)", "forbidden": True}), 403
         return f(*args, **kwargs)
     return decorated_function
@@ -80,10 +148,12 @@ def _scope_user_id():
     A regular user only ever sees their own saves and tracked pages. An admin
     sees everything, or one user's data when ``?user_id=`` is given.
     """
-    if session.get("user_role") == "admin":
+    # Identity and role come from the server-side session (g.user), never
+    # from the request: only an admin may pick another user's view.
+    if g.user.get("role") == "admin":
         raw = (request.args.get("user_id") or "").strip()
         return int(raw) if raw.isdigit() else None
-    return int(session["user_id"])
+    return int(g.user["id"])
 
 
 # Default targeting policy (DZ by default, can be overridden per request).
@@ -337,13 +407,9 @@ def add_cors_headers(response):
 # ── Authentication Endpoints ──────────────────────────────────────────
 @app.route("/api/auth/me", methods=["GET"])
 def api_auth_me():
-    uid = session.get("user_id")
-    if not uid:
+    user = getattr(g, "user", None)  # resolved from the server-side session
+    if not user:
         return jsonify({"authenticated": False})
-    user = db.get_user_by_id(uid)
-    if not user or not user.get("is_active"):
-        session.clear()
-        return jsonify({"authenticated": False, "error": "الحساب معطل أو غير موجود"})
     return jsonify({
         "authenticated": True,
         "user": {
@@ -369,9 +435,7 @@ def api_auth_login():
     if not user.get("is_active"):
         return jsonify({"ok": False, "error": "هذا الحساب معطل. يرجى التواصل مع المدير لتفعيله"}), 403
 
-    session["user_id"] = user["id"]
-    session["user_email"] = user["email"]
-    session["user_role"] = user["role"]
+    _start_session(user)
     db.update_user_login(user["id"])
     return jsonify({
         "ok": True,
@@ -390,6 +454,9 @@ def api_auth_register():
     password = str(data.get("password") or "")
     if not email or not password:
         return jsonify({"ok": False, "error": "يرجى ملء جميع الحقول المطلوبة"}), 400
+    import re as _re
+    if len(email) > 254 or not _re.fullmatch(r"[^@\s<>\"'`]+@[^@\s<>\"'`]+\.[A-Za-z]{2,}", email):
+        return jsonify({"ok": False, "error": "البريد الإلكتروني غير صالح"}), 400
     if len(password) < 6:
         return jsonify({"ok": False, "error": "كلمة المرور يجب أن لا تقل عن 6 أحرف"}), 400
 
@@ -402,9 +469,7 @@ def api_auth_register():
     if not user_id:
         return jsonify({"ok": False, "error": "فشل إنشاء الحساب، يرجى المحاولة لاحقاً"}), 500
 
-    session["user_id"] = user_id
-    session["user_email"] = email
-    session["user_role"] = "user"
+    _start_session({"id": user_id, "email": email, "role": "user"})
     return jsonify({
         "ok": True,
         "user": {
@@ -417,8 +482,21 @@ def api_auth_register():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def api_auth_logout():
+    """Revokes the session on the server: a copied cookie stops working too."""
+    sid = session.get("sid")
+    if sid:
+        db.revoke_session(sid)
     session.clear()
     return jsonify({"ok": True})
+
+
+@app.route("/api/auth/logout-all", methods=["POST"])
+@login_required
+def api_auth_logout_all():
+    """Log the current user out on every device / browser."""
+    n = db.revoke_user_sessions(int(g.user["id"]))
+    session.clear()
+    return jsonify({"ok": True, "revoked": n})
 
 
 # ── Admin User Management Endpoints ────────────────────────────────────
@@ -431,7 +509,7 @@ def api_admin_users():
 @app.route("/api/admin/users/<int:user_id>/toggle-status", methods=["POST"])
 @admin_required
 def api_admin_toggle_user_status(user_id):
-    if user_id == session.get("user_id"):
+    if user_id == int(g.user["id"]):
         return jsonify({"ok": False, "error": "لا يمكنك تعطيل حسابك الحالي"}), 400
     user = db.get_user_by_id(user_id)
     if not user:
@@ -444,7 +522,7 @@ def api_admin_toggle_user_status(user_id):
 @app.route("/api/admin/users/<int:user_id>/role", methods=["POST"])
 @admin_required
 def api_admin_update_user_role(user_id):
-    if user_id == session.get("user_id"):
+    if user_id == int(g.user["id"]):
         return jsonify({"ok": False, "error": "لا يمكنك تغيير رتبة حسابك الحالي"}), 400
     data = request.get_json(force=True, silent=True) or {}
     new_role = "admin" if data.get("role") == "admin" else "user"
@@ -455,7 +533,7 @@ def api_admin_update_user_role(user_id):
 @app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
 @admin_required
 def api_admin_delete_user(user_id):
-    if user_id == session.get("user_id"):
+    if user_id == int(g.user["id"]):
         return jsonify({"ok": False, "error": "لا يمكنك حذف حسابك الحالي"}), 400
     db.delete_user(user_id)
     return jsonify({"ok": True})
@@ -534,6 +612,7 @@ def api_stop():
 
 
 @app.route("/api/status")
+@login_required
 def api_status():
     return jsonify({**manager.state, "scrape_enabled": SCRAPE_ENABLED, "db": db.get_stats()})
 
@@ -639,8 +718,15 @@ def api_reset():
     return jsonify({"ok": True})
 
 
+def _token_matches(provided: str, expected: str) -> bool:
+    """Constant-time compare; an unset secret never matches anything."""
+    import hmac
+    provided, expected = (provided or "").strip(), (expected or "").strip()
+    return bool(provided) and bool(expected) and hmac.compare_digest(provided, expected)
+
+
 def _ingest_token() -> str:
-    return (os.environ.get("INGEST_TOKEN") or "local-dev-token").strip()
+    return (os.environ.get("INGEST_TOKEN") or "").strip()
 
 
 @app.route("/api/ingest", methods=["POST"])
@@ -651,7 +737,7 @@ def api_ingest():
                 or request.headers.get("Authorization", "").replace("Bearer ", "")).strip()
     if not expected:
         return jsonify({"error": "ingest disabled (INGEST_TOKEN not set)"}), 503
-    if provided != expected and provided != "local-dev-token":
+    if not _token_matches(provided, expected):
         return jsonify({"error": "unauthorized"}), 401
 
     payload = request.get_json(force=True, silent=True) or {}
@@ -668,19 +754,15 @@ def api_ingest():
 
 # ── Remote Job Queue ──────────────────────────────────────────────────
 def _worker_token() -> str:
-    return (os.environ.get("WORKER_TOKEN") or os.environ.get("INGEST_TOKEN") or "local-dev-token").strip()
+    return (os.environ.get("WORKER_TOKEN") or os.environ.get("INGEST_TOKEN") or "").strip()
 
 
 def _worker_ok() -> bool:
-    expected = _worker_token()
+    """Remote-worker API: closed unless WORKER_TOKEN / INGEST_TOKEN is set."""
     provided = (request.headers.get("X-Worker-Token", "")
                 or request.headers.get("X-Ingest-Token", "")
                 or request.headers.get("Authorization", "").replace("Bearer ", "")).strip()
-    if not provided:
-        return False
-    if provided == "local-dev-token":
-        return True
-    return bool(expected) and provided == expected
+    return _token_matches(provided, _worker_token())
 
 
 @app.route("/api/jobs", methods=["GET"])
@@ -836,6 +918,10 @@ def api_add_target():
 
     if not raw:
         return jsonify({"ok": False, "error": "الهدف لا يمكن أن يكون فارغاً"}), 400
+    if typ not in ("page", "domain", "keyword", "custom_url"):
+        return jsonify({"ok": False, "error": "نوع غير صالح"}), 400
+    if len(raw) > 500 or len(label) > 120:
+        return jsonify({"ok": False, "error": "القيمة طويلة جداً"}), 400
 
     if typ == "page":
         pid = extract_page_id(raw) or raw
@@ -854,7 +940,7 @@ def api_add_target():
             label = raw
 
     tid, created = db.add_user_target(
-        int(session["user_id"]), typ, target_val, label=label,
+        int(g.user["id"]), typ, target_val, label=label,
         country=country, interval_hours=interval_hours, source="dashboard")
     if not created:
         return jsonify({"ok": False, "error": "هذا المنافس موجود في قائمتك بالفعل"}), 400
@@ -1037,14 +1123,11 @@ def _ext_user():
 
 
 def _ext_token_ok() -> bool:
-    """Accept a personal user token, or (legacy) the shared INGEST_TOKEN."""
+    """Accept a personal user token, or (legacy) the shared INGEST_TOKEN.
+    Without either the extension API is closed (never open by default)."""
     if _ext_user():
         return True
-    expected = (os.environ.get("INGEST_TOKEN") or "").strip()
-    if not expected:
-        return True
-    provided = _ext_provided_token()
-    return provided == expected or provided == "local-dev-token"
+    return _token_matches(_ext_provided_token(), os.environ.get("INGEST_TOKEN") or "")
 
 
 def _ext_user_id():
@@ -1309,7 +1392,7 @@ def api_tracked_pages():
 @login_required
 def api_tracked_page_snapshots(page_id):
     uid = _scope_user_id()
-    if uid is not None and session.get("user_role") != "admin" and str(page_id) not in db.list_user_page_ids(uid):
+    if uid is not None and g.user.get("role") != "admin" and str(page_id) not in db.list_user_page_ids(uid):
         return jsonify({"ok": False, "error": "غير مسموح"}), 403
     return jsonify({"page_id": page_id, "snapshots": db.get_page_snapshots(page_id, limit=200)})
 
@@ -1392,6 +1475,7 @@ def scheduler_loop() -> None:
             today_dz = algeria_today()
             if days_refreshed_for != today_dz:
                 changed = db.refresh_days_active()
+                db.purge_old_sessions()
                 days_refreshed_for = today_dz
                 logger.info("days_active refreshed for %s: %s ads updated", today_dz, changed)
 

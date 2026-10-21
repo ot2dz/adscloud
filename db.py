@@ -246,6 +246,22 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_targets_target ON user_targets (target_id)")
+        # Server-side login sessions: the cookie only carries a random id whose
+        # SHA-256 is stored here, so a session can be revoked (logout, logout
+        # everywhere, user disabled) and stops working everywhere at once.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            sid_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TEXT,
+            last_seen_at TEXT,
+            expires_at TEXT,
+            revoked_at TEXT,
+            ip TEXT,
+            user_agent TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions (user_id)")
         # How many ads a page / a store domain runs in total on Meta (not only
         # the ones our searches happened to collect). Column names are
         # prefixed so this table can be joined to meta_ads unambiguously.
@@ -496,7 +512,14 @@ class Database:
         start_date = str(ad.get("start_date") or (existing.get("start_date") if existing else "") or "")
         days_active = self._calc_days_active(start_date, first_seen)
 
-        preview_img = str(ad.get("preview_image_url") or "").strip()
+        # Links are rendered in the dashboard: only plain web URLs are kept
+        # (no javascript:/data: tricks coming from ads or the extension).
+        def _web_url(v) -> str:
+            v = str(v or "").strip()
+            return v if v.lower().startswith(("http://", "https://")) else ""
+        ad = dict(ad)
+        ad["link_url"] = _web_url(ad.get("link_url"))
+        preview_img = _web_url(ad.get("preview_image_url"))
         from store_filter import product_key
         pkey = product_key(str(ad.get("page_id") or ""), ad.get("link_url") or "",
                            ad.get("body") or "", ad.get("store_domain") or "")
@@ -1463,6 +1486,63 @@ class Database:
             "(SELECT COUNT(*) FROM user_pages up WHERE up.user_id = users.id) AS tracked_pages_count "
             "FROM users ORDER BY id ASC")
 
+    # ── server-side sessions ──────────────────────────────────────────────
+    @staticmethod
+    def _sid_hash(sid: str) -> str:
+        import hashlib
+        return hashlib.sha256((sid or "").encode("utf-8")).hexdigest()
+
+    def create_session(self, user_id: int, days: float = 7.0, ip: str = "", user_agent: str = "") -> str:
+        """New session for a user; returns the raw id to put in the cookie."""
+        import secrets
+        sid = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        p = self._ph()
+        self._execute(
+            f"INSERT INTO user_sessions (sid_hash, user_id, created_at, last_seen_at, expires_at, ip, user_agent) "
+            f"VALUES ({p},{p},{p},{p},{p},{p},{p})",
+            (self._sid_hash(sid), int(user_id), now.isoformat(), now.isoformat(),
+             (now + timedelta(days=days)).isoformat(), (ip or "")[:64], (user_agent or "")[:255]))
+        return sid
+
+    def get_session_user(self, sid: str) -> Optional[dict]:
+        """The user of a live session (not revoked, not expired, user still
+        existing and active), with the session row under ``_session``."""
+        if not sid:
+            return None
+        p = self._ph()
+        row = self._query_one(f"SELECT * FROM user_sessions WHERE sid_hash={p}", (self._sid_hash(sid),))
+        if not row or row.get("revoked_at"):
+            return None
+        if (row.get("expires_at") or "") <= _now():
+            return None
+        user = self.get_user_by_id(int(row["user_id"]))
+        if not user or not user.get("is_active"):
+            return None
+        user["_session"] = row
+        return user
+
+    def touch_session(self, sid: str) -> None:
+        self._execute(f"UPDATE user_sessions SET last_seen_at={self._ph()} WHERE sid_hash={self._ph()}",
+                      (_now(), self._sid_hash(sid)))
+
+    def revoke_session(self, sid: str) -> None:
+        self._execute(f"UPDATE user_sessions SET revoked_at={self._ph()} WHERE sid_hash={self._ph()} "
+                      f"AND revoked_at IS NULL", (_now(), self._sid_hash(sid)))
+
+    def revoke_user_sessions(self, user_id: int) -> int:
+        """Log a user out everywhere. Returns how many sessions were live."""
+        p = self._ph()
+        row = self._query_one(f"SELECT COUNT(*) AS c FROM user_sessions WHERE user_id={p} AND revoked_at IS NULL",
+                              (int(user_id),))
+        self._execute(f"UPDATE user_sessions SET revoked_at={p} WHERE user_id={p} AND revoked_at IS NULL",
+                      (_now(), int(user_id)))
+        return int(row["c"]) if row else 0
+
+    def purge_old_sessions(self, keep_days: int = 30) -> None:
+        cut = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        self._execute(f"DELETE FROM user_sessions WHERE expires_at < {self._ph()}", (cut,))
+
     def get_or_create_api_token(self, user_id: int) -> str:
         """Personal token the browser extension sends instead of the shared INGEST_TOKEN."""
         import secrets
@@ -1481,6 +1561,8 @@ class Database:
 
     def update_user_status(self, user_id: int, is_active: bool) -> None:
         self._execute(f"UPDATE users SET is_active = {self._ph()} WHERE id = {self._ph()}", (1 if is_active else 0, int(user_id)))
+        if not is_active:
+            self.revoke_user_sessions(user_id)
 
     def update_user_role(self, user_id: int, role: str) -> None:
         self._execute(f"UPDATE users SET role = {self._ph()} WHERE id = {self._ph()}", (role, int(user_id)))
@@ -1494,6 +1576,7 @@ class Database:
         for row in self._query(f"SELECT target_id FROM user_targets WHERE user_id = {p}", (int(user_id),)):
             self.remove_user_target(int(user_id), int(row["target_id"]))
         self._execute(f"DELETE FROM user_pages WHERE user_id = {p}", (int(user_id),))
+        self._execute(f"DELETE FROM user_sessions WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM users WHERE id = {p}", (int(user_id),))
 
     def get_settings(self) -> dict:
