@@ -77,6 +77,14 @@ app.config.update(
 )
 
 
+def _proxy_setting() -> str:
+    """Proxy saved from Settings (empty -> engine falls back to META_ADS_PROXY)."""
+    try:
+        return (db.get_settings().get("meta_ads_proxy") or "").strip()
+    except Exception:
+        return ""
+
+
 def _start_session(user: dict) -> None:
     """Log a user in: a fresh server-side session (never reuse an old id)."""
     session.clear()
@@ -287,6 +295,7 @@ class ScrapeManager:
              resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0) -> None:
         country = (country or DEFAULT_COUNTRY).strip().upper()
         languages = FIXED_LANGS
+        proxy_spec = _proxy_setting()
         seen_stores: set = set()
         seen_ad_ids: set = set()
         resume = resume if isinstance(resume, dict) else {}
@@ -396,7 +405,7 @@ class ScrapeManager:
                     r = scrape(query=query, country=country, url=p["url"],
                                stores_only=False, progress=progress, on_ad=on_ad,
                                on_reported=on_reported, on_scanned=on_scanned,
-                               date_scope=date_scope,
+                               date_scope=date_scope, proxy=proxy_spec,
                                should_stop=lambda: self.stop_event.is_set(),
                                resume_cursor=(resume.get("cursor") if idx == start_pass else None),
                                on_checkpoint=make_checkpointer(idx))
@@ -419,7 +428,7 @@ class ScrapeManager:
                                 progress=progress, on_ad=on_ad, on_reported=on_reported,
                                 on_scanned=on_scanned,
                                 should_stop=lambda: self.stop_event.is_set(),
-                                date_scope=date_scope,
+                                date_scope=date_scope, proxy=proxy_spec,
                                 resume_cursor=resume.get("cursor"),
                                 on_checkpoint=make_checkpointer(1))
                 if result.reported_count is not None:
@@ -1218,6 +1227,9 @@ def api_get_settings():
         "notify_webhook": s.get("notify_webhook", ""),
         "entity_stats_enabled": s.get("entity_stats_enabled", "true"),
         "registration_open": s.get("registration_open", "false"),
+        "meta_ads_proxy": s.get("meta_ads_proxy", ""),
+        "has_meta_ads_proxy": bool(s.get("meta_ads_proxy")),
+        "env_meta_ads_proxy": bool(os.environ.get("META_ADS_PROXY")),
     })
 
 
@@ -1241,9 +1253,50 @@ def api_set_settings():
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
     if "registration_open" in cfg:
         db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
-    _audit("settings_changed", ",".join(sorted(k for k in cfg if k != "telegram_token")) +
-           (",telegram_token" if "telegram_token" in cfg else ""))
+    if "meta_ads_proxy" in cfg:
+        db.set_setting("meta_ads_proxy", str(cfg["meta_ads_proxy"] or "").strip())
+    _audit("settings_changed", ",".join(sorted(k for k in cfg if k not in ("telegram_token", "meta_ads_proxy"))) +
+           (",telegram_token" if "telegram_token" in cfg else "") +
+           (",meta_ads_proxy" if "meta_ads_proxy" in cfg else ""))
     return jsonify({"ok": True})
+
+
+@app.route("/api/proxy/test", methods=["POST"])
+@admin_required
+def api_proxy_test():
+    """Try the given (or saved) proxy against a tiny IP endpoint."""
+    cfg = request.get_json(force=True, silent=True) or {}
+    spec = (str(cfg.get("meta_ads_proxy") or "")).strip() or _proxy_setting() \
+        or (os.environ.get("META_ADS_PROXY") or "").strip()
+    if not spec:
+        return jsonify({"ok": False, "error": "لا يوجد بروكسي مضبوط"}), 400
+
+    from meta_ads_collector.proxy_pool import parse_proxy, _redact_proxy
+    from curl_cffi import requests as creq
+
+    results = []
+    for raw in [p.strip() for p in spec.split(",") if p.strip()][:5]:
+        try:
+            purl = parse_proxy(raw)
+        except Exception as exc:  # noqa: BLE001
+            results.append({"proxy": "proxy", "ok": False, "error": f"صيغة غير صحيحة: {exc}"})
+            continue
+        label = _redact_proxy(purl)
+        try:
+            r = creq.get("https://api.ipify.org?format=json",
+                         proxies={"http": purl, "https": purl},
+                         impersonate="chrome", timeout=25)
+            if r.status_code == 200:
+                try:
+                    ip = (r.json() or {}).get("ip", "")
+                except Exception:
+                    ip = (r.text or "").strip()
+                results.append({"proxy": label, "ok": True, "ip": ip})
+            else:
+                results.append({"proxy": label, "ok": False, "error": f"HTTP {r.status_code}"})
+        except Exception as exc:  # noqa: BLE001
+            results.append({"proxy": label, "ok": False, "error": str(exc)[:200]})
+    return jsonify({"ok": any(x["ok"] for x in results), "results": results})
 
 
 @app.route("/api/telegram/test", methods=["POST"])
@@ -1876,7 +1929,7 @@ def entity_stats_loop() -> None:
             if not batch:
                 time.sleep(600)
                 continue
-            client = new_count_client()
+            client = new_count_client(proxy=_proxy_setting() or None)
             errors = 0
             try:
                 for kind, key in batch:

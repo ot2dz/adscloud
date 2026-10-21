@@ -468,6 +468,33 @@
         </div>
       </div>
 
+      <!-- Meta Proxy Card -->
+      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
+        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
+          <span class="text-2xl">🌐</span>
+          <div>
+            <h3 class="font-bold text-[#102a56] text-sm">بروكسي السحب (Meta Proxy)</h3>
+            <p class="text-xs text-slate-500">تشغيل السحب عبر بروكسي لتجنّب حجب Meta. القيمة المحفوظة هنا تتقدّم على متغيّر البيئة.</p>
+          </div>
+        </div>
+
+        <div class="space-y-3 text-xs">
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">البروكسي:</label>
+            <input id="cfg-proxy" type="text" dir="ltr" placeholder="host:port:user:pass" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+            <span class="text-[10px] text-slate-400 mt-1 block">يمكن وضع عدة بروكسيات مفصولة بفاصلة لتدويرها تلقائياً. اتركه فارغاً لاستخدام متغيّر البيئة META_ADS_PROXY إن وُجد.</span>
+            <span id="cfg-proxy-env" class="hidden text-[10px] text-amber-600 mt-1 block"></span>
+          </div>
+
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <button onclick="testProxy()" id="btn-proxy-test" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🧪 فحص البروكسي</button>
+            <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ</button>
+          </div>
+
+          <div id="proxy-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
+        </div>
+      </div>
+
     </div>
   </section>
 
@@ -1621,6 +1648,16 @@ async function loadSettings() {
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
   document.getElementById('cfg-tg-token').value = s.telegram_token || '';
   document.getElementById('cfg-tg-chat').value = s.telegram_chat_id || '';
+  document.getElementById('cfg-proxy').value = s.meta_ads_proxy || '';
+  const envEl = document.getElementById('cfg-proxy-env');
+  if (envEl) {
+    if (s.env_meta_ads_proxy) {
+      envEl.classList.remove('hidden');
+      envEl.textContent = '⚠️ يوجد بروكسي أيضاً في متغيّر البيئة META_ADS_PROXY (يُستخدم فقط إذا كان الحقل فارغاً).';
+    } else {
+      envEl.classList.add('hidden');
+    }
+  }
   document.getElementById('last-sched-time').innerText = s.last_scheduled_at ? s.last_scheduled_at.slice(0, 16).replace('T', ' ') : 'لم تبدأ بعد';
 }
 
@@ -1641,11 +1678,42 @@ async function saveAllSettings() {
       registration_open: document.getElementById('cfg-registration-open').checked,
       notify_enabled: notifEn,
       telegram_token: token,
-      telegram_chat_id: chat
+      telegram_chat_id: chat,
+      meta_ads_proxy: document.getElementById('cfg-proxy').value.trim()
     })
   });
   const d = await r.json();
   if (d.ok) alert('✅ تم حفظ جميع الإعدادات بنجاح!');
+}
+
+async function testProxy() {
+  const el = document.getElementById('proxy-test-result');
+  const btn = document.getElementById('btn-proxy-test');
+  btn.disabled = true; btn.innerText = '⏳ جارٍ الفحص…';
+  el.classList.add('hidden');
+  try {
+    const r = await fetch('/api/proxy/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ meta_ads_proxy: document.getElementById('cfg-proxy').value.trim() })
+    });
+    const d = await r.json();
+    el.classList.remove('hidden');
+    const lines = (d.results || []).map(x => x.ok
+      ? '✅ ' + x.proxy + ' → IP: ' + x.ip
+      : '❌ ' + x.proxy + ' → ' + x.error);
+    if (!lines.length) lines.push('❌ ' + (d.error || 'فشل الفحص'));
+    el.className = 'p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line ' +
+      (d.ok ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+            : 'bg-rose-50 text-rose-800 border border-rose-300');
+    el.textContent = lines.join('\n');
+  } catch (err) {
+    el.classList.remove('hidden');
+    el.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold whitespace-pre-line';
+    el.textContent = '❌ فشل الاتصال بالخادم: ' + err.message;
+  } finally {
+    btn.disabled = false; btn.innerText = '🧪 فحص البروكسي';
+  }
 }
 
 async function testTelegram() {

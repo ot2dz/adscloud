@@ -73,12 +73,16 @@ class ScrapeResult:
     scanned: int = 0
 
 
-def _proxy_arg():
-    """Proxy config from META_ADS_PROXY (single host:port:user:pass, or comma list)."""
-    spec = (os.environ.get("META_ADS_PROXY") or "").strip()
-    if not spec:
+def _proxy_arg(spec: Optional[str] = None):
+    """Proxy config: an explicit saved value wins over ``META_ADS_PROXY`` env.
+
+    Accepts one ``host:port:user:pass`` or a comma-separated list (rotating
+    pool). Returns ``None`` when nothing is configured.
+    """
+    raw = (spec or "").strip() or (os.environ.get("META_ADS_PROXY") or "").strip()
+    if not raw:
         return None
-    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
     return parts if len(parts) > 1 else parts[0]
 
 
@@ -108,10 +112,10 @@ LAUNCH_EARLY_STOP = int(_env_float("META_ADS_LAUNCH_EARLY_STOP", 500))
 _PERMANENT_ERRORS = ("Repeated pagination cursor", "consecutive empty pages")
 
 
-def new_count_client():
+def new_count_client(proxy: Optional[str] = None):
     """A bare Meta client for one-request result counts (uses the proxy pool)."""
     from meta_ads_collector.client import MetaAdsClient
-    return MetaAdsClient(proxy=_proxy_arg())
+    return MetaAdsClient(proxy=_proxy_arg(proxy))
 
 
 def entity_ad_count(client, kind: str, key: str, country: str = "DZ") -> Optional[int]:
@@ -225,6 +229,7 @@ def scrape(
     on_scanned: Optional[Callable[[int], None]] = None,
     resume_cursor: Optional[str] = None,
     on_checkpoint: Optional[Callable[[Optional[str]], None]] = None,
+    proxy: Optional[str] = None,
 ) -> ScrapeResult:
     """Collect ads for a keyword / page / domain / custom URL over HTTP.
 
@@ -285,7 +290,7 @@ def scrape(
 
     attempt = 0
     while True:
-        collector = MetaAdsCollector(proxy=_proxy_arg(), rate_limit_delay=REQUEST_DELAY,
+        collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=REQUEST_DELAY,
                                      jitter=REQUEST_JITTER)
         try:
             # Best-effort estimated count (one extra request; never fatal).
