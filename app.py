@@ -988,6 +988,16 @@ def api_diagnose():
         out["verdict"] = f"تعذّر الاتصال بالبروكسي: {str(exc)[:180]}"
         return jsonify(out)
 
+    # Compare with the server's direct IP: if they are equal the proxy is not
+    # changing the egress at all (a local/transparent proxy).
+    try:
+        r0 = creq.get("https://api.ipify.org?format=json", impersonate="chrome", timeout=15)
+        out["direct_ip"] = (r0.json() or {}).get("ip")
+    except Exception:  # noqa: BLE001
+        out["direct_ip"] = None
+    out["proxy_changes_ip"] = bool(out["direct_ip"] and out["egress_ip"]
+                                   and out["direct_ip"] != out["egress_ip"])
+
     proxy_arg = parts if len(parts) > 1 else parts[0]
     try:
         from meta_ads_collector import MetaAdsCollector
@@ -1006,10 +1016,13 @@ def api_diagnose():
 
     if out.get("meta_count") and int(out["meta_count"]) > 0:
         out["verdict"] = "✅ يعمل: البروكسي يجلب نتائج فعلية من Meta."
+    elif out.get("direct_ip") and out.get("egress_ip") == out.get("direct_ip"):
+        out["verdict"] = ("⛔ البروكسي لا يغيّر عنوان الخروج: egress IP = IP السيرفر المباشر. "
+                          "هذا بروكسي محلي/شفاف ولا يفيد ضد حجب Meta. ضع بروكسي "
+                          "residential/mobile خارجيًا ثم أعد التشخيص.")
     else:
         out["verdict"] = ("⛔ Meta أعادت 0 نتيجة عبر هذا البروكسي/IP — الـIP محجوب مؤقتًا من مكتبة "
-                          "الإعلانات أو البروكسي لا يغيّر عنوان الخروج. استخدم بروكسي "
-                          "residential/mobile جديدًا ثم أعد التشخيص.")
+                          "الإعلانات. استخدم بروكسي residential/mobile جديدًا ثم أعد التشخيص.")
     return jsonify(out)
 
 

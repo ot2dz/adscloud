@@ -2147,6 +2147,8 @@ async function diagnoseProxy() {
       'المصدر: ' + (d.source || '-'),
       'البروكسي: ' + (d.proxy || 'بدون'),
       'IP الخروج: ' + (d.egress_ip || '-'),
+      'IP المباشر للسيرفر: ' + (d.direct_ip || '-'),
+      (d.proxy_changes_ip === false && d.egress_ip) ? '⚠️ البروكسي لا يغيّر عنوان الخروج.' : '',
       'نتائج Meta (استعلام تجريبي): ' + (d.meta_count == null ? '—' : d.meta_count),
       d.meta_error ? 'خطأ Meta: ' + d.meta_error : '',
       '',
