@@ -290,6 +290,17 @@
     </div>
   </div>
 
+  <!-- Ad details modal (media + full details) -->
+  <div id="ad-modal" class="hidden fixed inset-0 z-[60] bg-slate-900/70 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto" onclick="if (event.target === this) closeAdModal()">
+    <div class="max-w-4xl mx-auto bg-white rounded-2xl shadow-2xl border border-[#cfe0f5] my-4">
+      <div class="sticky top-0 z-10 flex items-center justify-between gap-3 bg-white rounded-t-2xl border-b border-[#cfe0f5] px-4 py-3">
+        <div id="ad-modal-title" class="font-bold text-[#102a56] text-sm truncate">تفاصيل الإعلان</div>
+        <button onclick="closeAdModal()" class="shrink-0 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs">✕ إغلاق</button>
+      </div>
+      <div id="ad-modal-body" class="p-4 space-y-4"></div>
+    </div>
+  </div>
+
   <!-- VIEW: TARGETS (SPY ON PAGES, STORES, KEYWORDS) -->
   <section id="view-targets" class="hidden space-y-4">
     <!-- Add Target Card -->
@@ -589,6 +600,8 @@ let ads = [];
 let currentPreset = '';
 let currentTargetFilter = null; // { id, type, value, label }
 let currentKeywords = [];       // selected scrape-keyword tags (OR filter)
+let adCache = {};               // ad_id -> full ad object (for the details modal)
+let lastAdBody = '';            // text of the ad currently shown in the modal
 let debounceTimer = null;
 
 // ── Auth Manager ──
@@ -1210,6 +1223,7 @@ function renderAds() {
     el.innerHTML = '<div class="col-span-full py-16 text-center text-slate-500 font-bold bg-white border border-[#cfe0f5] rounded-2xl">لا توجد إعلانات مطابقة للفلاتر المحددة.</div>';
     return;
   }
+  ads.forEach(a => { adCache[String(a.ad_id)] = a; });
   el.innerHTML = ads.map(a => adCardHtml(a)).join('');
 }
 
@@ -1256,6 +1270,7 @@ async function openGroupModal(key, title) {
   document.body.style.overflow = 'hidden';
   const r = await fetch('/api/ads/group?key=' + encodeURIComponent(key) + adminUserParam('&'));
   const d = await r.json();
+  (d.ads || []).forEach(a => { adCache[String(a.ad_id)] = a; });
   box.innerHTML = (d.ads || []).map(a => adCardHtml(a, { plain: true })).join('') ||
     '<div class="col-span-full py-10 text-center text-slate-500 font-bold">لا توجد إعلانات.</div>';
 }
@@ -1264,7 +1279,138 @@ function closeGroupModal() {
   document.getElementById('group-modal').classList.add('hidden');
   document.body.style.overflow = '';
 }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGroupModal(); });
+
+function closeAdModal() {
+  const m = document.getElementById('ad-modal');
+  if (m) m.classList.add('hidden');
+  const b = document.getElementById('ad-modal-body');
+  if (b) b.innerHTML = '';
+  document.body.style.overflow = '';
+}
+
+// Build the Google phrase from ONE line/sentence only (never joins two lines).
+// Emojis, symbols, punctuation and line breaks act as separators; prices,
+// percentages, phone numbers, URLs and hashtags are dropped.
+function adSearchSegments(body) {
+  const normalized = String(body || '')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/#[^\s#]+/g, ' ')
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D\u2600-\u27BF\u2B00-\u2BFF]/gu, '\n')
+    .replace(/[،,.!?؟:;؛…\-–—|•·/\\()[\]{}"'’‘“”]+/g, '\n')
+    .replace(/\r/g, '\n');
+  return normalized.split('\n')
+    .map(s => s
+      .replace(/\+?[0-9٠-٩][0-9٠-٩\s\-]{6,}/g, ' ')
+      .replace(/[0-9٠-٩]+\s*(دج|د\.ج|دينار|DA|DZD|درهم|ريال|ألف|الف)/gi, ' ')
+      .replace(/[0-9٠-٩]+\s*%/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(s => {
+      const w = s.split(' ').filter(Boolean);
+      return w.length >= 3 && /\p{L}/u.test(s);
+    });
+}
+
+function adGoogleQuery(a) {
+  const segments = adSearchSegments(a && a.body);
+  if (!segments.length) return '';
+  // Longest single segment (most distinctive), capped at 12 words.
+  segments.sort((x, y) => y.split(' ').length - x.split(' ').length);
+  const phrase = segments[0].split(' ').slice(0, 12).join(' ').slice(0, 140).trim();
+  const page = String((a && a.page_name) || '').replace(/"/g, ' ').replace(/\s+/g, ' ').trim();
+  let q = `site:facebook.com "${phrase}"`;
+  if (page) q += ` "${page}"`;
+  return q;
+}
+
+function searchAdOnGoogle(adId) {
+  const a = adCache[String(adId)];
+  const q = a && adGoogleQuery(a);
+  if (!q) return alert('لا يوجد نص كافٍ في الإعلان للبحث عنه.');
+  window.open('https://www.google.com/search?q=' + encodeURIComponent(q), '_blank', 'noopener');
+}
+function searchAdOnBing(adId) {
+  const a = adCache[String(adId)];
+  const q = a && adGoogleQuery(a);
+  if (!q) return alert('لا يوجد نص كافٍ في الإعلان للبحث عنه.');
+  window.open('https://www.bing.com/search?q=' + encodeURIComponent(q), '_blank', 'noopener');
+}
+function copyAdGoogleQuery(adId) {
+  const a = adCache[String(adId)];
+  const q = a && adGoogleQuery(a);
+  if (!q) return alert('لا يوجد نص كافٍ في الإعلان للبحث عنه.');
+  navigator.clipboard.writeText(q).then(() => alert('تم نسخ استعلام البحث:\n' + q)).catch(() => alert(q));
+}
+
+function openAdDetails(adId) {
+  const a = adCache[String(adId)];
+  if (!a) return;
+  const box = document.getElementById('ad-modal-body');
+  const title = document.getElementById('ad-modal-title');
+  const g = a.group || null;
+  title.textContent = a.page_name || 'تفاصيل الإعلان';
+  lastAdBody = a.body || '';
+
+  const rawVideo = /^https?:\/\//i.test(a.video_url || '') ? a.video_url : '';
+  // Same-origin proxy: signed fbcdn URLs are blocked cross-origin by some
+  // browsers (and expire), so the server streams the bytes for us.
+  const video = rawVideo ? `/api/video?u=${encodeURIComponent(rawVideo)}` : '';
+  const img = safeUrl(a.preview_image_url);
+  const media = video
+    ? `<video src="${video}" controls autoplay playsinline class="w-full max-h-[62vh] rounded-xl bg-black"></video>
+       <div class="text-[11px] text-slate-400 mt-1">إن لم يعمل التشغيل، استخدم زر «فتح في مكتبة الإعلانات».</div>`
+    : (img
+        ? `<img src="${img}" alt="صورة الإعلان" class="w-full max-h-[62vh] object-contain rounded-xl bg-slate-100">`
+        : `<div class="w-full h-56 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold">لا توجد وسائط</div>`);
+
+  const kws = [...new Set(((g && g.keywords) || a.keywords || []).filter(Boolean))];
+  const pageLink = a.page_id
+    ? `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&sort_data[mode]=total_impressions&sort_data[direction]=desc&view_all_page_id=${encodeURIComponent(a.page_id)}`
+    : '';
+
+  const rows = [];
+  const row = (label, value, cls = '') => `<div class="flex justify-between gap-3"><span class="text-slate-500">${label}</span><b class="${cls}">${value}</b></div>`;
+  if (a.page_name) rows.push(row('المعلن', escT(a.page_name), 'text-[#102a56]'));
+  if (a.page_id) rows.push(row('Page ID', escT(a.page_id), 'font-mono'));
+  if (a.store_domain) rows.push(row('المتجر', escT(a.store_domain), 'font-mono text-blue-700'));
+  if (a.start_date) rows.push(row('تاريخ الإطلاق', escT(a.start_date), 'font-mono'));
+  if (a.days_active != null) rows.push(row('الأيام النشطة', a.days_active, 'num'));
+  rows.push(row('الحالة', a.is_active ? 'نشط' : 'متوقف', a.is_active ? 'text-emerald-700' : 'text-rose-700'));
+  if ((a.publisher_platforms || []).length) rows.push(row('المنصات', escT((a.publisher_platforms || []).join(', '))));
+  if (a.cta_text) rows.push(row('CTA', escT(a.cta_text)));
+  if (a.collation_count) rows.push(row('عدد النسخ', a.collation_count, 'num'));
+  if (g) rows.push(row('ضمن مجموعة', `${g.count} إعلان`, 'num'));
+  if (a.page_total_ads != null) rows.push(row('إجمالي إعلانات الصفحة', a.page_total_ads, 'num'));
+  if (a.domain_total_ads != null) rows.push(row('إجمالي إعلانات المتجر', a.domain_total_ads, 'num'));
+
+  box.innerHTML = `
+    ${media}
+    <div class="flex flex-wrap gap-2">
+      <button onclick="searchAdOnGoogle('${a.ad_id}')" class="px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700" title="site:facebook.com &quot;نص الإعلان&quot; &quot;اسم الصفحة&quot;">🔎 ابحث عن المنشور في جوجل</button>
+      <button onclick="searchAdOnBing('${a.ad_id}')" class="px-3 py-2 rounded-xl bg-white border border-[#cfe0f5] text-[#174ea6] text-xs font-bold hover:bg-[#eef6ff]">🅱️ Bing</button>
+      <button onclick="copyAdGoogleQuery('${a.ad_id}')" class="px-3 py-2 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-xs font-bold hover:bg-slate-50">📋 نسخ الاستعلام</button>
+      <a href="https://www.facebook.com/ads/library/?id=${encodeURIComponent(a.ad_id)}" target="_blank" rel="noopener" class="px-3 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700">🕵️ فتح في مكتبة الإعلانات</a>
+      ${a.link_url ? `<a href="${safeUrl(a.link_url)}" target="_blank" rel="noopener" class="px-3 py-2 rounded-xl bg-white border border-[#cfe0f5] text-[#174ea6] text-xs font-bold hover:bg-[#eef6ff]">🔗 فتح المتجر/الرابط</a>` : ''}
+      ${pageLink ? `<a href="${pageLink}" target="_blank" rel="noopener" class="px-3 py-2 rounded-xl bg-white border border-[#cfe0f5] text-[#174ea6] text-xs font-bold hover:bg-[#eef6ff]">📄 إعلانات الصفحة</a>` : ''}
+      <button onclick="copyAdText(lastAdBody)" class="px-3 py-2 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-xs font-bold hover:bg-slate-50">📋 نسخ النص</button>
+    </div>
+    <div class="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2">
+      <span class="font-bold text-slate-500">استعلام البحث (يُفتح في متصفحك):</span>
+      <div class="font-mono break-all mt-0.5" dir="auto">${escT(adGoogleQuery(a))}</div>
+    </div>
+    ${kws.length ? `<div class="flex flex-wrap gap-1.5">${kws.map(k => keywordChipHtml(k)).join('')}</div>` : ''}
+    <div class="grid sm:grid-cols-2 gap-2 text-xs text-slate-700 bg-[#f8fbff] border border-[#cfe0f5] rounded-xl p-3">${rows.join('')}</div>
+    <div>
+      <div class="text-xs font-bold text-slate-500 mb-1">نص الإعلان</div>
+      <div class="text-sm text-slate-800 whitespace-pre-line leading-relaxed max-h-64 overflow-auto bg-slate-50 border border-slate-200 rounded-xl p-3">${escT(a.body || '—')}</div>
+    </div>`;
+  document.getElementById('ad-modal').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeGroupModal(); closeAdModal(); }
+});
 
 // Ad data comes from Facebook advertisers (and the extension): treat every
 // field as hostile. Text is HTML-escaped; links must be http(s).
@@ -1297,7 +1443,7 @@ function adCardHtml(raw, opts = {}) {
     <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl p-4 flex flex-col justify-between shadow-[0_8px_22px_rgba(23,43,77,0.06)] hover:shadow-md transition">
       <div>
         <!-- Top Media Container (Matching screenshot style) -->
-        <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center">
+        <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center cursor-pointer" onclick="openAdDetails('${a.ad_id}')" title="اضغط لعرض تفاصيل الإعلان والفيديو">
           ${previewImg ? `
             <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" class="w-full h-full object-cover" onerror="this.parentElement.innerHTML='<div class=\\'text-slate-400 text-xs font-bold\\'>لا توجد صورة</div>'">
           ` : `
@@ -1317,6 +1463,10 @@ function adCardHtml(raw, opts = {}) {
           ${g ? `
             <div class="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg ${tone.badge} text-white font-extrabold text-sm shadow-md">
               📦 <span class="num">${g.count}</span> إعلان${tone.label ? ` <span class="text-[10px] font-bold opacity-90">· ${tone.label}</span>` : ''}
+            </div>` : ''}
+          ${a.video_url ? `
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span class="w-12 h-12 rounded-full bg-black/55 text-white flex items-center justify-center text-xl shadow-lg">▶</span>
             </div>` : ''}
         </div>
 
@@ -1875,6 +2025,7 @@ function onStreamMessage(e) {
       `🔄 جاري سحب الشريحة ${d.pass} من ${d.total_passes} (شهر ${d.label}) — تراكمي: ${d.accumulated} إعلان`;
   } else if (m.type === 'ad') {
     liveScrapeState.scraped++;
+    adCache[String(d.ad_id)] = d;
     updateLiveProgressUI();
     // Show live ads only on page 1 of the "newest scraped" view, so a user
     // reading another page is not shifted under their eyes.

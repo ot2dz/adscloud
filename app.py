@@ -884,6 +884,54 @@ def api_ads_group():
     return jsonify({"ads": db.attach_entity_stats(db.get_group_ads(key, user_id=_scope_user_id()))})
 
 
+@app.route("/api/video")
+@login_required
+def api_video():
+    """Stream a Facebook video through our own origin (signed fbcdn URLs expire
+    / are blocked cross-origin by some browsers). Only Meta CDN hosts are
+    allowed, so this cannot be used as an open proxy."""
+    from urllib.parse import urlsplit
+    raw = (request.args.get("u") or "").strip()
+    if not raw:
+        return jsonify({"error": "u required"}), 400
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    allowed = host.endswith(".fbcdn.net") or host == "fbcdn.net" or host.endswith(".facebook.com")
+    if parts.scheme not in ("http", "https") or not allowed:
+        return jsonify({"error": "host not allowed"}), 400
+
+    from curl_cffi import requests as creq
+    up_headers = {}
+    rng = request.headers.get("Range")
+    if rng:
+        up_headers["Range"] = rng
+    try:
+        upstream = creq.get(raw, impersonate="chrome", timeout=90, stream=True,
+                            headers=up_headers, allow_redirects=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("video proxy failed: %s", exc)
+        return jsonify({"error": "upstream unavailable"}), 502
+    if upstream.status_code not in (200, 206):
+        upstream.close()
+        return jsonify({"error": f"upstream {upstream.status_code}"}), 502
+
+    def gen():
+        try:
+            for chunk in upstream.iter_content(65536):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    resp = Response(gen(), status=upstream.status_code, direct_passthrough=True)
+    resp.headers["Content-Type"] = upstream.headers.get("Content-Type", "video/mp4")
+    for h in ("Content-Length", "Accept-Ranges", "Content-Range"):
+        if upstream.headers.get(h):
+            resp.headers[h] = upstream.headers[h]
+    resp.headers["Cache-Control"] = "private, max-age=1800"
+    return resp
+
+
 @app.route("/api/queries")
 @admin_required
 def api_queries():
@@ -1675,7 +1723,7 @@ def api_export(fmt: str):
     if fmt == "csv":
         buf = io.StringIO()
         cols = ["ad_id", "page_name", "page_id", "start_date", "store_domain",
-                "platform", "cta_text", "link_url", "keywords", "body"]
+                "platform", "cta_text", "link_url", "keywords", "video_url", "body"]
         w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for ad in ads:

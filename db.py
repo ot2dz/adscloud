@@ -348,6 +348,7 @@ class Database:
             ("meta_ads", "days_active", "INTEGER DEFAULT 1"),
             ("meta_ads", "target_id", "INTEGER"),
             ("meta_ads", "preview_image_url", "TEXT"),
+            ("meta_ads", "video_url", "TEXT"),
             ("meta_ads", "product_key", "TEXT"),
             ("keywords", "type", "TEXT DEFAULT 'keyword'"),
             ("keywords", "label", "TEXT DEFAULT ''"),
@@ -594,7 +595,7 @@ class Database:
                 "store_domain", "platform", "body", "cta_text", "collation_count",
                 "publisher_platforms", "query", "country", "collected_at", "first_seen",
                 "last_seen_active", "days_active", "target_id", "preview_image_url",
-                "product_key")
+                "video_url", "product_key")
         values = (
             ad_id,
             ad.get("page_name") or "",
@@ -616,6 +617,7 @@ class Database:
             days_active,
             target_id,
             preview_img,
+            _web_url(ad.get("video_url")),
             pkey,
         )
         placeholders = ", ".join([p] * len(cols))
