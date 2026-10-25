@@ -332,7 +332,7 @@ def main() -> None:
 
     class BearerAuth(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
-            if request.url.path.rstrip("/") in ("", "/health"):
+            if request.url.path.rstrip("/") == "/health":
                 return JSONResponse({"ok": True, "service": "adscloud-mcp"})
             auth = request.headers.get("authorization", "")
             provided = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
