@@ -250,7 +250,9 @@ class ScrapeManager:
 
     def _emit(self, kind: str, data: dict) -> None:
         item = {"type": kind, "data": data}
-        self.events.put(item)
+        # Keep the legacy queue bounded: /api/stream now uses subscribers.
+        if self.events.qsize() < 1000:
+            self.events.put(item)
         # Fan-out to every connected SSE client so no open tab misses events.
         for q in list(self.subscribers):
             try:
@@ -332,7 +334,7 @@ class ScrapeManager:
         def progress(msg):
             print(f"  ▶ [SCRAPER] {msg}", flush=True)
             self.state["log"].append(msg)
-            self.state["log"] = self.state["log"][-200:]
+            self.state["log"] = self.state["log"][-500:]
             self._emit("log", {"text": msg})
 
         def on_reported(count):
@@ -440,7 +442,9 @@ class ScrapeManager:
             # Never finish silently on an empty run: Meta answers HTTP 200 with
             # zero results when the egress IP is soft-blocked, which looks like
             # "success" but means nothing was collected.
-            if (base_count + len(seen_ad_ids)) == 0:
+            if ((base_count + len(seen_ad_ids)) == 0
+                    and outcome.get("status") != "stopped"
+                    and not self.stop_event.is_set()):
                 reported = self.state.get("reported")
                 if reported is None or reported == 0:
                     msg = ("Meta أعادت 0 نتيجة. الأسباب المحتملة: (1) IP أو البروكسي محجوب من مكتبة "
@@ -809,15 +813,19 @@ def api_start():
 @app.route("/api/stop", methods=["POST"])
 @admin_required
 def api_stop():
-    """Stop the running scrape and cancel manual scrapes waiting to resume."""
+    """Stop the running scrape AND cancel manual scrapes waiting to resume."""
     manager.stop()
     jid = manager.state.get("job_id")
-    if jid and manager.state.get("running"):
-        db.request_stop(jid)
+    if jid:
+        try:
+            db.request_stop(int(jid))
+        except Exception:
+            logger.exception("request_stop failed for job %s", jid)
     cancelled = db.cancel_pending_jobs(source="manual")
     if cancelled:
-        manager._emit("log", {"text": f"⏹ أُلغي {cancelled} سحب كان ينتظر الاستئناف."})
-    return jsonify({"ok": True, "cancelled": cancelled})
+        manager._emit("log", {"text": f"⏹ أُلغي {cancelled} مهمة في الانتظار."})
+    manager._emit("log", {"text": f"⏹ تم إرسال أمر الإيقاف{f' للمهمة #{jid}' if jid else ''}."})
+    return jsonify({"ok": True, "job_id": jid, "cancelled": cancelled})
 
 
 @app.route("/api/status")
@@ -1989,6 +1997,10 @@ def job_worker_loop() -> None:
                 job_wakeup.clear()
                 continue
             jid = job.get("id")
+            if job.get("stop_requested"):
+                db.finish_job(jid, status="stopped", result_count=int(job.get("result_count") or 0))
+                manager._emit("log", {"text": f"⏹ المهمة #{jid} أُلغيت قبل البدء."})
+                continue
             try:
                 resume = json.loads(job.get("checkpoint") or "null")
             except ValueError:
@@ -1999,6 +2011,9 @@ def job_worker_loop() -> None:
             d_min, d_max = job.get("start_date_min") or "", job.get("start_date_max") or ""
             logger.info("job %s: in-process scrape start (attempt %s, resume=%s)", jid, attempts + 1, resume)
             db.update_job_progress(jid, 1, "استئناف من آخر نقطة" if resume else "بدء السحب عبر HTTP")
+            manager._emit("log", {
+                "text": f"▶ بدء المهمة #{jid}: {job.get('query') or job.get('url') or ''} "
+                        f"(محاولة {attempts + 1})"})
 
             last_write = [0.0]
 
@@ -2050,6 +2065,14 @@ def job_worker_loop() -> None:
             cp_json = json.dumps(cp) if cp else None
             status = outcome.get("status")
 
+            # A stop request that arrived while the run was finishing wins.
+            try:
+                fresh = db.get_job(jid)
+                if fresh and fresh.get("stop_requested") and status in ("interrupted", "done"):
+                    status = "stopped"
+            except Exception:
+                pass
+
             if status == "interrupted":
                 if attempts < len(JOB_RETRY_DELAYS_MIN):
                     delay = JOB_RETRY_DELAYS_MIN[attempts]
@@ -2071,11 +2094,15 @@ def job_worker_loop() -> None:
             elif status == "failed":
                 db.finish_job(jid, status="failed", result_count=count,
                               error=outcome.get("error", ""), checkpoint=cp_json)
+                manager._emit("log", {"text": f"⛔ فشلت المهمة #{jid}: {outcome.get('error', '')}"})
             elif status == "stopped":
                 db.finish_job(jid, status="stopped", result_count=count)
+                manager.state["error"] = ""
+                manager._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان."})
             else:
                 db.finish_job(jid, status="done", result_count=count)
                 logger.info("job %s: done (%s ads)", jid, count)
+                manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان."})
                 if not resume:  # a resumed run only saw part of the page's ads
                     _snapshot_page_target(job, outcome)
         except Exception:
@@ -2143,6 +2170,41 @@ def entity_stats_loop() -> None:
 _bg_started = False
 
 
+class _SseLogHandler(logging.Handler):
+    """Forward technical logs (rate limits, challenges, errors) to the live UI."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            text = self.format(record)
+        except Exception:
+            return
+        item = {"type": "log", "data": {"text": text, "level": record.levelname}}
+        for q in list(manager.subscribers):
+            try:
+                q.put_nowait(item)
+            except Exception:
+                pass
+
+
+_sse_log_handler: Optional[logging.Handler] = None
+
+
+def attach_sse_logging() -> None:
+    """Attach the SSE log handler once (idempotent)."""
+    global _sse_log_handler
+    if _sse_log_handler is not None:
+        return
+    h = _SseLogHandler()
+    h.setLevel(logging.INFO)
+    h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+    for name in ("meta_ads_collector", "engine", "web_app"):
+        lg = logging.getLogger(name)
+        lg.addHandler(h)
+        if lg.level == logging.NOTSET or lg.level > logging.INFO:
+            lg.setLevel(logging.INFO)
+    _sse_log_handler = h
+
+
 def niches_loop() -> None:
     """Classify ads that have no niche yet (backfill + every new scrape)."""
     while True:
@@ -2159,6 +2221,10 @@ def start_background_threads() -> None:
     if _bg_started:
         return
     _bg_started = True
+    try:
+        attach_sse_logging()
+    except Exception:
+        logger.exception("SSE log handler failed")
     try:
         n = db.migrate_plain_api_tokens()
         if n:

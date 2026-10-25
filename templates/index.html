@@ -126,7 +126,7 @@
       <div class="flex items-center justify-between gap-3 flex-wrap">
         <div class="flex items-center gap-2">
           <span class="animate-pulse text-base">⚡</span>
-          <span class="text-xs font-bold text-slate-600">جاري السحب للهدف:</span>
+          <span id="live-target-label" class="text-xs font-bold text-slate-600">جاري السحب للهدف:</span>
           <b id="live-target-name" class="text-[#102a56] text-sm font-black">...</b>
         </div>
         <div class="flex items-center gap-3 text-xs font-bold flex-wrap">
@@ -618,9 +618,12 @@
   <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
     <div class="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
       <span>سجل الأحداث والمحرك</span>
-      <span class="text-[11px] text-slate-400 font-mono">Live Logs</span>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="clearLogs()" class="text-[11px] px-2 py-0.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 font-bold">مسح</button>
+        <span class="text-[11px] text-slate-400 font-mono">Live Logs</span>
+      </div>
     </div>
-    <pre id="log" class="text-xs bg-slate-900 text-slate-300 rounded-xl p-3.5 h-28 overflow-auto whitespace-pre-wrap leading-5 font-mono"></pre>
+    <pre id="log" class="text-xs bg-slate-900 text-slate-300 rounded-xl p-3.5 h-56 overflow-auto whitespace-pre-wrap leading-5 font-mono" dir="auto"></pre>
   </section>
 
 </main>
@@ -706,6 +709,7 @@ function loadDashboardData() {
   loadAds();
   loadKeywordChips();
   loadNicheChips();
+  loadServerLogs();
   if (isAdmin()) {
     loadTargets();
     loadJobs();
@@ -1001,6 +1005,12 @@ function updateLiveProgressUI() {
     return;
   }
   box.classList.remove('hidden');
+  const targetLabel = document.getElementById('live-target-label');
+  if (targetLabel) {
+    targetLabel.innerText = liveScrapeState.paused
+      ? '⏸ متوقف مؤقتًا — الهدف:'
+      : (liveScrapeState.active ? 'جاري السحب للهدف:' : 'آخر هدف:');
+  }
   document.getElementById('live-target-name').innerText = liveScrapeState.query || 'سحب مباشر';
   document.getElementById('live-scraped').innerText = Number(liveScrapeState.scraped).toLocaleString('en-US');
   document.getElementById('live-stores').innerText = Number(liveScrapeState.stores).toLocaleString('en-US');
@@ -2011,9 +2021,26 @@ async function startEngine() {
   loadJobs();
 }
 async function stopEngine(){
-  await fetch('/api/stop',{method:'POST'});
+  const note = document.getElementById('live-status-note');
+  if (note) { note.classList.remove('text-rose-700'); note.innerText = '⏹ جارٍ إرسال أمر الإيقاف…'; }
+  let d = {};
+  try {
+    const r = await fetch('/api/stop', { method: 'POST' });
+    d = await r.json();
+  } catch (_e) {}
   liveScrapeState.paused = false;
+  liveScrapeState.active = false;
+  setState(false);
   loadJobs();
+  if (note) {
+    note.innerText = '⏹ تم إرسال أمر الإيقاف' +
+      (d.cancelled ? ` — أُلغي ${d.cancelled} مهمة في الانتظار` : '') + '.';
+  }
+  setTimeout(() => {
+    if (!liveScrapeState.active && !liveScrapeState.paused && !liveScrapeState.error) {
+      document.getElementById('live-progress-box').classList.add('hidden');
+    }
+  }, 3000);
 }
 async function resetAll(){ if(!confirm('هل أنت متأكد من مسح جميع الإعلانات؟')) return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
 function exportData(f){ window.location = '/api/export/' + f + adminUserParam('?'); }
@@ -2042,7 +2069,7 @@ async function loadJobs() {
         <div class="flex items-center gap-2 shrink-0">
           ${(j.status === 'done' || j.status === 'stopped') ? `<span class="text-xs text-emerald-700 font-bold num">${j.result_count || 0} إعلان</span>` : ''}
           <span class="text-[11px] px-2.5 py-0.5 rounded-full border font-bold ${color[j.status] || 'bg-slate-100'}">${JOB_AR[j.status] || escT(j.status)}</span>
-          ${j.status === 'running' ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
+          ${(j.status === 'running' || j.status === 'pending') ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
         </div>
       </div>
       ${j.status === 'running' ? `
@@ -2217,6 +2244,23 @@ async function runScheduleNow() {
 
 // ── SSE Events ──
 let logLines = [];
+function clearLogs() {
+  logLines = [];
+  const el = document.getElementById('log');
+  if (el) el.innerText = '';
+}
+async function loadServerLogs() {
+  try {
+    const r = await fetch('/api/status');
+    if (r.status === 401) return;
+    const s = await r.json();
+    if (Array.isArray(s.log) && s.log.length) {
+      logLines = s.log.slice(-500);
+      const el = document.getElementById('log');
+      if (el) { el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
+    }
+  } catch (_e) {}
+}
 let es = null;
 function startEventStream() {
   if (es) return;
@@ -2226,8 +2270,13 @@ function startEventStream() {
 function onStreamMessage(e) {
   const m = JSON.parse(e.data); const d = m.data || {};
   if (m.type === 'log') {
-    logLines.push(d.text); logLines = logLines.slice(-200);
-    const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight;
+    let text = String(d.text || '');
+    if (!/^\d{2}:\d{2}:\d{2}/.test(text)) {
+      text = '[' + new Date().toLocaleTimeString('en-GB') + '] ' + text;
+    }
+    logLines.push(text); logLines = logLines.slice(-500);
+    const el = document.getElementById('log');
+    if (el) { el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
   } else if (m.type === 'started') {
     liveScrapeState.paused = false;
     setState(true);
