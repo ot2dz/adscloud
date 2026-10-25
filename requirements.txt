@@ -3,3 +3,5 @@ flask-cors>=4.0.0
 gunicorn>=21.2.0
 psycopg2-binary>=2.9.0
 curl_cffi>=0.7.0
+mcp>=2.3.0
+uvicorn>=0.30.0
