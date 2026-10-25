@@ -152,9 +152,13 @@ def _parse_ads_url(url: Optional[str]) -> dict:
     except Exception:
         return {}
     out: dict = {}
-    # ``q=%22%20%22`` (quotes + whitespace) means "no keyword" — treat it as empty.
-    raw_q = (q.get("q") or "").strip().strip('"').strip()
-    if raw_q:
+    raw_q = (q.get("q") or "").strip()
+    inner = raw_q.strip('"').strip()
+    if inner:
+        out["q"] = inner
+    elif raw_q:
+        # ``q=" "`` (quoted whitespace) is Meta's wildcard for "all ads".
+        # Keep the quotes so GraphQL receives the same wildcard query.
         out["q"] = raw_q
     if q.get("country"):
         out["country"] = q["country"]
