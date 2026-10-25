@@ -448,9 +448,13 @@ class ScrapeManager:
                     and not self.stop_event.is_set()):
                 reported = self.state.get("reported")
                 if reported is None or reported == 0:
-                    msg = ("Meta أعادت 0 نتيجة. الأسباب المحتملة: (1) IP أو البروكسي محجوب من مكتبة "
-                           "الإعلانات، (2) البروكسي لا يغيّر عنوان الخروج (نفس IP السيرفر)، أو (3) لا "
-                           "توجد نتائج مطابقة للكلمة/الفترة. استخدم «🩺 تشخيص السحب» في الإعدادات.")
+                    if url and not (query or "").strip():
+                        msg = ("بحث فارغ (بدون كلمة): Meta أعادت 0 نتيجة. قد لا تدعم مكتبة الإعلانات "
+                               "البحث بدون كلمة، أو أن الـIP محجوب. جرّب كلمة/صفحة أو «🩺 تشخيص السحب».")
+                    else:
+                        msg = ("Meta أعادت 0 نتيجة. الأسباب المحتملة: (1) IP أو البروكسي محجوب من مكتبة "
+                               "الإعلانات، (2) البروكسي لا يغيّر عنوان الخروج (نفس IP السيرفر)، أو (3) لا "
+                               "توجد نتائج مطابقة للكلمة/الفترة. استخدم «🩺 تشخيص السحب» في الإعدادات.")
                 else:
                     msg = (f"Meta ترى {reported} إعلانًا لكن لم يُحفظ أي منها — كلها استُبعدت بفلتر "
                            f"المتاجر أو نطاق تاريخ الإطلاق.")
@@ -1016,14 +1020,22 @@ def api_diagnose():
         proxies and out["direct_ip"] and out["egress_ip"]
         and out["direct_ip"] != out["egress_ip"])
 
-    # Live Meta Ad Library probe (same path the scraper uses).
+    # Live Meta Ad Library probe (same path the scraper uses). Any query can be
+    # tested: /api/diagnose?proxy=0&q=&country=DZ&min=2026-10-01&max=2026-10-10
+    probe_q = request.args.get("q", "livraison")
+    probe_country = (request.args.get("country") or "DZ").upper()
+    probe_min = request.args.get("min") or None
+    probe_max = request.args.get("max") or None
+    out["probe"] = {"q": probe_q, "country": probe_country,
+                    "min": probe_min, "max": probe_max}
     try:
         from meta_ads_collector import MetaAdsCollector
         c = MetaAdsCollector(proxy=proxy_arg)
         try:
             out["meta_count"] = c.count(
-                query="livraison", country="DZ", status="ACTIVE",
-                sort_by="SORT_BY_RELEVANCY_MONTHLY_GROUPED")
+                query=probe_q, country=probe_country, status="ACTIVE",
+                sort_by="SORT_BY_RELEVANCY_MONTHLY_GROUPED",
+                start_date=probe_min, end_date=probe_max)
         finally:
             try:
                 c.close()

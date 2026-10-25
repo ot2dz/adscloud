@@ -269,10 +269,10 @@ def scrape(
                if str(sort_mode) in ("relevancy_monthly_grouped", "relevancy")
                else SORT_IMPRESSIONS)
 
-    if not q and not page_id:
-        msg = ("الرابط لا يحتوي كلمة بحث (q) أو صفحة (view_all_page_id). "
-               "ابحث في مكتبة الإعلانات عن كلمة أو صفحة ثم انسخ الرابط."
-               if url else "لا توجد كلمة أو صفحة للسحب.")
+    # An Ad Library URL may legitimately carry an empty q (browse / all ads):
+    # allow it and let Meta decide; only reject when there is nothing at all.
+    if not q and not page_id and not url:
+        msg = "لا توجد كلمة أو صفحة أو رابط للسحب."
         progress("⚠️ " + msg)
         return ScrapeResult(query=q, url=url or "", failed=True, error=msg)
 
