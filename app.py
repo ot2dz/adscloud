@@ -325,6 +325,7 @@ class ScrapeManager:
                 outcome["status"] = "stopped"
             elif result.failed:
                 outcome.update(status="failed", error=result.error)
+                self.state["error"] = result.error or "فشل السحب"
             elif result.interrupted:
                 outcome.update(status="interrupted", error=result.error)
             else:
@@ -443,7 +444,7 @@ class ScrapeManager:
             # zero results when the egress IP is soft-blocked, which looks like
             # "success" but means nothing was collected.
             if ((base_count + len(seen_ad_ids)) == 0
-                    and outcome.get("status") != "stopped"
+                    and outcome.get("status") not in ("stopped", "failed")
                     and not self.stop_event.is_set()):
                 reported = self.state.get("reported")
                 if reported is None or reported == 0:
@@ -760,6 +761,9 @@ def api_start():
     url = (cfg.get("url") or "").strip()
     query = (cfg.get("query") or "").strip()
     country = (cfg.get("country") or DEFAULT_COUNTRY).strip().upper()
+    # A pasted Ad Library URL arrives in `query` (single input) — route it.
+    if not url and query and "facebook.com" in query and "/ads/library" in query:
+        url, query = query, ""
     if not url and not query:
         return jsonify({"error": "query or url required"}), 400
 
@@ -1153,6 +1157,8 @@ def api_create_job():
     cfg = request.get_json(force=True, silent=True) or {}
     url = (cfg.get("url") or "").strip()
     query = (cfg.get("query") or "").strip()
+    if not url and query and "facebook.com" in query and "/ads/library" in query:
+        url, query = query, ""
     if not url and not query:
         return jsonify({"error": "query or url required"}), 400
     job_id = db.create_job(

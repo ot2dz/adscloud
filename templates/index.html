@@ -1988,6 +1988,8 @@ async function startEngine() {
   const c = document.getElementById('country-select').value;
   if (!q) return alert('الرجاء كتابة كلمة مفتاحية أو رابط أو دومين');
 
+  const isUrl = /^https?:\/\//i.test(q) || /facebook\.com\/ads\/library/i.test(q);
+
   const datePreset = document.getElementById('scrape-date-preset').value;
   const dMin = document.getElementById('scrape-custom-min')?.value || '';
   const dMax = document.getElementById('scrape-custom-max')?.value || '';
@@ -2000,7 +2002,8 @@ async function startEngine() {
   const r = await fetch('/api/start', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      query: q,
+      query: isUrl ? '' : q,
+      url: isUrl ? q : '',
       country: c,
       date_preset: datePreset,
       start_date_min: dMin,

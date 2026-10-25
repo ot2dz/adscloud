@@ -152,9 +152,10 @@ def _parse_ads_url(url: Optional[str]) -> dict:
     except Exception:
         return {}
     out: dict = {}
-    raw_q = (q.get("q") or "").strip()
+    # ``q=%22%20%22`` (quotes + whitespace) means "no keyword" — treat it as empty.
+    raw_q = (q.get("q") or "").strip().strip('"').strip()
     if raw_q:
-        out["q"] = raw_q.strip('"')
+        out["q"] = raw_q
     if q.get("country"):
         out["country"] = q["country"]
     pid = (q.get("view_all_page_id") or q.get("page_id") or "").strip()
@@ -240,6 +241,12 @@ def scrape(
     called after each fully-processed page (``None`` once exhausted).
     """
     progress = progress or (lambda _m: None)
+
+    # The dashboard may send a pasted Ad Library URL as ``query`` (it has a
+    # single input). Treat it as a URL so its q/page/date params are parsed
+    # instead of searching for the URL text itself.
+    if not url and query and "facebook.com" in query and "/ads/library" in query:
+        url, query = query.strip(), ""
     parsed = _parse_ads_url(url)
 
     q = (parsed.get("q") or query or "").strip()
@@ -263,8 +270,11 @@ def scrape(
                else SORT_IMPRESSIONS)
 
     if not q and not page_id:
-        progress("⚠️ لا توجد كلمة أو صفحة للسحب.")
-        return ScrapeResult(query=q, url=url or "")
+        msg = ("الرابط لا يحتوي كلمة بحث (q) أو صفحة (view_all_page_id). "
+               "ابحث في مكتبة الإعلانات عن كلمة أو صفحة ثم انسخ الرابط."
+               if url else "لا توجد كلمة أو صفحة للسحب.")
+        progress("⚠️ " + msg)
+        return ScrapeResult(query=q, url=url or "", failed=True, error=msg)
 
     progress(
         f"🚀 بدء السحب عبر HTTP (بدون متصفح): "
