@@ -165,6 +165,15 @@ def _parse_ads_url(url: Optional[str]) -> dict:
     pid = (q.get("view_all_page_id") or q.get("page_id") or "").strip()
     if pid.isdigit():
         out["page_id"] = pid
+    langs = [v.strip().lower() for k, v in sorted(q.items())
+             if k.startswith("content_languages") and v.strip()]
+    if langs:
+        out["content_languages"] = langs
+    st = (q.get("search_type") or "").strip().lower()
+    if st == "keyword_exact_phrase":
+        out["exact_phrase"] = True
+    if q.get("sort_data[mode]"):
+        out["sort_mode"] = q["sort_data[mode]"].strip()
     if q.get("start_date[min]"):
         out["start_date_min"] = q["start_date[min]"]
     if q.get("start_date[max]"):
@@ -238,6 +247,8 @@ def scrape(
     resume_cursor: Optional[str] = None,
     on_checkpoint: Optional[Callable[[Optional[str]], None]] = None,
     proxy: Optional[str] = None,
+    content_languages: Optional[list] = None,
+    estimate: bool = True,
 ) -> ScrapeResult:
     """Collect ads for a keyword / page / domain / custom URL over HTTP.
 
@@ -268,6 +279,11 @@ def scrape(
     gql_min = inc_min
     gql_max = _iso_plus_one(inc_max) if inc_max else None
 
+    # A pasted Ad Library link wins: its exact-phrase type, sort and
+    # language filter are honoured like on facebook.com.
+    exact_phrase = bool(parsed.get("exact_phrase") or exact_phrase)
+    sort_mode = parsed.get("sort_mode") or sort_mode
+    langs = parsed.get("content_languages") or [x for x in (content_languages or []) if x]
     search_type = SEARCH_PAGE if page_id else (SEARCH_EXACT if exact_phrase else SEARCH_KEYWORD)
     sort_by = (SORT_RELEVANCY_MONTHLY_GROUPED
                if str(sort_mode) in ("relevancy_monthly_grouped", "relevancy")
@@ -284,6 +300,7 @@ def scrape(
         f"🚀 بدء السحب عبر HTTP (بدون متصفح): "
         f"{'page ' + page_id if page_id else 'q=' + repr(q)} | country={ctry} | "
         f"date={inc_min or '-'}..{inc_max or '-'} | scope={date_scope}"
+        f"{' | lang=' + ','.join(langs) if langs else ''}"
     )
 
     res = ScrapeResult(query=q, url=url or "", cursor=resume_cursor or None)
@@ -312,11 +329,12 @@ def scrape(
         try:
             # Best-effort estimated count (one extra request; never fatal).
             # Skipped when resuming: it was already reported by the first run.
-            if not res.cursor and attempt == 0:
+            if estimate and not res.cursor and attempt == 0:
                 try:
                     res.reported_count = collector.count(
                         query=q, country=ctry, status=STATUS_ACTIVE, sort_by=sort_by,
-                        start_date=gql_min, end_date=gql_max,
+                        start_date=gql_min, end_date=gql_max, search_type=search_type,
+                        content_languages=langs or None,
                     )
                     if res.reported_count is not None:
                         progress(f"📊 العدد التقديري من Meta: {res.reported_count}")
@@ -337,6 +355,7 @@ def scrape(
                 max_results=max_results,
                 start_cursor=res.cursor,
                 on_checkpoint=_checkpoint,
+                content_languages=langs or None,
             ):
                 if should_stop and should_stop():
                     res.stopped = True

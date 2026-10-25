@@ -967,6 +967,7 @@ class MetaAdsClient:
         collation_token: Optional[str] = None,
         start_date: Optional[Union[str, date, datetime]] = None,
         end_date: Optional[Union[str, date, datetime]] = None,
+        content_languages: Optional[list[str]] = None,
     ) -> tuple[dict[str, Any], Optional[str]]:
         """
         Search for ads in the Meta Ad Library.
@@ -1022,7 +1023,8 @@ class MetaAdsClient:
             "adType": ad_type,
             "bylines": [],
             "collationToken": collation_token,
-            "contentLanguages": [],
+            # Ad language filter, e.g. ["ar"] (Ad Library "content_languages").
+            "contentLanguages": [str(x).lower() for x in (content_languages or []) if x],
             "countries": [country],
             "excludedIDs": [],
             "first": first,
@@ -1155,6 +1157,7 @@ class MetaAdsClient:
         start_date: Optional[Union[str, date, datetime]] = None,
         end_date: Optional[Union[str, date, datetime]] = None,
         page_id: Optional[str] = None,
+        content_languages: Optional[list[str]] = None,
     ) -> Optional[int]:
         """Return the Ad Library's estimated result count for a query.
 
@@ -1198,6 +1201,8 @@ class MetaAdsClient:
             "sort_data[mode]": sort_mode_url,
             "sort_data[direction]": "desc",
         }
+        for i, lang in enumerate([x for x in (content_languages or []) if x]):
+            params[f"content_languages[{i}]"] = str(lang).lower()
         if page_id:
             # "All ads of one page" view, as the Ad Library page link does.
             params["view_all_page_id"] = str(page_id)

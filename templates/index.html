@@ -106,6 +106,15 @@
       <button id="btn-start" onclick="startEngine()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl px-4 py-2.5 font-bold text-sm text-white shadow-sm transition">▶ بدء السحب</button>
     </div>
 
+    <!-- Whole-market scrape of the current month -->
+    <div data-admin-only class="hidden flex flex-wrap items-center justify-between gap-3 bg-gradient-to-l from-indigo-50 to-white border border-indigo-200 rounded-xl p-3">
+      <div class="text-xs">
+        <div class="font-bold text-indigo-900">🗓️ سحب كل إعلانات الشهر الحالي (الجزائر)</div>
+        <div class="text-slate-600 mt-0.5">كل المتاجر التي أطلقت إعلانات من بداية الشهر حتى اليوم، يوماً بيوم، بالعربية والفرنسية. يُكمل من حيث توقف عند الانقطاع.</div>
+      </div>
+      <button onclick="startMonthScrape()" class="shrink-0 bg-indigo-600 hover:bg-indigo-700 rounded-xl px-4 py-2.5 font-bold text-sm text-white shadow-sm transition">🗓️ سحب الشهر كاملاً</button>
+    </div>
+
     <!-- Custom Date Range Row (Visible only if custom is selected) -->
     <div id="scrape-custom-dates" class="hidden flex items-center gap-3 bg-[#f8fbff] border border-[#cfe0f5] p-3 rounded-xl text-xs font-bold text-slate-700">
       <span>📅 فترة السحب المخصصة:</span>
@@ -475,6 +484,17 @@
               <div class="text-[11px] text-slate-500 mt-0.5">يفحص كل هدف في موعده المحدد بالساعات بنمط السحب التزايدي السريع.</div>
             </div>
           </label>
+
+          <div class="flex items-center gap-3 text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
+            <input type="checkbox" id="cfg-month-rescan" class="rounded text-blue-600 cursor-pointer">
+            <div class="flex-1">
+              <div class="font-bold text-[#102a56]">إعادة فحص يومية لإعلانات اليوم والأمس (كل السوق)</div>
+              <div class="text-[11px] text-slate-500 mt-0.5">مرة يومياً بعد الساعة المحددة (توقيت الجزائر) يسحب الإعلانات الجديدة لليوم والأمس بالعربية والفرنسية — المتاجر فقط.
+                <span id="month-rescan-last" class="font-mono"></span></div>
+            </div>
+            <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
+              <input id="cfg-month-rescan-hour" type="number" min="0" max="23" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
+          </div>
 
           <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
             <input type="checkbox" id="cfg-registration-open" class="rounded text-blue-600">
@@ -2007,6 +2027,19 @@ function applyViewDateFilter(preset) {
   }
 }
 
+async function startMonthScrape() {
+  if (!confirm('سحب كل إعلانات المتاجر في الجزائر من بداية الشهر حتى اليوم (عربي + فرنسي)؟\n' +
+               'قد يستغرق عدة ساعات من جهاز واحد، ويُكمل تلقائياً عند الانقطاع. يمكنك إيقافه في أي وقت.')) return;
+  const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ mode: 'month_days' }) });
+  const d = await r.json();
+  if (!d.ok) return alert('⚠️ ' + (d.error || 'تعذّر بدء السحب'));
+  document.getElementById('live-status-note').innerText = d.queued
+    ? '🕒 سحب الشهر في قائمة الانتظار — سيبدأ بعد انتهاء السحب الحالي.'
+    : '🗓️ بدأ سحب الشهر يوماً بيوم (الأحدث أولاً).';
+  loadJobs();
+}
+
 async function startEngine() {
   const q = document.getElementById('q').value.trim();
   const c = document.getElementById('country-select').value;
@@ -2116,6 +2149,9 @@ async function loadSettings() {
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
   document.getElementById('cfg-registration-open').checked = s.registration_open === 'true';
+  document.getElementById('cfg-month-rescan').checked = (s.month_rescan_enabled || 'true') === 'true';
+  document.getElementById('cfg-month-rescan-hour').value = s.month_rescan_hour || 23;
+  document.getElementById('month-rescan-last').innerText = s.month_rescan_last ? `(آخر تشغيل: ${s.month_rescan_last})` : '';
   document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
   document.getElementById('cfg-tg-token').value = s.telegram_token || '';
@@ -2150,6 +2186,8 @@ async function saveAllSettings() {
       interval_hours: schedInt,
       entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
       registration_open: document.getElementById('cfg-registration-open').checked,
+      month_rescan_enabled: document.getElementById('cfg-month-rescan').checked,
+      month_rescan_hour: parseInt(document.getElementById('cfg-month-rescan-hour').value || '23'),
       notify_enabled: notifEn,
       telegram_token: token,
       telegram_chat_id: chat,

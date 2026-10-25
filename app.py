@@ -235,6 +235,11 @@ FIXED_COUNTRY = DEFAULT_COUNTRY
 FIXED_LANGS = ["ar"]
 
 # Local scraping needs Chromium browser / worker or HTTP collector.
+# Whole-market monthly scrape (see slicing.build_day_passes).
+MONTH_MODE = "month_days"
+MONTH_LANGS = ["ar", "fr"]
+MARKET_WILDCARD = '" "'   # Meta exact-phrase wildcard: matches every ad
+
 SCRAPE_ENABLED = os.environ.get("SCRAPE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -266,7 +271,8 @@ class ScrapeManager:
               start_date_max: str = "", date_label: str = "",
               date_scope: str = "impressions", resume: Optional[dict] = None,
               on_checkpoint: Optional[Callable[[Optional[dict]], None]] = None,
-              job_id: Optional[int] = None, base_count: int = 0) -> bool:
+              job_id: Optional[int] = None, base_count: int = 0,
+              mode: str = "", languages: Optional[list] = None) -> bool:
         """Start a scrape thread.
 
         ``resume`` is a checkpoint ``{"pass": n, "cursor": "..."}`` from an
@@ -286,7 +292,8 @@ class ScrapeManager:
         self.thread = threading.Thread(
             target=self._run,
             args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
-            kwargs={"resume": resume, "on_checkpoint": on_checkpoint, "base_count": base_count},
+            kwargs={"resume": resume, "on_checkpoint": on_checkpoint, "base_count": base_count,
+                    "mode": mode, "month_languages": languages},
             daemon=True)
         self.thread.start()
         return True
@@ -295,7 +302,8 @@ class ScrapeManager:
         self.stop_event.set()
 
     def _run(self, query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope="impressions",
-             resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0) -> None:
+             resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0,
+             mode: str = "", month_languages: Optional[list] = None) -> None:
         country = (country or DEFAULT_COUNTRY).strip().upper()
         languages = FIXED_LANGS
         proxy_spec = _proxy_setting()
@@ -390,7 +398,44 @@ class ScrapeManager:
         try:
             self._emit("started", {"query": query or url, "country": country})
 
-            if sweep and not (start_date_min or start_date_max):
+            if mode == MONTH_MODE:
+                # Whole market for a date range, one launch day x language at
+                # a time (Meta's '" "' exact-phrase wildcard = every ad).
+                from slicing import build_day_passes
+                passes = build_day_passes(start_date_min, start_date_max, month_languages or MONTH_LANGS)
+                total_passes = len(passes)
+                progress(f"🗓️ سحب السوق يوماً بيوم: {start_date_min} ← {start_date_max} "
+                         f"({total_passes} شريحة = يوم × لغة، الأحدث أولاً، المتاجر فقط).")
+                start_pass = max(1, int(resume.get("pass") or 1))
+                if start_pass > 1:
+                    progress(f"↩️ استئناف من الشريحة {start_pass}/{total_passes}.")
+                for idx, p in enumerate(passes, 1):
+                    if idx < start_pass:
+                        continue
+                    if self.stop_event.is_set():
+                        outcome["status"] = "stopped"
+                        progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
+                        break
+                    progress(f"↪ شريحة {idx}/{total_passes}: إعلانات {p['label']} — إجمالي مجمع: "
+                             f"{(base_count + len(seen_ad_ids))} إعلان.")
+                    self._emit("slice_update", {"pass": idx, "total_passes": total_passes, "label": p["label"],
+                                                "accumulated": (base_count + len(seen_ad_ids))})
+                    r = scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
+                               sort_mode="relevancy_monthly_grouped",
+                               start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
+                               content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
+                               progress=progress, on_ad=on_ad, on_scanned=on_scanned,
+                               should_stop=lambda: self.stop_event.is_set(), proxy=proxy_spec,
+                               resume_cursor=(resume.get("cursor") if idx == start_pass else None),
+                               on_checkpoint=make_checkpointer(idx))
+                    if r.failed:
+                        progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
+                        make_checkpointer(idx)(None)
+                        continue
+                    if not absorb(r):
+                        break
+
+            elif sweep and not (start_date_min or start_date_max):
                 from slicing import build_deep_passes
                 passes = build_deep_passes(query=query, url=url, country=country,
                                            exact=exact, sort_mode=sort_mode, months_back=12)
@@ -769,6 +814,9 @@ def api_admin_security_events():
 @admin_required
 def api_start():
     cfg = request.get_json(force=True, silent=True) or {}
+    if cfg.get("mode") == MONTH_MODE:
+        job_id, queued = _queue_month_scrape("manual")
+        return jsonify({"ok": True, "queued": queued, "job_id": job_id, "mode": MONTH_MODE})
     url = (cfg.get("url") or "").strip()
     query = (cfg.get("query") or "").strip()
     country = (cfg.get("country") or DEFAULT_COUNTRY).strip().upper()
@@ -1443,6 +1491,9 @@ def api_get_settings():
         "has_meta_ads_proxy": bool(s.get("meta_ads_proxy")),
         "env_meta_ads_proxy": bool(os.environ.get("META_ADS_PROXY")),
         "blocked_domains": s.get("blocked_domains", ""),
+        "month_rescan_enabled": s.get("month_rescan_enabled", "true"),
+        "month_rescan_hour": s.get("month_rescan_hour", "23"),
+        "month_rescan_last": s.get("month_rescan_last", ""),
     })
 
 
@@ -1466,6 +1517,13 @@ def api_set_settings():
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
     if "registration_open" in cfg:
         db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
+    if "month_rescan_enabled" in cfg:
+        db.set_setting("month_rescan_enabled", "true" if cfg["month_rescan_enabled"] else "false")
+    if "month_rescan_hour" in cfg:
+        try:
+            db.set_setting("month_rescan_hour", str(max(0, min(23, int(cfg["month_rescan_hour"])))))
+        except (TypeError, ValueError):
+            pass
     if "meta_ads_proxy" in cfg:
         db.set_setting("meta_ads_proxy", str(cfg["meta_ads_proxy"] or "").strip())
     purged = None
@@ -1925,6 +1983,44 @@ def api_reclassify_stores():
     return jsonify({"ok": True, "checked": len(rows), "changed": changed, "cleared_non_store": cleared})
 
 
+def _queue_month_scrape(source: str, start: Optional[str] = None, end: Optional[str] = None):
+    """Queue the whole-market scrape (default: 1st of this month -> today,
+    Algeria time). Returns (job_id, queued_behind_another_job)."""
+    from db import algeria_today
+    today = algeria_today()
+    start = start or today.replace(day=1).isoformat()
+    end = end or today.isoformat()
+    busy = bool(manager.state.get("running")) or db.has_pending_jobs()
+    label = "كل إعلانات السوق (متاجر فقط)" if source == "manual" else "إعادة فحص اليوم والأمس"
+    job_id = db.create_job(
+        query=f"{label} {start} ← {end}", country=DEFAULT_COUNTRY, exact_phrase=True,
+        stores_only=True, sort_mode="relevancy_monthly_grouped", source=source,
+        start_date_min=start, start_date_max=end, date_scope="launch",
+        mode=MONTH_MODE, languages=",".join(MONTH_LANGS))
+    job_wakeup.set()
+    manager._emit("log", {"text": f"🗓️ أُضيف سحب السوق يوماً بيوم ({start} ← {end})"
+                                  + (" إلى قائمة الانتظار." if busy else ".")})
+    return job_id, busy
+
+
+def _month_rescan_due(settings: dict) -> bool:
+    """Daily re-scan of today + yesterday: once per Algerian day, after the
+    configured hour, unless a market scrape is already queued or running."""
+    from datetime import datetime as _dt
+    from db import ALGERIA_TZ, algeria_today
+    if settings.get("month_rescan_enabled", "true").lower() not in ("1", "true", "yes", "on"):
+        return False
+    try:
+        hour = int(settings.get("month_rescan_hour", "23") or 23)
+    except ValueError:
+        hour = 23
+    if _dt.now(ALGERIA_TZ).hour < hour:
+        return False
+    if settings.get("month_rescan_last", "") == algeria_today().isoformat():
+        return False
+    return not db.has_open_mode_job(MONTH_MODE)
+
+
 def scheduler_loop() -> None:
     from datetime import timedelta
     from db import algeria_today
@@ -1946,6 +2042,10 @@ def scheduler_loop() -> None:
                 manager.events.put({"type": "log", "data": {"text": f"♻️ أُعيد {n} أمر عالق إلى قائمة الانتظار."}})
 
             s = db.get_settings()
+            if _month_rescan_due(s):
+                y = (today_dz - timedelta(days=1)).isoformat()
+                _queue_month_scrape("daily_rescan", start=y, end=today_dz.isoformat())
+                db.set_setting("month_rescan_last", today_dz.isoformat())
             if s.get("schedule_enabled", "false").lower() in ("1", "true", "yes", "on"):
                 targets = [t for t in db.list_targets() if t.get("enabled")]
                 now_utc = datetime.now(timezone.utc)
@@ -2076,6 +2176,8 @@ def job_worker_loop() -> None:
                 on_checkpoint=persist,
                 job_id=jid,
                 base_count=base_count,
+                mode=job.get("mode") or "",
+                languages=[x for x in (job.get("languages") or "").split(",") if x],
             )
             if not started:
                 db.release_job(jid)

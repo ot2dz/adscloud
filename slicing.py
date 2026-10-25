@@ -119,6 +119,31 @@ def build_deep_passes(query: str = "", url: str = "", country: str = "DZ",
     return passes
 
 
+def build_day_passes(start_date: str, end_date: str, languages: list[str]) -> list[dict]:
+    """Whole-market scrape plan: one pass per launch day x language, newest
+    day first (today's ads are the most valuable and change the most).
+
+    Meta's start-date window on a single day returns the ads launched that
+    day, so each pass is small and well under any pagination ceiling. The
+    plan only depends on the job's stored dates, so it is identical when an
+    interrupted job resumes days later.
+    """
+    first = date.fromisoformat(start_date[:10])
+    last = date.fromisoformat(end_date[:10])
+    langs = [l for l in (languages or []) if l] or [""]
+    passes = []
+    day = last
+    while day >= first:
+        for lang in langs:
+            passes.append({"day": day.isoformat(), "lang": lang,
+                           "label": f"{day.isoformat()}{' · ' + LANG_AR.get(lang, lang) if lang else ''}"})
+        day -= timedelta(days=1)
+    return passes
+
+
+LANG_AR = {"ar": "عربي", "fr": "فرنسي", "en": "إنجليزي"}
+
+
 def build_pass_urls(base_url: str, sorts: list[str] | None = None,
                     windows: list[tuple[str, str] | None] | None = None) -> list[dict]:
     """Compatibility helper for existing callers."""

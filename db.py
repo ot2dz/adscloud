@@ -330,6 +330,9 @@ class Database:
             ("start_date_min", "TEXT"),
             ("start_date_max", "TEXT"),
             ("date_scope", "TEXT DEFAULT 'impressions'"),
+            # 'month_days' = whole-market scrape split by launch day x language
+            ("mode", "TEXT DEFAULT ''"),
+            ("languages", "TEXT DEFAULT ''"),
             # Resume support: JSON {"pass": n, "cursor": "..."} of the next
             # unfetched page, retry bookkeeping and a liveness heartbeat.
             ("checkpoint", "TEXT"),
@@ -1391,17 +1394,17 @@ class Database:
                    source: str = "manual", url: str = "", sweep: bool = False,
                    target_id: Optional[int] = None, incremental: bool = False,
                    start_date_min: str = "", start_date_max: str = "",
-                   date_scope: str = "impressions") -> int:
+                   date_scope: str = "impressions", mode: str = "", languages: str = "") -> int:
         p = self._ph()
         conn = self._connect()
         try:
             cur = conn.cursor()
             cols = ("query", "url", "country", "exact_phrase", "stores_only", "sweep",
                     "sort_mode", "status", "source", "created_at", "target_id", "incremental",
-                    "start_date_min", "start_date_max", "date_scope")
+                    "start_date_min", "start_date_max", "date_scope", "mode", "languages")
             vals = (query, url, country, int(exact_phrase), int(stores_only), int(sweep),
                     sort_mode, "pending", source, _now(), target_id, int(incremental),
-                    start_date_min, start_date_max, date_scope or "impressions")
+                    start_date_min, start_date_max, date_scope or "impressions", mode or "", languages or "")
             placeholders = ", ".join([p] * len(cols))
             col_list = ", ".join(cols)
             if self.is_postgres:
@@ -1547,6 +1550,12 @@ class Database:
                 f"UPDATE jobs SET status='stopped', finished_at={p}, retry_at=NULL WHERE id={p}",
                 (_now(), row["id"]))
         return len(rows)
+
+    def has_open_mode_job(self, mode: str) -> bool:
+        """True if a job of this mode is queued, waiting to resume or running."""
+        p = self._ph()
+        return bool(self._query_one(
+            f"SELECT id FROM jobs WHERE mode={p} AND status IN ('pending', 'running') LIMIT 1", (mode,)))
 
     def has_open_job(self, target_id: Optional[int]) -> bool:
         """True if the target already has a pending or running job."""

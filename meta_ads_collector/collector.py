@@ -206,6 +206,7 @@ class MetaAdsCollector:
         sort_by: Optional[str] = SORT_RELEVANCY,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
+        content_languages: Optional[list[str]] = None,
     ) -> Optional[int]:
         """Return the Ad Library's estimated result count (cheap, one request).
 
@@ -225,6 +226,7 @@ class MetaAdsCollector:
             sort_mode=sort_by,
             start_date=start_date,
             end_date=end_date,
+            content_languages=content_languages,
         )
 
     def collect_by_page_id(
@@ -357,6 +359,7 @@ class MetaAdsCollector:
         end_date: Optional[Any] = None,
         start_cursor: Optional[str] = None,
         on_checkpoint: Optional[Callable[[Optional[str]], None]] = None,
+        content_languages: Optional[list[str]] = None,
     ) -> Iterator[Ad]:
         """
         Search for ads and yield results as Ad objects.
@@ -463,6 +466,7 @@ class MetaAdsCollector:
                                 collation_token=str(uuid.uuid4()),
                                 start_date=start_date,
                                 end_date=end_date,
+                                content_languages=content_languages,
                             )
                         except MetaAdsError as client_error:
                             self.stats["errors"] += 1
