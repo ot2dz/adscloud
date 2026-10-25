@@ -245,7 +245,8 @@ class ScrapeManager:
         self.events = queue.Queue()
         self.subscribers: list = []
         self.state = {"running": False, "query": "", "scraped": 0, "stored": 0,
-                      "stores": 0, "scanned": 0, "reported": None, "log": []}
+                      "stores": 0, "scanned": 0, "reported": None, "error": "",
+                      "log": []}
 
     def _emit(self, kind: str, data: dict) -> None:
         item = {"type": kind, "data": data}
@@ -278,8 +279,8 @@ class ScrapeManager:
         while not self.events.empty():
             self.events.get_nowait()
         self.state.update({"running": True, "query": query or url, "scraped": base_count,
-                           "stored": 0, "stores": 0, "reported": None, "log": [],
-                           "outcome": None, "job_id": job_id})
+                           "stored": 0, "stores": 0, "reported": None, "error": "",
+                           "log": [], "outcome": None, "job_id": job_id})
         self.thread = threading.Thread(
             target=self._run,
             args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
@@ -436,6 +437,23 @@ class ScrapeManager:
                     self.state["reported"] = result.reported_count
                 absorb(result)
 
+            # Never finish silently on an empty run: Meta answers HTTP 200 with
+            # zero results when the egress IP is soft-blocked, which looks like
+            # "success" but means nothing was collected.
+            if (base_count + len(seen_ad_ids)) == 0:
+                reported = self.state.get("reported")
+                if reported is None or reported == 0:
+                    msg = ("Meta أعادت 0 نتيجة. الأسباب المحتملة: (1) IP أو البروكسي محجوب من مكتبة "
+                           "الإعلانات، (2) البروكسي لا يغيّر عنوان الخروج (نفس IP السيرفر)، أو (3) لا "
+                           "توجد نتائج مطابقة للكلمة/الفترة. استخدم «🩺 تشخيص السحب» في الإعدادات.")
+                else:
+                    msg = (f"Meta ترى {reported} إعلانًا لكن لم يُحفظ أي منها — كلها استُبعدت بفلتر "
+                           f"المتاجر أو نطاق تاريخ الإطلاق.")
+                self.state["error"] = msg
+                outcome["status"] = "empty"
+                outcome["error"] = msg
+                self._emit("error", {"message": msg})
+
             self._emit("finished", {
                 "status": outcome["status"],
                 "error": outcome["error"],
@@ -450,6 +468,7 @@ class ScrapeManager:
         except Exception as exc:  # pragma: no cover
             logger.exception("scrape failed")
             outcome.update(status="interrupted", error=str(exc))
+            self.state["error"] = str(exc)
             self._emit("error", {"message": str(exc)})
         finally:
             outcome["ad_ids"] = sorted(seen_ad_ids)
@@ -931,6 +950,67 @@ def api_video():
             resp.headers[h] = upstream.headers[h]
     resp.headers["Cache-Control"] = "private, max-age=1800"
     return resp
+
+
+@app.route("/api/diagnose")
+@admin_required
+def api_diagnose():
+    """One-shot diagnosis: egress IP + a live Meta Ad Library probe.
+
+    Explains why a scrape returns nothing (blocked IP/proxy vs empty results)."""
+    from curl_cffi import requests as creq
+    from meta_ads_collector.proxy_pool import parse_proxy, _redact_proxy
+
+    saved = _proxy_setting()
+    spec = saved or (os.environ.get("META_ADS_PROXY") or "").strip()
+    out = {"proxy_configured": bool(spec),
+           "source": "settings" if saved else ("env" if spec else "none"),
+           "proxy": "", "egress_ip": None, "meta_count": None,
+           "meta_error": "", "verdict": ""}
+    if not spec:
+        return jsonify({**out, "verdict": "لا يوجد بروكسي مضبوط — السحب يخرج من IP السيرفر."})
+
+    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    raw = parts[0]
+    try:
+        purl = parse_proxy(raw)
+        out["proxy"] = _redact_proxy(purl)
+    except Exception as exc:  # noqa: BLE001
+        out["verdict"] = f"صيغة البروكسي غير صحيحة: {exc}"
+        return jsonify(out)
+
+    proxies = {"http": purl, "https": purl}
+    try:
+        r = creq.get("https://api.ipify.org?format=json", proxies=proxies,
+                     impersonate="chrome", timeout=25)
+        out["egress_ip"] = (r.json() or {}).get("ip")
+    except Exception as exc:  # noqa: BLE001
+        out["verdict"] = f"تعذّر الاتصال بالبروكسي: {str(exc)[:180]}"
+        return jsonify(out)
+
+    proxy_arg = parts if len(parts) > 1 else parts[0]
+    try:
+        from meta_ads_collector import MetaAdsCollector
+        c = MetaAdsCollector(proxy=proxy_arg)
+        try:
+            out["meta_count"] = c.count(
+                query="livraison", country="DZ", status="ACTIVE",
+                sort_by="SORT_BY_RELEVANCY_MONTHLY_GROUPED")
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+    except Exception as exc:  # noqa: BLE001
+        out["meta_error"] = str(exc)[:200]
+
+    if out.get("meta_count") and int(out["meta_count"]) > 0:
+        out["verdict"] = "✅ يعمل: البروكسي يجلب نتائج فعلية من Meta."
+    else:
+        out["verdict"] = ("⛔ Meta أعادت 0 نتيجة عبر هذا البروكسي/IP — الـIP محجوب مؤقتًا من مكتبة "
+                          "الإعلانات أو البروكسي لا يغيّر عنوان الخروج. استخدم بروكسي "
+                          "residential/mobile جديدًا ثم أعد التشخيص.")
+    return jsonify(out)
 
 
 @app.route("/api/queries")

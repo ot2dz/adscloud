@@ -536,10 +536,12 @@
 
           <div class="flex items-center gap-2.5 flex-wrap">
             <button onclick="testProxy()" id="btn-proxy-test" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🧪 فحص البروكسي</button>
+            <button onclick="diagnoseProxy()" id="btn-diagnose" class="bg-white hover:bg-amber-50 border border-amber-300 text-amber-800 rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🩺 تشخيص السحب</button>
             <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ</button>
           </div>
 
           <div id="proxy-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
+          <div id="diag-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
         </div>
       </div>
 
@@ -2131,6 +2133,38 @@ async function testProxy() {
   }
 }
 
+async function diagnoseProxy() {
+  const el = document.getElementById('diag-result');
+  const btn = document.getElementById('btn-diagnose');
+  btn.disabled = true; btn.innerText = '⏳ جارٍ التشخيص…';
+  el.classList.remove('hidden');
+  el.className = 'p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line bg-slate-50 text-slate-700 border border-slate-200';
+  el.textContent = '… يتم فحص البروكسي والاتصال بمكتبة الإعلانات';
+  try {
+    const r = await fetch('/api/diagnose');
+    const d = await r.json();
+    const lines = [
+      'المصدر: ' + (d.source || '-'),
+      'البروكسي: ' + (d.proxy || 'بدون'),
+      'IP الخروج: ' + (d.egress_ip || '-'),
+      'نتائج Meta (استعلام تجريبي): ' + (d.meta_count == null ? '—' : d.meta_count),
+      d.meta_error ? 'خطأ Meta: ' + d.meta_error : '',
+      '',
+      d.verdict || ''
+    ].filter(x => x !== '');
+    const ok = Number(d.meta_count) > 0;
+    el.className = 'p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line ' +
+      (ok ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+          : 'bg-rose-50 text-rose-800 border border-rose-300');
+    el.textContent = lines.join('\n');
+  } catch (err) {
+    el.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold whitespace-pre-line';
+    el.textContent = '❌ فشل التشخيص: ' + err.message;
+  } finally {
+    btn.disabled = false; btn.innerText = '🩺 تشخيص السحب';
+  }
+}
+
 async function testTelegram() {
   const token = document.getElementById('cfg-tg-token').value.trim();
   const chat = document.getElementById('cfg-tg-chat').value.trim();
@@ -2193,7 +2227,7 @@ function onStreamMessage(e) {
   } else if (m.type === 'started') {
     liveScrapeState.paused = false;
     setState(true);
-    liveScrapeState = { active: true, query: d.query || document.getElementById('q').value.trim(), reported: null, scraped: 0, stores: 0 };
+    liveScrapeState = { active: true, query: d.query || document.getElementById('q').value.trim(), reported: null, scraped: 0, stores: 0, error: '' };
     updateLiveProgressUI();
   } else if (m.type === 'reported') {
     liveScrapeState.reported = d.reported;
@@ -2231,6 +2265,12 @@ function onStreamMessage(e) {
     loadKeywordChips();
     loadNicheChips();
     if (d.stored) { loadStats(); loadStores(); }
+  } else if (m.type === 'error') {
+    liveScrapeState.error = d.message || 'خطأ غير معروف';
+    const note = document.getElementById('live-status-note');
+    note.classList.add('text-rose-700');
+    note.innerText = '⚠️ ' + liveScrapeState.error;
+    document.getElementById('live-progress-box').classList.remove('hidden');
   } else if (m.type === 'finished') {
     liveScrapeState.active = false;
     setState(false);
@@ -2245,6 +2285,11 @@ function onStreamMessage(e) {
       note.innerText = `⏹ أُوقف السحب. تم حفظ ${d.scraped} إعلاناً.`;
     } else if (d.status === 'failed') {
       note.innerText = `⛔ توقف السحب بسبب خطأ: ${d.error || ''}`;
+      note.classList.add('text-rose-700');
+    } else if (d.status === 'empty' && d.error) {
+      liveScrapeState.error = d.error;
+      note.classList.add('text-rose-700');
+      note.innerText = '⚠️ ' + d.error;
     } else {
       note.innerText = `✅ اكتمل السحب بنجاح! تم حفظ ${d.scraped} إعلاناً و${d.stores} متجراً.`;
     }
@@ -2261,6 +2306,14 @@ function onStreamMessage(e) {
     loadKeywordChips();
     loadNicheChips();
     loadStats();
+    if (liveScrapeState.error) {
+      // Keep the reason visible instead of hiding it after 12s.
+      const note = document.getElementById('live-status-note');
+      note.classList.add('text-rose-700');
+      note.innerText = '⚠️ ' + liveScrapeState.error;
+      document.getElementById('live-progress-box').classList.remove('hidden');
+      return;
+    }
     setTimeout(() => {
       if (!liveScrapeState.active && !liveScrapeState.paused) {
         document.getElementById('live-progress-box').classList.add('hidden');
@@ -2301,11 +2354,21 @@ setInterval(async () => {
       setState(false);
       updateLiveProgressUI();
       loadAds(); loadStats();
+      if (s.error) {
+        liveScrapeState.error = s.error;
+      }
       setTimeout(() => {
-        if (!liveScrapeState.active && !liveScrapeState.paused) {
+        if (!liveScrapeState.active && !liveScrapeState.paused && !liveScrapeState.error) {
           document.getElementById('live-progress-box').classList.add('hidden');
         }
       }, 12000);
+    }
+    // Always surface the last reason, even if the SSE "error" event was missed.
+    if (s.error && !s.running) {
+      const note = document.getElementById('live-status-note');
+      if (note) { note.classList.add('text-rose-700'); note.innerText = '⚠️ ' + s.error; }
+      const box = document.getElementById('live-progress-box');
+      if (box) box.classList.remove('hidden');
     }
   } catch (_e) {}
 }, 2500);
