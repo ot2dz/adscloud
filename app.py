@@ -359,10 +359,17 @@ class ScrapeManager:
                 return
             d = ad.to_dict()
             d["keywords"] = [query] if query else []
+            # Big marketplaces are purged from the bank — never ingest them.
+            if ad.store_domain and db.is_blocked_domain(ad.store_domain):
+                return
             aid = d.get("ad_id")
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
                 stored = db.save_ad(d, query=query, country=country)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                d["collected_at"] = now_iso
+                if stored:
+                    d["first_seen"] = now_iso
                 self.state["scraped"] = (base_count + len(seen_ad_ids))
                 if stored:
                     self.state["stored"] += 1
@@ -1435,6 +1442,7 @@ def api_get_settings():
         "meta_ads_proxy": s.get("meta_ads_proxy", ""),
         "has_meta_ads_proxy": bool(s.get("meta_ads_proxy")),
         "env_meta_ads_proxy": bool(os.environ.get("META_ADS_PROXY")),
+        "blocked_domains": s.get("blocked_domains", ""),
     })
 
 
@@ -1460,10 +1468,17 @@ def api_set_settings():
         db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
     if "meta_ads_proxy" in cfg:
         db.set_setting("meta_ads_proxy", str(cfg["meta_ads_proxy"] or "").strip())
+    purged = None
+    if "blocked_domains" in cfg:
+        db.set_setting("blocked_domains", str(cfg["blocked_domains"] or "").strip())
+        db._load_blocked_domains()
+        purged = db.purge_blocked_ads()
+        if purged:
+            manager._emit("log", {"text": f"🧹 حُذف {purged} إعلانًا لشركات كبرى من القاعدة."})
     _audit("settings_changed", ",".join(sorted(k for k in cfg if k not in ("telegram_token", "meta_ads_proxy"))) +
            (",telegram_token" if "telegram_token" in cfg else "") +
            (",meta_ads_proxy" if "meta_ads_proxy" in cfg else ""))
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "purged": purged})
 
 
 @app.route("/api/proxy/test", methods=["POST"])

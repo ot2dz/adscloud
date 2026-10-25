@@ -41,6 +41,32 @@ _NON_STORE_HOSTS = {
 # Non-web schemes that are never a store.
 _BAD_SCHEMES = {"mailto", "tel", "sms", "javascript", "intent", "market", "fb", "whatsapp"}
 
+# Large global marketplaces: their ads are purged and never stored again.
+# An entry ending with "." matches every TLD and subdomain (amazon., ebay.).
+BIG_MARKETPLACES = (
+    "alibaba.com", "temu.com", "aliexpress.com", "amazon.", "shein.com",
+    "ebay.", "wish.com", "banggood.com", "dhgate.com", "made-in-china.com",
+    "joom.com",
+)
+
+
+def is_big_marketplace(domain: str, extra: Optional[list] = None) -> bool:
+    """True when the host belongs to a big marketplace (or an extra entry)."""
+    d = (domain or "").strip().lower().lstrip(".")
+    if not d:
+        return False
+    for raw in list(extra or []) + list(BIG_MARKETPLACES):
+        b = str(raw or "").strip().lower().lstrip(".")
+        if not b:
+            continue
+        if b.endswith("."):
+            base = b[:-1]
+            if d == base or d.startswith(b) or ("." + b) in ("." + d):
+                return True
+        elif d == b or d.endswith("." + b):
+            return True
+    return False
+
 
 def host_of(url: str) -> str:
     """Return the bare lowercase host of a URL (no scheme, no www, no port)."""

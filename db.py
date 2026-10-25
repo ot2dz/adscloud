@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import niches as niche_defs
+from store_filter import BIG_MARKETPLACES, is_big_marketplace
 
 logger = logging.getLogger("meta_ads_db")
 
@@ -64,6 +65,7 @@ class Database:
         if self.db_url.startswith("postgres://"):
             self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
         self._niches_cache: list[dict] = []
+        self._blocked_domains: list[str] = []
         self._init_schema()
 
     # ── connection helpers ────────────────────────────────────────────────
@@ -489,6 +491,13 @@ class Database:
             self._load_niches()
         except Exception as exc:  # noqa: BLE001
             logger.warning("niche cache notice: %s", exc)
+        try:
+            self._load_blocked_domains()
+            purged = self.purge_blocked_ads()
+            if purged:
+                logger.info("purged %s big-marketplace ads", purged)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("blocked-domain purge notice: %s", exc)
 
     def _backfill_product_keys(self, cur, conn, batch: int = 2000) -> None:
         """Compute product_key for ads stored before grouping existed."""
@@ -650,6 +659,9 @@ class Database:
         ad = dict(ad)
         ad["link_url"] = _web_url(ad.get("link_url"))
         preview_img = _web_url(ad.get("preview_image_url"))
+        # Big marketplaces are never stored (they are also purged on startup).
+        if self.is_blocked_domain(ad.get("store_domain") or ""):
+            return False
         from store_filter import product_key
         pkey = product_key(str(ad.get("page_id") or ""), ad.get("link_url") or "",
                            ad.get("body") or "", ad.get("store_domain") or "")
@@ -880,6 +892,54 @@ class Database:
                 ks = [str(r["query"]).strip()]
             r["keywords"] = ks
         return rows
+
+    # ── big-marketplace blocklist (purged permanently) ────────────────────
+    def _load_blocked_domains(self) -> None:
+        """Extra blocked domains from Settings (comma/newline separated)."""
+        extra = ""
+        try:
+            extra = (self.get_settings().get("blocked_domains") or "")
+        except Exception:
+            extra = ""
+        text = str(extra).replace(";", ",").replace("\n", ",")
+        self._blocked_domains = [x.strip().lower() for x in text.split(",") if x.strip()]
+
+    def is_blocked_domain(self, domain: str) -> bool:
+        return is_big_marketplace(domain, self._blocked_domains)
+
+    def purge_blocked_ads(self) -> int:
+        """Permanently delete ads of big marketplaces (and their tags/links)."""
+        domains = [d for d in (list(BIG_MARKETPLACES) + list(self._blocked_domains))
+                   if str(d).strip()]
+        p = self._ph()
+        conds, params = [], []
+        for raw in domains:
+            b = str(raw).strip().lower().lstrip(".")
+            if not b:
+                continue
+            if b.endswith("."):
+                base = b[:-1]
+                conds.append(f"(store_domain = {p} OR store_domain LIKE {p} OR store_domain LIKE {p})")
+                params.extend([base, b + "%", "%." + b])
+            else:
+                conds.append(f"(store_domain = {p} OR store_domain LIKE {p})")
+                params.extend([b, "%." + b])
+        if not conds:
+            return 0
+        rows = self._query(f"SELECT ad_id FROM meta_ads WHERE {' OR '.join(conds)}", tuple(params))
+        ids = [str(r["ad_id"]) for r in rows]
+        if not ids:
+            return 0
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            in_list = ", ".join([p] * len(chunk))
+            for table in ("ad_keywords", "ad_niches", "user_ads"):
+                try:
+                    self._execute(f"DELETE FROM {table} WHERE ad_id IN ({in_list})", tuple(chunk))
+                except Exception:
+                    pass
+            self._execute(f"DELETE FROM meta_ads WHERE ad_id IN ({in_list})", tuple(chunk))
+        return len(ids)
 
     # ── niche classification (multi-label, rules-based) ───────────────────
     def _load_niches(self) -> None:
