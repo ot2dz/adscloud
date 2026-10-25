@@ -748,6 +748,35 @@ class Database:
     def ad_exists(self, ad_id: str) -> bool:
         return self._query_one(f"SELECT 1 AS x FROM meta_ads WHERE ad_id={self._ph()}", (str(ad_id),)) is not None
 
+    # ── CTA allow-list (which call-to-action buttons are shown) ───────────
+    DEFAULT_CTA_ALLOWLIST = ("SHOP_NOW", "BUY_NOW", "ORDER_NOW", "GET_OFFER", "MESSAGE_PAGE",
+                             "WHATSAPP_MESSAGE", "GET_DETAILS", "LEARN_MORE")
+    _cta_cache: tuple = (0.0, None)
+
+    def cta_allowlist(self) -> list[str]:
+        """CTAs an ad must have to be shown ([] = filter off). Cached briefly:
+        it is read on every ads query."""
+        import time as _t
+        ts, val = self._cta_cache
+        if val is not None and _t.monotonic() - ts < 10:
+            return val
+        st = {r["key"]: r["value"] for r in self._query(
+            "SELECT key, value FROM settings WHERE key IN ('cta_filter_enabled', 'cta_allowlist')")}
+        if st.get("cta_filter_enabled", "true").lower() not in ("1", "true", "yes", "on"):
+            val = []
+        else:
+            raw = st.get("cta_allowlist")
+            items = raw.split(",") if raw is not None else list(self.DEFAULT_CTA_ALLOWLIST)
+            val = sorted({x.strip().upper() for x in items if x.strip()})
+        self._cta_cache = (_t.monotonic(), val)
+        return val
+
+    def _cta_clause(self) -> tuple[str, list]:
+        allow = self.cta_allowlist()
+        if not allow:
+            return "", []
+        return f"UPPER(COALESCE(cta_text, '')) IN ({', '.join([self._ph()] * len(allow))})", list(allow)
+
     def _build_ads_filter(self, search: str = "", stores_only: bool = False,
                            query: str = "", store_domain: str = "",
                            page_id: str = "", preset: str = "", active_only: bool = False,
@@ -760,6 +789,12 @@ class Database:
         p = self._ph()
         where = []
         params: list = []
+
+        # Only ads whose CTA is on the allow-list are ever listed/counted.
+        cta_sql, cta_params = self._cta_clause()
+        if cta_sql:
+            where.append(cta_sql)
+            params.extend(cta_params)
 
         if user_id is not None:
             where.append(self._user_scope_sql())
@@ -1313,6 +1348,10 @@ class Database:
         if search:
             where.append(f"store_domain LIKE {p}")
             params.append("%" + search + "%")
+        cta_sql, cta_params = self._cta_clause()
+        if cta_sql:
+            where.append(cta_sql)
+            params.extend(cta_params)
         if user_id is not None:
             where.append(self._user_scope_sql())
             params.extend(self._user_scope_params(user_id))
@@ -1329,6 +1368,10 @@ class Database:
         if user_id is not None:
             scope = " AND " + self._user_scope_sql()
             scope_params = tuple(self._user_scope_params(user_id))
+        cta_sql, cta_params = self._cta_clause()
+        if cta_sql:
+            scope += " AND " + cta_sql
+            scope_params = tuple(scope_params) + tuple(cta_params)
         stores = self._query_one(
             "SELECT COUNT(DISTINCT store_domain) AS c FROM meta_ads "
             "WHERE store_domain != '' AND store_domain IS NOT NULL" + scope, scope_params)
@@ -2126,6 +2169,8 @@ class Database:
         return {r["key"]: r["value"] for r in rows}
 
     def set_setting(self, key: str, value: str) -> None:
+        if key in ("cta_filter_enabled", "cta_allowlist"):
+            self._cta_cache = (0.0, None)
         p = self._ph()
         conn = self._connect()
         try:

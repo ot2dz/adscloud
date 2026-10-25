@@ -1491,6 +1491,8 @@ def api_get_settings():
         "has_meta_ads_proxy": bool(s.get("meta_ads_proxy")),
         "env_meta_ads_proxy": bool(os.environ.get("META_ADS_PROXY")),
         "blocked_domains": s.get("blocked_domains", ""),
+        "cta_filter_enabled": s.get("cta_filter_enabled", "true"),
+        "cta_allowlist": s.get("cta_allowlist", ",".join(db.DEFAULT_CTA_ALLOWLIST)),
         "month_rescan_enabled": s.get("month_rescan_enabled", "true"),
         "month_rescan_hour": s.get("month_rescan_hour", "23"),
         "month_rescan_last": s.get("month_rescan_last", ""),
@@ -1517,6 +1519,12 @@ def api_set_settings():
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
     if "registration_open" in cfg:
         db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
+    if "cta_filter_enabled" in cfg:
+        db.set_setting("cta_filter_enabled", "true" if cfg["cta_filter_enabled"] else "false")
+    if "cta_allowlist" in cfg:
+        import re as _re
+        items = _re.split(r"[\s,]+", str(cfg["cta_allowlist"] or "").upper())
+        db.set_setting("cta_allowlist", ",".join(sorted({x for x in items if _re.fullmatch(r"[A-Z_]{2,40}", x)})))
     if "month_rescan_enabled" in cfg:
         db.set_setting("month_rescan_enabled", "true" if cfg["month_rescan_enabled"] else "false")
     if "month_rescan_hour" in cfg:

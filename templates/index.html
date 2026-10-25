@@ -485,6 +485,17 @@
             </div>
           </label>
 
+          <div class="text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5] space-y-2">
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="cfg-cta-filter" class="rounded text-blue-600">
+              <div>
+                <div class="font-bold text-[#102a56]">عرض الإعلانات حسب زر الدعوة (CTA) فقط</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">تُخفى من البنك والعدّادات والتصدير كل الإعلانات التي زرّها ليس في القائمة (الإعلانات تبقى محفوظة، ويمكن إظهارها بإطفاء الخيار).</div>
+              </div>
+            </label>
+            <input id="cfg-cta-allowlist" dir="ltr" placeholder="SHOP_NOW, ORDER_NOW, ..." class="w-full bg-white border border-[#b7c9e2] rounded-lg px-3 py-2 font-mono text-[11px] text-slate-800">
+          </div>
+
           <div class="flex items-center gap-3 text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
             <input type="checkbox" id="cfg-month-rescan" class="rounded text-blue-600 cursor-pointer">
             <div class="flex-1">
@@ -2149,6 +2160,8 @@ async function loadSettings() {
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
   document.getElementById('cfg-registration-open').checked = s.registration_open === 'true';
+  document.getElementById('cfg-cta-filter').checked = (s.cta_filter_enabled || 'true') === 'true';
+  document.getElementById('cfg-cta-allowlist').value = (s.cta_allowlist || '').split(',').join(', ');
   document.getElementById('cfg-month-rescan').checked = (s.month_rescan_enabled || 'true') === 'true';
   document.getElementById('cfg-month-rescan-hour').value = s.month_rescan_hour || 23;
   document.getElementById('month-rescan-last').innerText = s.month_rescan_last ? `(آخر تشغيل: ${s.month_rescan_last})` : '';
@@ -2186,6 +2199,8 @@ async function saveAllSettings() {
       interval_hours: schedInt,
       entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
       registration_open: document.getElementById('cfg-registration-open').checked,
+      cta_filter_enabled: document.getElementById('cfg-cta-filter').checked,
+      cta_allowlist: document.getElementById('cfg-cta-allowlist').value,
       month_rescan_enabled: document.getElementById('cfg-month-rescan').checked,
       month_rescan_hour: parseInt(document.getElementById('cfg-month-rescan-hour').value || '23'),
       notify_enabled: notifEn,
@@ -2200,6 +2215,7 @@ async function saveAllSettings() {
     let msg = '✅ تم حفظ جميع الإعدادات بنجاح!';
     if (d.purged != null) msg += `\n🧹 حُذف ${d.purged} إعلانًا لشركات كبرى من القاعدة.`;
     alert(msg);
+    loadSettings(); loadAds(); loadStats();  // CTA filter etc. apply immediately
   }
 }
 
