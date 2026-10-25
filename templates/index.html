@@ -537,6 +537,7 @@
           <div class="flex items-center gap-2.5 flex-wrap">
             <button onclick="testProxy()" id="btn-proxy-test" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🧪 فحص البروكسي</button>
             <button onclick="diagnoseProxy()" id="btn-diagnose" class="bg-white hover:bg-amber-50 border border-amber-300 text-amber-800 rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🩺 تشخيص السحب</button>
+            <button onclick="diagnoseProxy(true)" id="btn-diagnose-direct" class="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🚫 تشخيص بدون بروكسي</button>
             <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ</button>
           </div>
 
@@ -2133,15 +2134,16 @@ async function testProxy() {
   }
 }
 
-async function diagnoseProxy() {
+async function diagnoseProxy(noProxy) {
   const el = document.getElementById('diag-result');
-  const btn = document.getElementById('btn-diagnose');
+  const btn = noProxy ? document.getElementById('btn-diagnose-direct') : document.getElementById('btn-diagnose');
+  const label = noProxy ? '🚫 تشخيص بدون بروكسي' : '🩺 تشخيص السحب';
   btn.disabled = true; btn.innerText = '⏳ جارٍ التشخيص…';
   el.classList.remove('hidden');
   el.className = 'p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line bg-slate-50 text-slate-700 border border-slate-200';
-  el.textContent = '… يتم فحص البروكسي والاتصال بمكتبة الإعلانات';
+  el.textContent = noProxy ? '… يتم فحص الاتصال المباشر بمكتبة الإعلانات' : '… يتم فحص البروكسي والاتصال بمكتبة الإعلانات';
   try {
-    const r = await fetch('/api/diagnose');
+    const r = await fetch('/api/diagnose' + (noProxy ? '?proxy=0' : ''));
     const d = await r.json();
     const lines = [
       'المصدر: ' + (d.source || '-'),
@@ -2163,7 +2165,7 @@ async function diagnoseProxy() {
     el.className = 'p-3 rounded-xl text-xs bg-rose-50 text-rose-800 border border-rose-300 font-bold whitespace-pre-line';
     el.textContent = '❌ فشل التشخيص: ' + err.message;
   } finally {
-    btn.disabled = false; btn.innerText = '🩺 تشخيص السحب';
+    btn.disabled = false; btn.innerText = label;
   }
 }
 

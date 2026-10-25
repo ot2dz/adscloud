@@ -962,43 +962,49 @@ def api_diagnose():
     from meta_ads_collector.proxy_pool import parse_proxy, _redact_proxy
 
     saved = _proxy_setting()
-    spec = saved or (os.environ.get("META_ADS_PROXY") or "").strip()
+    env_spec = (os.environ.get("META_ADS_PROXY") or "").strip()
+    spec = saved or env_spec
+    use_proxy = request.args.get("proxy", "1") != "0"
+    if not use_proxy:
+        spec = ""
     out = {"proxy_configured": bool(spec),
-           "source": "settings" if saved else ("env" if spec else "none"),
-           "proxy": "", "egress_ip": None, "meta_count": None,
+           "source": ("settings" if saved else ("env" if env_spec else "none")) if use_proxy else "disabled",
+           "using_proxy": bool(spec),
+           "proxy": "", "egress_ip": None, "direct_ip": None,
+           "proxy_changes_ip": None, "meta_count": None,
            "meta_error": "", "verdict": ""}
-    if not spec:
-        return jsonify({**out, "verdict": "لا يوجد بروكسي مضبوط — السحب يخرج من IP السيرفر."})
 
-    parts = [p.strip() for p in spec.split(",") if p.strip()]
-    raw = parts[0]
-    try:
-        purl = parse_proxy(raw)
-        out["proxy"] = _redact_proxy(purl)
-    except Exception as exc:  # noqa: BLE001
-        out["verdict"] = f"صيغة البروكسي غير صحيحة: {exc}"
-        return jsonify(out)
+    proxies = None
+    proxy_arg = None
+    if spec:
+        parts = [p.strip() for p in spec.split(",") if p.strip()]
+        try:
+            purl = parse_proxy(parts[0])
+            out["proxy"] = _redact_proxy(purl)
+        except Exception as exc:  # noqa: BLE001
+            out["verdict"] = f"صيغة البروكسي غير صحيحة: {exc}"
+            return jsonify(out)
+        proxies = {"http": purl, "https": purl}
+        try:
+            r = creq.get("https://api.ipify.org?format=json", proxies=proxies,
+                         impersonate="chrome", timeout=25)
+            out["egress_ip"] = (r.json() or {}).get("ip")
+        except Exception as exc:  # noqa: BLE001
+            out["verdict"] = f"تعذّر الاتصال بالبروكسي: {str(exc)[:180]}"
+            return jsonify(out)
+        proxy_arg = parts if len(parts) > 1 else parts[0]
 
-    proxies = {"http": purl, "https": purl}
-    try:
-        r = creq.get("https://api.ipify.org?format=json", proxies=proxies,
-                     impersonate="chrome", timeout=25)
-        out["egress_ip"] = (r.json() or {}).get("ip")
-    except Exception as exc:  # noqa: BLE001
-        out["verdict"] = f"تعذّر الاتصال بالبروكسي: {str(exc)[:180]}"
-        return jsonify(out)
-
-    # Compare with the server's direct IP: if they are equal the proxy is not
-    # changing the egress at all (a local/transparent proxy).
+    # Direct server IP (never through the proxy), to compare.
     try:
         r0 = creq.get("https://api.ipify.org?format=json", impersonate="chrome", timeout=15)
         out["direct_ip"] = (r0.json() or {}).get("ip")
     except Exception:  # noqa: BLE001
         out["direct_ip"] = None
-    out["proxy_changes_ip"] = bool(out["direct_ip"] and out["egress_ip"]
-                                   and out["direct_ip"] != out["egress_ip"])
+    out["proxy_changes_ip"] = bool(
+        proxies and out["direct_ip"] and out["egress_ip"]
+        and out["direct_ip"] != out["egress_ip"])
 
-    proxy_arg = parts if len(parts) > 1 else parts[0]
+    # Live Meta Ad Library probe (same path the scraper uses).
     try:
         from meta_ads_collector import MetaAdsCollector
         c = MetaAdsCollector(proxy=proxy_arg)
@@ -1015,14 +1021,17 @@ def api_diagnose():
         out["meta_error"] = str(exc)[:200]
 
     if out.get("meta_count") and int(out["meta_count"]) > 0:
-        out["verdict"] = "✅ يعمل: البروكسي يجلب نتائج فعلية من Meta."
-    elif out.get("direct_ip") and out.get("egress_ip") == out.get("direct_ip"):
-        out["verdict"] = ("⛔ البروكسي لا يغيّر عنوان الخروج: egress IP = IP السيرفر المباشر. "
-                          "هذا بروكسي محلي/شفاف ولا يفيد ضد حجب Meta. ضع بروكسي "
-                          "residential/mobile خارجيًا ثم أعد التشخيص.")
+        where = "عبر البروكسي" if proxies else "من IP السيرفر المباشر"
+        out["verdict"] = f"✅ يعمل {where}: Meta أعادت نتائج فعلية."
+    elif proxies and out.get("direct_ip") and out.get("egress_ip") == out.get("direct_ip"):
+        out["verdict"] = ("⛔ البروكسي لا يغيّر عنوان الخروج (egress = IP السيرفر المباشر). "
+                          "هذا بروكسي محلي/شفاف ولا يفيد ضد حجب Meta.")
+    elif not proxies:
+        out["verdict"] = ("⛔ Meta أعادت 0 نتيجة من IP السيرفر المباشر — الـIP محجوب مؤقتًا من "
+                          "مكتبة الإعلانات (سيُرفع الحجب تلقائيًا بعد فترة).")
     else:
-        out["verdict"] = ("⛔ Meta أعادت 0 نتيجة عبر هذا البروكسي/IP — الـIP محجوب مؤقتًا من مكتبة "
-                          "الإعلانات. استخدم بروكسي residential/mobile جديدًا ثم أعد التشخيص.")
+        out["verdict"] = ("⛔ Meta أعادت 0 نتيجة عبر البروكسي — عنوان خروج البروكسي محجوب مؤقتًا. "
+                          "جرّب بروكسي residential/mobile آخر ثم أعد التشخيص.")
     return jsonify(out)
 
 
