@@ -853,6 +853,7 @@ def api_ads():
     target_id = request.args.get("target_id")
     target_id_val = int(target_id) if target_id and target_id.isdigit() else None
     keywords = [k.strip() for k in (request.args.get("keywords") or "").split(",") if k.strip()]
+    niches = [x.strip() for x in (request.args.get("niche") or "").split(",") if x.strip()]
 
     filters = dict(
         search=search, stores_only=stores_only, query=query,
@@ -860,7 +861,7 @@ def api_ads():
         active_only=active_only, start_date_min=start_date_min,
         start_date_max=start_date_max, min_days_active=min_days_active,
         target_id=target_id_val, user_id=_scope_user_id(),
-        min_product_ads=min_product_ads, keywords=keywords,
+        min_product_ads=min_product_ads, keywords=keywords, niches=niches,
     )
     total_ads = db.count_ads(**filters)
     if request.args.get("group", "0") == "1":
@@ -943,6 +944,25 @@ def api_queries():
 def api_ad_keywords():
     """Per-keyword counters for the keyword filter bar."""
     return jsonify({"keywords": db.get_keywords_overview(user_id=_scope_user_id())})
+
+
+@app.route("/api/niches")
+@login_required
+def api_niches():
+    """Niche taxonomy with per-niche ad counts (for the filter bar)."""
+    return jsonify({"niches": db.niche_counts(user_id=_scope_user_id())})
+
+
+@app.route("/api/ads/<ad_id>/niche", methods=["POST"])
+@admin_required
+def api_set_ad_niche(ad_id):
+    """Manual niche override for one ad (method='manual' beats the rules)."""
+    cfg = request.get_json(force=True, silent=True) or {}
+    slug = (cfg.get("slug") or "").strip()
+    if not slug:
+        return jsonify({"error": "slug required"}), 400
+    ok = db.set_manual_niche(ad_id, slug, add=bool(cfg.get("add", True)))
+    return jsonify({"ok": ok})
 
 
 @app.route("/api/stores")
@@ -1723,12 +1743,14 @@ def api_export(fmt: str):
     if fmt == "csv":
         buf = io.StringIO()
         cols = ["ad_id", "page_name", "page_id", "start_date", "store_domain",
-                "platform", "cta_text", "link_url", "keywords", "video_url", "body"]
+                "platform", "cta_text", "link_url", "keywords", "niches",
+                "video_url", "body"]
         w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for ad in ads:
             row = dict(ad)
             row["keywords"] = " | ".join(row.get("keywords") or [])
+            row["niches"] = " | ".join(x.get("slug", "") for x in (row.get("niches") or []))
             w.writerow(row)
         data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
         return send_file(data, mimetype="text/csv", as_attachment=True,
@@ -2019,6 +2041,17 @@ def entity_stats_loop() -> None:
 _bg_started = False
 
 
+def niches_loop() -> None:
+    """Classify ads that have no niche yet (backfill + every new scrape)."""
+    while True:
+        try:
+            n = db.classify_pending(limit=500)
+            time.sleep(1 if n else 120)
+        except Exception:
+            logger.exception("niches loop error")
+            time.sleep(30)
+
+
 def start_background_threads() -> None:
     global _bg_started
     if _bg_started:
@@ -2045,6 +2078,7 @@ def start_background_threads() -> None:
     threading.Thread(target=scheduler_loop, daemon=True).start()
     threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
+    threading.Thread(target=niches_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

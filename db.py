@@ -14,6 +14,8 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
+import niches as niche_defs
+
 logger = logging.getLogger("meta_ads_db")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -61,6 +63,7 @@ class Database:
         self.is_postgres = self.db_url.startswith(("postgres://", "postgresql://"))
         if self.db_url.startswith("postgres://"):
             self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
+        self._niches_cache: list[dict] = []
         self._init_schema()
 
     # ── connection helpers ────────────────────────────────────────────────
@@ -350,6 +353,8 @@ class Database:
             ("meta_ads", "preview_image_url", "TEXT"),
             ("meta_ads", "video_url", "TEXT"),
             ("meta_ads", "product_key", "TEXT"),
+            ("meta_ads", "primary_niche", "TEXT"),
+            ("meta_ads", "niche_checked_at", "TEXT"),
             ("keywords", "type", "TEXT DEFAULT 'keyword'"),
             ("keywords", "label", "TEXT DEFAULT ''"),
             ("targets", "country", "TEXT DEFAULT 'DZ'"),
@@ -404,6 +409,59 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             logger.warning("ad_keywords backfill notice: %s", exc)
 
+        # ── Niche taxonomy + per-ad classification (multi-label) ──────────
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS niches (
+            id {idcol},
+            slug TEXT UNIQUE,
+            name_ar TEXT,
+            name_fr TEXT,
+            description TEXT,
+            keywords TEXT,
+            negatives TEXT,
+            enabled INTEGER DEFAULT 1,
+            taxonomy_version INTEGER DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS ad_niches (
+            ad_id TEXT NOT NULL,
+            niche_id INTEGER NOT NULL,
+            score REAL DEFAULT 0,
+            confidence INTEGER DEFAULT 0,
+            method TEXT DEFAULT 'rules',
+            updated_at TEXT,
+            PRIMARY KEY (ad_id, niche_id, method)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_niches_niche ON ad_niches (niche_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_niches_ad ON ad_niches (ad_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_niche ON meta_ads (primary_niche)")
+        # Seed/refresh the taxonomy from code (idempotent by slug).
+        try:
+            p = "%s" if self.is_postgres else "?"
+            now_seed = _now()
+            for n in niche_defs.NICHES:
+                kw_json = json.dumps([{"k": k, "w": w} for k, w in n["keywords"]], ensure_ascii=False)
+                neg_json = json.dumps(n.get("negatives", []), ensure_ascii=False)
+                cur.execute(f"SELECT id FROM niches WHERE slug = {p}", (n["slug"],))
+                if cur.fetchone():
+                    cur.execute(
+                        f"UPDATE niches SET name_ar={p}, name_fr={p}, keywords={p}, negatives={p}, "
+                        f"enabled=1, taxonomy_version=1, updated_at={p} WHERE slug={p}",
+                        (n["name_ar"], n["name_fr"], kw_json, neg_json, now_seed, n["slug"]))
+                else:
+                    cur.execute(
+                        f"INSERT INTO niches (slug, name_ar, name_fr, keywords, negatives, "
+                        f"enabled, taxonomy_version, created_at, updated_at) "
+                        f"VALUES ({p},{p},{p},{p},{p},1,1,{p},{p})",
+                        (n["slug"], n["name_ar"], n["name_fr"], kw_json, neg_json,
+                         now_seed, now_seed))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("niche seed notice: %s", exc)
+
         # Seed the admin user from environment variables only (never hardcode a
         # password in the repository). Without ADMIN_PASSWORD no admin is seeded.
         try:
@@ -427,6 +485,10 @@ class Database:
 
         conn.commit()
         conn.close()
+        try:
+            self._load_niches()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("niche cache notice: %s", exc)
 
     def _backfill_product_keys(self, cur, conn, batch: int = 2000) -> None:
         """Compute product_key for ads stored before grouping existed."""
@@ -655,6 +717,11 @@ class Database:
                         f"target_id = COALESCE({p}, target_id) "
                         f"WHERE ad_id = {p} AND keyword = {p}",
                         (now, target_id, ad_id, kw))
+            # Niche classification (multi-label, rules-based) for new ads.
+            try:
+                self._save_niche_rows(cur, ad_id, self._classify_results(ad), now)
+            except Exception as niche_err:  # noqa: BLE001
+                logger.debug("niche classify failed: %s", niche_err)
             conn.commit()
             return is_new
         except Exception as exc:
@@ -673,7 +740,8 @@ class Database:
                            min_days_active: int = 0, target_id: Optional[int] = None,
                            user_id: Optional[int] = None,
                            min_product_ads: int = 0,
-                           keywords: Optional[list[str]] = None) -> tuple[str, list]:
+                           keywords: Optional[list[str]] = None,
+                           niches: Optional[list[str]] = None) -> tuple[str, list]:
         p = self._ph()
         where = []
         params: list = []
@@ -700,6 +768,16 @@ class Database:
                 in_list = ", ".join([p] * len(ks))
                 where.append(f"ad_id IN (SELECT ad_id FROM ad_keywords WHERE keyword IN ({in_list}))")
                 params.extend(ks)
+
+        if niches:
+            ns = [str(n).strip() for n in niches if str(n).strip()]
+            if ns:
+                in_list = ", ".join([p] * len(ns))
+                where.append(
+                    f"ad_id IN (SELECT an.ad_id FROM ad_niches an "
+                    f"JOIN niches n ON n.id = an.niche_id "
+                    f"WHERE n.slug IN ({in_list}) AND an.confidence >= 40)")
+                params.extend(ns)
 
         if target_id is not None and not (page_id or store_domain or query):
             where.append(f"target_id = {p}")
@@ -747,7 +825,8 @@ class Database:
                 min_days_active: int = 0, sort_by: str = "collected_at",
                 target_id: Optional[int] = None, user_id: Optional[int] = None,
                 min_product_ads: int = 0,
-                keywords: Optional[list[str]] = None) -> list[dict]:
+                keywords: Optional[list[str]] = None,
+                niches: Optional[list[str]] = None) -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
@@ -755,7 +834,7 @@ class Database:
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
-            keywords=keywords,
+            keywords=keywords, niches=niches,
         )
 
         order_map = {
@@ -776,7 +855,7 @@ class Database:
                 r["publisher_platforms"] = json.loads(r.get("publisher_platforms") or "[]")
             except Exception:
                 r["publisher_platforms"] = []
-        return self.attach_keywords(rows)
+        return self.attach_niches(self.attach_keywords(rows))
 
     def attach_keywords(self, rows: list[dict]) -> list[dict]:
         """Attach ``keywords`` (all scrape keywords that found each ad) to rows.
@@ -801,6 +880,148 @@ class Database:
                 ks = [str(r["query"]).strip()]
             r["keywords"] = ks
         return rows
+
+    # ── niche classification (multi-label, rules-based) ───────────────────
+    def _load_niches(self) -> None:
+        rows = self._query(
+            "SELECT id, slug, name_ar, name_fr, keywords, negatives FROM niches WHERE enabled = 1")
+        cache = []
+        for r in rows:
+            try:
+                kws = [(x.get("k"), int(x.get("w") or 1)) for x in json.loads(r.get("keywords") or "[]")]
+            except Exception:
+                kws = []
+            try:
+                negs = json.loads(r.get("negatives") or "[]")
+            except Exception:
+                negs = []
+            cache.append({
+                "id": r["id"], "slug": r["slug"], "name_ar": r.get("name_ar") or "",
+                "name_fr": r.get("name_fr") or "", "keywords": kws, "negatives": negs,
+            })
+        self._niches_cache = cache
+
+    def _classify_results(self, ad: dict) -> list[dict]:
+        if not self._niches_cache:
+            return []
+        return niche_defs.classify(
+            ad.get("body") or "", ad.get("page_name") or "",
+            ad.get("store_domain") or "", niches=self._niches_cache)
+
+    def _save_niche_rows(self, cur, ad_id: str, results: list[dict], now: str) -> None:
+        p = self._ph()
+        by_slug = {n["slug"]: n["id"] for n in self._niches_cache}
+        cur.execute(f"DELETE FROM ad_niches WHERE ad_id = {p} AND method = 'rules'", (ad_id,))
+        for r in results:
+            nid = by_slug.get(r["slug"])
+            if not nid:
+                continue
+            if self.is_postgres:
+                cur.execute(
+                    f"INSERT INTO ad_niches (ad_id, niche_id, score, confidence, method, updated_at) "
+                    f"VALUES ({p},{p},{p},{p},'rules',{p}) "
+                    f"ON CONFLICT (ad_id, niche_id, method) DO UPDATE SET "
+                    f"score = EXCLUDED.score, confidence = EXCLUDED.confidence, "
+                    f"updated_at = EXCLUDED.updated_at",
+                    (ad_id, nid, r["score"], r["confidence"], now))
+            else:
+                cur.execute(
+                    f"INSERT OR REPLACE INTO ad_niches "
+                    f"(ad_id, niche_id, score, confidence, method, updated_at) "
+                    f"VALUES ({p},{p},{p},{p},'rules',{p})",
+                    (ad_id, nid, r["score"], r["confidence"], now))
+        primary = results[0]["slug"] if results else ""
+        cur.execute(f"UPDATE meta_ads SET primary_niche = {p}, niche_checked_at = {p} "
+                    f"WHERE ad_id = {p}", (primary, now, ad_id))
+
+    def attach_niches(self, rows: list[dict]) -> list[dict]:
+        """Attach ``niches`` (slug, name, confidence, method) to ad rows."""
+        if not rows:
+            return rows
+        p = self._ph()
+        ids = [str(r.get("ad_id") or "") for r in rows if r.get("ad_id")]
+        mapping: dict[str, list[dict]] = {}
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            in_list = ", ".join([p] * len(chunk))
+            for r in self._query(
+                    f"SELECT an.ad_id, n.slug, n.name_ar, an.confidence, an.method "
+                    f"FROM ad_niches an JOIN niches n ON n.id = an.niche_id "
+                    f"WHERE an.ad_id IN ({in_list}) AND an.confidence >= 40 "
+                    f"ORDER BY an.confidence DESC, n.slug", tuple(chunk)):
+                mapping.setdefault(str(r["ad_id"]), []).append({
+                    "slug": r["slug"], "name_ar": r.get("name_ar") or "",
+                    "confidence": int(r["confidence"] or 0), "method": r["method"],
+                })
+        for r in rows:
+            items = mapping.get(str(r.get("ad_id") or ""), [])
+            r["niches"] = items
+            r["primary_niche"] = items[0]["slug"] if items else (r.get("primary_niche") or "")
+        return rows
+
+    def niche_counts(self, user_id: Optional[int] = None) -> list[dict]:
+        p = self._ph()
+        clause, params = self._build_ads_filter(user_id=user_id)
+        sub = f"SELECT ad_id FROM meta_ads {clause}"
+        return self._query(
+            f"SELECT n.slug, n.name_ar, COUNT(DISTINCT an.ad_id) AS total_ads "
+            f"FROM ad_niches an JOIN niches n ON n.id = an.niche_id "
+            f"WHERE an.confidence >= 40 AND an.ad_id IN ({sub}) "
+            f"GROUP BY n.slug, n.name_ar ORDER BY total_ads DESC", tuple(params))
+
+    def classify_pending(self, limit: int = 500) -> int:
+        """Classify ads that were never classified (backfill + new scrapes)."""
+        if not self._niches_cache:
+            self._load_niches()
+        if not self._niches_cache:
+            return 0
+        rows = self._query(
+            "SELECT ad_id, body, page_name, store_domain FROM meta_ads "
+            f"WHERE niche_checked_at IS NULL LIMIT {int(limit)}")
+        if not rows:
+            return 0
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            now = _now()
+            for r in rows:
+                self._save_niche_rows(cur, str(r["ad_id"]), self._classify_results(r), now)
+            conn.commit()
+        finally:
+            conn.close()
+        return len(rows)
+
+    def set_manual_niche(self, ad_id: str, slug: str, add: bool = True) -> bool:
+        p = self._ph()
+        row = self._query_one(f"SELECT id FROM niches WHERE slug = {p}", (slug,))
+        if not row:
+            return False
+        nid = int(row["id"])
+        if add:
+            if self.is_postgres:
+                self._execute(
+                    f"INSERT INTO ad_niches (ad_id, niche_id, score, confidence, method, updated_at) "
+                    f"VALUES ({p},{p},99,100,'manual',{p}) "
+                    f"ON CONFLICT (ad_id, niche_id, method) DO UPDATE SET "
+                    f"confidence = 100, updated_at = EXCLUDED.updated_at",
+                    (ad_id, nid, _now()))
+            else:
+                self._execute(
+                    f"INSERT OR REPLACE INTO ad_niches "
+                    f"(ad_id, niche_id, score, confidence, method, updated_at) "
+                    f"VALUES ({p},{p},99,100,'manual',{p})", (ad_id, nid, _now()))
+        else:
+            self._execute(
+                f"DELETE FROM ad_niches WHERE ad_id = {p} AND niche_id = {p} AND method = 'manual'",
+                (ad_id, nid))
+        best = self._query_one(
+            f"SELECT n.slug FROM ad_niches an JOIN niches n ON n.id = an.niche_id "
+            f"WHERE an.ad_id = {p} AND an.confidence >= 40 "
+            f"ORDER BY (CASE WHEN an.method = 'manual' THEN 1 ELSE 0 END) DESC, "
+            f"an.confidence DESC LIMIT 1", (ad_id,))
+        self._execute(f"UPDATE meta_ads SET primary_niche = {p} WHERE ad_id = {p}",
+                      ((best or {}).get("slug") or "", ad_id))
+        return True
 
     # ── page / domain totals on Meta ──────────────────────────────────────
     def save_entity_stat(self, kind: str, key: str, ads: Optional[int], status: str = "ok") -> None:
@@ -949,7 +1170,7 @@ class Database:
                     gk = [str(ad["query"]).strip()]
                 ad["keywords"] = gk or []
                 ad["group"]["keywords"] = ad["keywords"]
-        return out
+        return self.attach_niches(out)
 
     def count_ad_groups(self, **filters) -> int:
         clause, params = self._build_ads_filter(**filters)
@@ -972,7 +1193,7 @@ class Database:
                 r["publisher_platforms"] = json.loads(r.get("publisher_platforms") or "[]")
             except Exception:
                 r["publisher_platforms"] = []
-        return self.attach_keywords(rows)
+        return self.attach_niches(self.attach_keywords(rows))
 
     def count_ads(self, search: str = "", stores_only: bool = False,
                   query: str = "", store_domain: str = "",
@@ -980,14 +1201,15 @@ class Database:
                   start_date_min: str = "", start_date_max: str = "",
                   min_days_active: int = 0, target_id: Optional[int] = None,
                   user_id: Optional[int] = None, min_product_ads: int = 0,
-                  keywords: Optional[list[str]] = None) -> int:
+                  keywords: Optional[list[str]] = None,
+                  niches: Optional[list[str]] = None) -> int:
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
-            keywords=keywords,
+            keywords=keywords, niches=niches,
         )
         row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
         return int(row["c"]) if row else 0

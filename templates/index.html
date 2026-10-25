@@ -228,6 +228,14 @@
         </div>
       </div>
 
+      <!-- Niche filter (auto-classified from the ad text) -->
+      <div class="flex items-start justify-between flex-wrap gap-2.5">
+        <span class="text-xs font-bold text-slate-500 shrink-0">🧩 النيشات:</span>
+        <div id="niche-chips" class="flex items-center gap-2 flex-wrap flex-1 justify-end">
+          <span class="text-[11px] text-slate-400">…</span>
+        </div>
+      </div>
+
       <!-- Advanced Filter Inputs -->
       <div class="grid md:grid-cols-12 gap-3 pt-3 border-t border-slate-100 text-xs">
         <div class="md:col-span-4">
@@ -600,6 +608,7 @@ let ads = [];
 let currentPreset = '';
 let currentTargetFilter = null; // { id, type, value, label }
 let currentKeywords = [];       // selected scrape-keyword tags (OR filter)
+let currentNiches = [];         // selected niche slugs (OR filter)
 let adCache = {};               // ad_id -> full ad object (for the details modal)
 let lastAdBody = '';            // text of the ad currently shown in the modal
 let debounceTimer = null;
@@ -632,6 +641,7 @@ function loadDashboardData() {
   loadStats();
   loadAds();
   loadKeywordChips();
+  loadNicheChips();
   if (isAdmin()) {
     loadTargets();
     loadJobs();
@@ -1045,6 +1055,72 @@ function clearKeywordFilter() {
   loadKeywordChips();
 }
 
+// ── Niches (auto-classified from the ad text) ──
+const NICHE_PALETTE = [
+  'bg-indigo-50 text-indigo-700 border-indigo-300',
+  'bg-cyan-50 text-cyan-700 border-cyan-300',
+  'bg-lime-50 text-lime-700 border-lime-300',
+  'bg-pink-50 text-pink-700 border-pink-300',
+  'bg-slate-100 text-slate-700 border-slate-300',
+  'bg-yellow-50 text-yellow-700 border-yellow-300',
+  'bg-purple-50 text-purple-700 border-purple-300',
+  'bg-blue-50 text-blue-700 border-blue-300',
+];
+function nicheTone(slug) {
+  let h = 0; const s = String(slug || '');
+  for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
+  return NICHE_PALETTE[h % NICHE_PALETTE.length];
+}
+function nicheActive(slug) {
+  return currentNiches.some(x => x.toLowerCase() === String(slug).toLowerCase());
+}
+function nicheChipHtml(slug, opts = {}) {
+  const label = opts.label || slug;
+  const active = nicheActive(slug);
+  const cnt = opts.count != null ? ` <span class="num opacity-70">${opts.count}</span>` : '';
+  return `<button type="button" data-niche="${escT(slug)}" onclick="toggleNiche(this.dataset.niche)" title="${escT(opts.title || label)}"
+    class="px-2.5 py-0.5 rounded-full border text-[11px] font-bold transition max-w-[240px] truncate ${nicheTone(slug)} ${active ? 'ring-2 ring-indigo-400 ring-offset-1' : 'hover:brightness-95'}">🧩 ${escT(label)}${cnt}</button>`;
+}
+function adNicheChips(a) {
+  const list = [...new Set(((a && a.niches) || []).map(n => n.slug).filter(Boolean))];
+  if (!list.length) return '';
+  const shown = list.slice(0, 2);
+  const rest = list.length - shown.length;
+  return `<div class="flex flex-wrap gap-1.5 mb-2.5">${shown.map(s => nicheChipHtml(s)).join('')}${
+    rest > 0 ? `<span class="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 text-[11px] font-bold" title="${escT(list.join(' · '))}">+${rest}</span>` : ''
+  }</div>`;
+}
+async function loadNicheChips() {
+  const box = document.getElementById('niche-chips');
+  if (!box) return;
+  try {
+    const r = await fetch('/api/niches');
+    if (r.status === 401) { box.innerHTML = ''; return; }
+    const d = await r.json();
+    const items = d.niches || [];
+    if (!items.length) { box.innerHTML = '<span class="text-[11px] text-slate-400">لا توجد نيشات مصنّفة بعد.</span>'; return; }
+    const clear = currentNiches.length
+      ? `<button type="button" onclick="clearNicheFilter()" class="px-2.5 py-1 rounded-lg border border-rose-300 bg-rose-50 text-rose-700 text-[11px] font-bold hover:bg-rose-100">✕ مسح</button>`
+      : '';
+    box.innerHTML = items.map(n => nicheChipHtml(n.slug, {
+      label: n.name_ar || n.slug, count: n.total_ads,
+      title: `${n.name_ar || n.slug} — ${n.total_ads} إعلان`
+    })).join('') + clear;
+  } catch (_e) { box.innerHTML = ''; }
+}
+function toggleNiche(slug) {
+  const key = String(slug);
+  const i = currentNiches.findIndex(x => x.toLowerCase() === key.toLowerCase());
+  if (i >= 0) currentNiches.splice(i, 1); else currentNiches.push(key);
+  loadAds();
+  loadNicheChips();
+}
+function clearNicheFilter() {
+  currentNiches = [];
+  loadAds();
+  loadNicheChips();
+}
+
 // ── Ads-per-product filter ──
 let minProductAds = 0;
 const MIN_PRODUCT_ADS_CHOICES = [0, 2, 5, 10, 20];
@@ -1172,6 +1248,7 @@ async function loadAds(opts = {}) {
   let url = `/api/ads?search=${encodeURIComponent(q)}&preset=${currentPreset}&start_date_min=${encodeURIComponent(dmin)}&start_date_max=${encodeURIComponent(dmax)}&min_days_active=${mdays}&sort_by=${sort}`;
   if (minProductAds > 1) url += `&min_product_ads=${minProductAds}`;
   if (currentKeywords.length) url += `&keywords=${encodeURIComponent(currentKeywords.join(','))}`;
+  if (currentNiches.length) url += `&niche=${encodeURIComponent(currentNiches.join(','))}`;
 
   if (currentTargetFilter) {
     if (currentTargetFilter.id) url += `&target_id=${currentTargetFilter.id}`;
@@ -1493,6 +1570,7 @@ function adCardHtml(raw, opts = {}) {
           `}
         </div>
         ${adKeywordChips(a, { group: !!g })}
+        ${adNicheChips(a)}
         ${entityBadges(a)}
 
         <!-- Metric Badges (Matching screenshot pills) -->
@@ -1733,7 +1811,7 @@ function showTab(t) {
       if (btn.hasAttribute('data-admin-only') && !isAdmin()) btn.classList.add('hidden');
     }
   });
-  if (t === 'ads') loadKeywordChips();
+  if (t === 'ads') { loadKeywordChips(); loadNicheChips(); }
   if (t === 'targets') loadTargets();
   if (t === 'stores') loadStores();
   if (t === 'jobs') loadJobs();
@@ -2045,6 +2123,7 @@ function onStreamMessage(e) {
   } else if (m.type === 'job') {
     loadJobs();
     loadKeywordChips();
+    loadNicheChips();
     if (d.stored) { loadStats(); loadStores(); }
   } else if (m.type === 'finished') {
     liveScrapeState.active = false;
@@ -2074,6 +2153,7 @@ function onStreamMessage(e) {
     setState(false);
     loadAds();
     loadKeywordChips();
+    loadNicheChips();
     loadStats();
     setTimeout(() => {
       if (!liveScrapeState.active && !liveScrapeState.paused) {

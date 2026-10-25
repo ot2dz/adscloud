@@ -91,6 +91,7 @@ def _compact(ad: dict) -> dict:
         "platforms": ad.get("publisher_platforms") or [],
         "cta": ad.get("cta_text"),
         "keywords": ad.get("keywords") or ([ad.get("query")] if ad.get("query") else []),
+        "niches": [n.get("slug") for n in (ad.get("niches") or [])],
         "link_url": ad.get("link_url"),
         "video_url": ad.get("video_url"),
         "page_total_ads": ad.get("page_total_ads"),
@@ -117,6 +118,7 @@ def stats_overview() -> str:
 def search_ads(
     text: str = "",
     keyword: str = "",
+    niche: str = "",
     store: str = "",
     page_id: str = "",
     date_from: str = "",
@@ -132,6 +134,7 @@ def search_ads(
     Args:
         text: free text over the ad body, page name and store domain.
         keyword: exact scrape keyword tag (e.g. "خشبي"). See keyword_performance.
+        niche: niche slug (e.g. "kitchen", "beauty", "supplements"). See list_niches.
         store: store domain (e.g. "novamartdz.store").
         page_id: Facebook page id.
         date_from: launch date >= YYYY-MM-DD.
@@ -146,6 +149,7 @@ def search_ads(
     filters = dict(
         search=(text or "").strip(),
         keywords=[keyword.strip()] if (keyword or "").strip() else None,
+        niches=[niche.strip()] if (niche or "").strip() else None,
         store_domain=(store or "").strip(),
         page_id=(page_id or "").strip(),
         start_date_min=(date_from or "").strip(),
@@ -271,6 +275,14 @@ def page_insights(page_id: str) -> str:
     rows = db.attach_keywords(db.get_ads(page_id=pid, limit=10, sort_by="longest_running"))
     return _j({"page_id": pid, "totals": totals, "store_domains": stores,
                "top_ads": [_compact(a) for a in rows]})
+
+
+@mcp.tool()
+def list_niches() -> str:
+    """List the niche taxonomy with the number of classified ads in each
+    (kitchen, beauty, supplements, fashion, kids, electronics, home-tools,
+    cleaning, fitness, auto, pets, jewelry, perfumes, furniture, bags-shoes)."""
+    return _j({"niches": db.niche_counts()})
 
 
 @mcp.tool()
