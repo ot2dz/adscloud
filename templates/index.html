@@ -220,19 +220,40 @@
         </div>
       </div>
 
-      <!-- Keyword tags: the scrape keyword(s) that found each ad -->
-      <div class="flex items-start justify-between flex-wrap gap-2.5">
-        <span class="text-xs font-bold text-slate-500 shrink-0">🏷️ كلمات السحب:</span>
-        <div id="keyword-chips" class="flex items-center gap-2 flex-wrap flex-1 justify-end">
-          <span class="text-[11px] text-slate-400">…</span>
-        </div>
-      </div>
+      <!-- Compact filters: keywords + niches (multi-select dropdowns) -->
+      <div class="flex items-center justify-between flex-wrap gap-2.5">
+        <span class="text-xs font-bold text-slate-500">🔎 فلاتر سريعة:</span>
+        <div class="flex items-center gap-2 flex-wrap">
 
-      <!-- Niche filter (auto-classified from the ad text) -->
-      <div class="flex items-start justify-between flex-wrap gap-2.5">
-        <span class="text-xs font-bold text-slate-500 shrink-0">🧩 النيشات:</span>
-        <div id="niche-chips" class="flex items-center gap-2 flex-wrap flex-1 justify-end">
-          <span class="text-[11px] text-slate-400">…</span>
+          <div class="relative ms-wrap flex items-center gap-1.5 flex-wrap" id="kw-wrap">
+            <button type="button" onclick="toggleMs('kw')" class="px-3 py-1.5 rounded-lg border border-[#cfe0f5] bg-white text-[#174ea6] text-xs font-bold hover:bg-[#eef6ff] flex items-center gap-1.5">
+              🏷️ الكلمات <span id="kw-count" class="num px-1.5 rounded bg-[#e8f1ff] text-[10px]">0</span> ▾
+            </button>
+            <div id="kw-selected" class="flex items-center gap-1 flex-wrap"></div>
+            <div id="kw-panel" class="hidden absolute z-40 mt-2 top-full right-0 w-[min(22rem,calc(100vw-2rem))] bg-white border border-[#cfe0f5] rounded-xl shadow-xl p-2">
+              <input id="kw-search" oninput="renderKeywordMenu()" placeholder="ابحث عن كلمة…" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2.5 py-1.5 text-xs mb-2 focus:outline-none focus:ring-1 focus:ring-blue-500">
+              <div id="kw-items" class="max-h-64 overflow-auto space-y-0.5"></div>
+              <div class="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-slate-100">
+                <button type="button" onclick="clearKeywordFilter()" class="text-[11px] font-bold text-rose-700 px-2 py-1 rounded-lg hover:bg-rose-50">مسح الكل</button>
+                <button type="button" onclick="toggleMs('kw', false)" class="text-[11px] font-bold text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">إغلاق</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="relative ms-wrap flex items-center gap-1.5 flex-wrap" id="niche-wrap">
+            <button type="button" onclick="toggleMs('niche')" class="px-3 py-1.5 rounded-lg border border-[#cfe0f5] bg-white text-indigo-700 text-xs font-bold hover:bg-indigo-50 flex items-center gap-1.5">
+              🧩 النيشات <span id="niche-count" class="num px-1.5 rounded bg-indigo-50 text-[10px]">0</span> ▾
+            </button>
+            <div id="niche-selected" class="flex items-center gap-1 flex-wrap"></div>
+            <div id="niche-panel" class="hidden absolute z-40 mt-2 top-full right-0 w-[min(22rem,calc(100vw-2rem))] bg-white border border-[#cfe0f5] rounded-xl shadow-xl p-2">
+              <div id="niche-items" class="max-h-72 overflow-auto space-y-0.5"></div>
+              <div class="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-slate-100">
+                <button type="button" onclick="clearNicheFilter()" class="text-[11px] font-bold text-rose-700 px-2 py-1 rounded-lg hover:bg-rose-50">مسح الكل</button>
+                <button type="button" onclick="toggleMs('niche', false)" class="text-[11px] font-bold text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">إغلاق</button>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -611,6 +632,46 @@ let currentKeywords = [];       // selected scrape-keyword tags (OR filter)
 let currentNiches = [];         // selected niche slugs (OR filter)
 let adCache = {};               // ad_id -> full ad object (for the details modal)
 let lastAdBody = '';            // text of the ad currently shown in the modal
+let kwMenuItems = [];           // keyword dropdown items
+let nicheMenuItems = [];        // niche dropdown items
+
+// Restore filters from the URL (?keywords=...&niche=...) so a view is shareable.
+(function restoreFiltersFromUrl() {
+  try {
+    const p = new URLSearchParams(location.search);
+    const kw = p.get('keywords');
+    const ni = p.get('niche');
+    if (kw) currentKeywords = kw.split(',').map(x => x.trim()).filter(Boolean);
+    if (ni) currentNiches = ni.split(',').map(x => x.trim()).filter(Boolean);
+  } catch (_e) {}
+})();
+
+function syncFilterUrl() {
+  try {
+    const p = new URLSearchParams(location.search);
+    if (currentKeywords.length) p.set('keywords', currentKeywords.join(',')); else p.delete('keywords');
+    if (currentNiches.length) p.set('niche', currentNiches.join(',')); else p.delete('niche');
+    const qs = p.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+  } catch (_e) {}
+}
+
+function toggleMs(id, force) {
+  const panel = document.getElementById(id + '-panel');
+  if (!panel) return;
+  const other = id === 'kw' ? 'niche' : 'kw';
+  const otherPanel = document.getElementById(other + '-panel');
+  if (otherPanel) otherPanel.classList.add('hidden');
+  const show = force === undefined ? panel.classList.contains('hidden') : Boolean(force);
+  panel.classList.toggle('hidden', !show);
+  if (show && id === 'kw') setTimeout(() => { const s = document.getElementById('kw-search'); if (s) s.focus(); }, 40);
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.ms-wrap')) {
+    const a = document.getElementById('kw-panel'); if (a) a.classList.add('hidden');
+    const b = document.getElementById('niche-panel'); if (b) b.classList.add('hidden');
+  }
+});
 let debounceTimer = null;
 
 // ── Auth Manager ──
@@ -1024,35 +1085,57 @@ function adKeywordChips(a, opts = {}) {
     rest > 0 ? `<span class="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 text-[11px] font-bold" title="${escT(ks.join(' · '))}">+${rest}</span>` : ''
   }</div>`;
 }
-async function loadKeywordChips() {
-  const box = document.getElementById('keyword-chips');
+function renderKeywordMenu() {
+  const box = document.getElementById('kw-items');
   if (!box) return;
+  const q = ((document.getElementById('kw-search') || {}).value || '').trim().toLowerCase();
+  const items = kwMenuItems.filter(x => !q || String(x.keyword).toLowerCase().includes(q));
+  box.innerHTML = items.length ? items.map(x => `
+    <label class="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-xs">
+      <span class="flex items-center gap-2 min-w-0">
+        <input type="checkbox" data-kw="${escT(x.keyword)}" onclick="toggleKeyword(this.dataset.kw)" ${kwActive(x.keyword) ? 'checked' : ''} class="rounded text-blue-600">
+        <span class="truncate">${escT(x.keyword)}</span>
+      </span>
+      <span class="num text-[10px] text-slate-500 shrink-0" title="إعلانات: ${x.total_ads} · متاجر: ${x.store_ads || 0} · رابحة: ${x.winning || 0}">${x.total_ads}</span>
+    </label>`).join('')
+    : '<div class="text-xs text-slate-400 p-2">لا نتائج</div>';
+}
+function updateKeywordSelection() {
+  const cnt = document.getElementById('kw-count');
+  if (cnt) cnt.textContent = currentKeywords.length;
+  const sel = document.getElementById('kw-selected');
+  if (!sel) return;
+  sel.innerHTML = currentKeywords.map(k => `
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border ${kwTone(k)} text-[10.5px] font-bold max-w-[190px]">
+      <span class="truncate">${escT(k)}</span>
+      <button type="button" data-kw="${escT(k)}" onclick="toggleKeyword(this.dataset.kw)" class="opacity-70 hover:opacity-100">✕</button>
+    </span>`).join('');
+}
+async function loadKeywordChips() {
   try {
     const r = await fetch('/api/ad-keywords');
-    if (r.status === 401) { box.innerHTML = ''; return; }
+    if (r.status === 401) return;
     const d = await r.json();
-    const kws = d.keywords || [];
-    if (!kws.length) { box.innerHTML = '<span class="text-[11px] text-slate-400">لا توجد كلمات بعد.</span>'; return; }
-    const clear = currentKeywords.length
-      ? `<button type="button" onclick="clearKeywordFilter()" class="px-2.5 py-1 rounded-lg border border-rose-300 bg-rose-50 text-rose-700 text-[11px] font-bold hover:bg-rose-100">✕ مسح الفلتر</button>`
-      : '';
-    box.innerHTML = kws.map(k => keywordChipHtml(String(k.keyword), {
-      count: k.total_ads,
-      title: `إعلانات: ${k.total_ads} · متاجر: ${k.store_ads || 0} · رابحة: ${k.winning || 0} · جديدة: ${k.fresh || 0}`
-    })).join('') + clear;
-  } catch (_e) { box.innerHTML = ''; }
+    kwMenuItems = d.keywords || [];
+    renderKeywordMenu();
+    updateKeywordSelection();
+  } catch (_e) {}
 }
 function toggleKeyword(k) {
   const key = String(k);
   const i = currentKeywords.findIndex(x => x.toLowerCase() === key.toLowerCase());
   if (i >= 0) currentKeywords.splice(i, 1); else currentKeywords.push(key);
+  syncFilterUrl();
   loadAds();
-  loadKeywordChips();
+  updateKeywordSelection();
+  renderKeywordMenu();
 }
 function clearKeywordFilter() {
   currentKeywords = [];
+  syncFilterUrl();
   loadAds();
-  loadKeywordChips();
+  updateKeywordSelection();
+  renderKeywordMenu();
 }
 
 // ── Niches (auto-classified from the ad text) ──
@@ -1090,35 +1173,58 @@ function adNicheChips(a) {
     rest > 0 ? `<span class="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 text-[11px] font-bold" title="${escT(list.join(' · '))}">+${rest}</span>` : ''
   }</div>`;
 }
-async function loadNicheChips() {
-  const box = document.getElementById('niche-chips');
+function renderNicheMenu() {
+  const box = document.getElementById('niche-items');
   if (!box) return;
+  box.innerHTML = nicheMenuItems.length ? nicheMenuItems.map(n => `
+    <label class="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-xs">
+      <span class="flex items-center gap-2 min-w-0">
+        <input type="checkbox" data-niche="${escT(n.slug)}" onclick="toggleNiche(this.dataset.niche)" ${nicheActive(n.slug) ? 'checked' : ''} class="rounded text-indigo-600">
+        <span class="truncate">${escT(n.name_ar || n.slug)}</span>
+      </span>
+      <span class="num text-[10px] text-slate-500 shrink-0">${n.total_ads}</span>
+    </label>`).join('')
+    : '<div class="text-xs text-slate-400 p-2">لا توجد نيشات مصنّفة بعد.</div>';
+}
+function updateNicheSelection() {
+  const cnt = document.getElementById('niche-count');
+  if (cnt) cnt.textContent = currentNiches.length;
+  const sel = document.getElementById('niche-selected');
+  if (!sel) return;
+  sel.innerHTML = currentNiches.map(s => {
+    const item = nicheMenuItems.find(x => String(x.slug).toLowerCase() === s.toLowerCase());
+    const label = item ? (item.name_ar || item.slug) : s;
+    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border ${nicheTone(s)} text-[10.5px] font-bold max-w-[190px]">
+      <span class="truncate">${escT(label)}</span>
+      <button type="button" data-niche="${escT(s)}" onclick="toggleNiche(this.dataset.niche)" class="opacity-70 hover:opacity-100">✕</button>
+    </span>`;
+  }).join('');
+}
+async function loadNicheChips() {
   try {
     const r = await fetch('/api/niches');
-    if (r.status === 401) { box.innerHTML = ''; return; }
+    if (r.status === 401) return;
     const d = await r.json();
-    const items = d.niches || [];
-    if (!items.length) { box.innerHTML = '<span class="text-[11px] text-slate-400">لا توجد نيشات مصنّفة بعد.</span>'; return; }
-    const clear = currentNiches.length
-      ? `<button type="button" onclick="clearNicheFilter()" class="px-2.5 py-1 rounded-lg border border-rose-300 bg-rose-50 text-rose-700 text-[11px] font-bold hover:bg-rose-100">✕ مسح</button>`
-      : '';
-    box.innerHTML = items.map(n => nicheChipHtml(n.slug, {
-      label: n.name_ar || n.slug, count: n.total_ads,
-      title: `${n.name_ar || n.slug} — ${n.total_ads} إعلان`
-    })).join('') + clear;
-  } catch (_e) { box.innerHTML = ''; }
+    nicheMenuItems = d.niches || [];
+    renderNicheMenu();
+    updateNicheSelection();
+  } catch (_e) {}
 }
 function toggleNiche(slug) {
   const key = String(slug);
   const i = currentNiches.findIndex(x => x.toLowerCase() === key.toLowerCase());
   if (i >= 0) currentNiches.splice(i, 1); else currentNiches.push(key);
+  syncFilterUrl();
   loadAds();
-  loadNicheChips();
+  updateNicheSelection();
+  renderNicheMenu();
 }
 function clearNicheFilter() {
   currentNiches = [];
+  syncFilterUrl();
   loadAds();
-  loadNicheChips();
+  updateNicheSelection();
+  renderNicheMenu();
 }
 
 // ── Ads-per-product filter ──
