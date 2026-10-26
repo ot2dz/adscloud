@@ -110,7 +110,7 @@
     <div data-admin-only class="hidden flex flex-wrap items-center justify-between gap-3 bg-gradient-to-l from-indigo-50 to-white border border-indigo-200 rounded-xl p-3">
       <div class="text-xs">
         <div class="font-bold text-indigo-900">🗓️ سحب كل إعلانات الشهر الحالي (الجزائر)</div>
-        <div class="text-slate-600 mt-0.5">كل المتاجر التي أطلقت إعلانات من بداية الشهر حتى اليوم، يوماً بيوم، بالعربية والفرنسية. يُكمل من حيث توقف عند الانقطاع.</div>
+        <div class="text-slate-600 mt-0.5">كل المتاجر التي أطلقت إعلانات من بداية الشهر حتى اليوم، يوماً بيوم، بالعربية فقط. يُكمل من حيث توقف عند الانقطاع.</div>
       </div>
       <button onclick="startMonthScrape()" class="shrink-0 bg-indigo-600 hover:bg-indigo-700 rounded-xl px-4 py-2.5 font-bold text-sm text-white shadow-sm transition">🗓️ سحب الشهر كاملاً</button>
     </div>
@@ -500,7 +500,7 @@
             <input type="checkbox" id="cfg-month-rescan" class="rounded text-blue-600 cursor-pointer">
             <div class="flex-1">
               <div class="font-bold text-[#102a56]">إعادة فحص يومية لإعلانات اليوم والأمس (كل السوق)</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">مرة يومياً بعد الساعة المحددة (توقيت الجزائر) يسحب الإعلانات الجديدة لليوم والأمس بالعربية والفرنسية — المتاجر فقط.
+              <div class="text-[11px] text-slate-500 mt-0.5">مرة يومياً بعد الساعة المحددة (توقيت الجزائر) يسحب الإعلانات الجديدة لليوم والأمس بالعربية — المتاجر فقط.
                 <span id="month-rescan-last" class="font-mono"></span></div>
             </div>
             <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
@@ -2039,7 +2039,7 @@ function applyViewDateFilter(preset) {
 }
 
 async function startMonthScrape() {
-  if (!confirm('سحب كل إعلانات المتاجر في الجزائر من بداية الشهر حتى اليوم (عربي + فرنسي)؟\n' +
+  if (!confirm('سحب كل إعلانات المتاجر في الجزائر من بداية الشهر حتى اليوم (الإعلانات العربية فقط)؟\n' +
                'قد يستغرق عدة ساعات من جهاز واحد، ويُكمل تلقائياً عند الانقطاع. يمكنك إيقافه في أي وقت.')) return;
   const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ mode: 'month_days' }) });

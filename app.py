@@ -237,7 +237,7 @@ FIXED_LANGS = ["ar"]
 # Local scraping needs Chromium browser / worker or HTTP collector.
 # Whole-market monthly scrape (see slicing.build_day_passes).
 MONTH_MODE = "month_days"
-MONTH_LANGS = ["ar", "fr"]
+MONTH_LANGS = ["ar"]      # Arabic-language ads only
 MARKET_WILDCARD = '" "'   # Meta exact-phrase wildcard: matches every ad
 
 SCRAPE_ENABLED = os.environ.get("SCRAPE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
