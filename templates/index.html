@@ -82,52 +82,59 @@
       <h2 class="font-bold text-[#102a56] text-sm flex items-center gap-2">⚙️ إطلاق سحب فوري مباشر</h2>
       <span id="engine-state" class="text-xs px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200">متوقف</span>
     </div>
-    <div class="grid md:grid-cols-12 gap-3">
-      <input id="q" placeholder="كلمة مفتاحية، رابط صفحة، دومين متجر (مثل bxrrt.com)، أو رابط مكتبة إعلانات كامل…" class="md:col-span-4 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
-      <select id="scrape-date-preset" onchange="toggleScrapeDateInputs()" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500">
-        <option value="all">📅 كل الفترات (بدون تقييد تاريخ)</option>
-        <option value="this_month">⚡ هذا الشهر فقط</option>
-        <option value="last_month">🗓️ الشهر الماضي</option>
-        <option value="last_7d">⏱️ آخر 7 أيام</option>
-        <option value="last_30d">🗓️ آخر 30 يوماً</option>
-        <option value="custom">✏️ فترة مخصصة (تحديد التواريخ)</option>
-      </select>
-      <select id="scrape-date-scope" title="تاريخ الإطلاق: يجلب فقط الإعلانات المُطلقة في اليوم/الفترة المحددة. تاريخ الظهور: نفس فلتر فيسبوك (تواريخ الظهور)." class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500">
-        <option value="launch">🎯 تاريخ الإطلاق فقط</option>
-        <option value="impressions">🌐 تاريخ الظهور (فيسبوك)</option>
-      </select>
-      <select id="country-select" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
-        <option value="DZ">🇩🇿 الجزائر (DZ)</option>
-        <option value="ALL">🌍 كل الدول (ALL)</option>
-        <option value="SA">🇸🇦 السعودية</option>
-        <option value="AE">🇦🇪 الإمارات</option>
-        <option value="FR">🇫🇷 فرنسا</option>
-      </select>
-      <button id="btn-start" onclick="startEngine()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl px-4 py-2.5 font-bold text-sm text-white shadow-sm transition">▶ بدء السحب</button>
+    <!-- Mode switch -->
+    <div class="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl text-sm font-bold">
+      <button id="mode-targeted" onclick="setScrapeMode('targeted')" class="py-2.5 rounded-lg transition">🔎 سحب مستهدف</button>
+      <button id="mode-market" onclick="setScrapeMode('market')" class="py-2.5 rounded-lg transition">🌍 كل السوق (عربي)</button>
     </div>
 
-    <!-- Whole-market scrape of the current month -->
-    <div data-admin-only class="hidden flex flex-wrap items-center justify-between gap-3 bg-gradient-to-l from-indigo-50 to-white border border-indigo-200 rounded-xl p-3">
-      <div class="text-xs">
-        <div class="font-bold text-indigo-900">🗓️ سحب كل إعلانات الشهر الحالي (الجزائر)</div>
-        <div class="text-slate-600 mt-0.5">كل المتاجر التي أطلقت إعلانات من بداية الشهر حتى اليوم، يوماً بيوم، بالعربية فقط. يُكمل من حيث توقف عند الانقطاع.</div>
+    <!-- Targeted: one smart input -->
+    <div id="targeted-box" class="space-y-1.5">
+      <input id="q" oninput="renderScrapeSummary()" onkeydown="if(event.key==='Enter')startEngine()"
+        placeholder="اكتب كلمة، أو الصق رابط صفحة / دومين متجر / رابط مكتبة إعلانات…"
+        class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <div id="q-kind" class="text-xs font-bold min-h-[1.25rem]"></div>
+    </div>
+
+    <!-- Market: explanation -->
+    <div id="market-box" class="hidden text-xs bg-gradient-to-l from-indigo-50 to-white border border-indigo-200 rounded-xl p-3 text-slate-700">
+      <b class="text-indigo-900">كل إعلانات المتاجر العربية في الجزائر</b> التي انطلقت في الفترة المختارة — تُسحب يوماً بيوم (الأحدث أولاً)
+      ويُكمل السحب من حيث توقف عند الانقطاع. لا حاجة لكتابة أي شيء.
+    </div>
+
+    <!-- Unified launch-date chips -->
+    <div class="space-y-2">
+      <div class="text-xs font-bold text-slate-600">📅 تاريخ الإطلاق:</div>
+      <div id="date-chips" class="flex flex-wrap gap-1.5"></div>
+      <div id="date-day-row" class="hidden flex items-center gap-2 text-xs font-bold text-slate-700">
+        <span>اليوم:</span><input id="scrape-day" type="date" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5">
       </div>
-      <button onclick="startMonthScrape()" class="shrink-0 bg-indigo-600 hover:bg-indigo-700 rounded-xl px-4 py-2.5 font-bold text-sm text-white shadow-sm transition">🗓️ سحب الشهر كاملاً</button>
+      <div id="date-range-row" class="hidden flex items-center gap-2 text-xs font-bold text-slate-700 flex-wrap">
+        <span>من:</span><input id="scrape-custom-min" type="date" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5">
+        <span>إلى:</span><input id="scrape-custom-max" type="date" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5">
+      </div>
     </div>
 
-    <!-- Custom Date Range Row (Visible only if custom is selected) -->
-    <div id="scrape-custom-dates" class="hidden flex items-center gap-3 bg-[#f8fbff] border border-[#cfe0f5] p-3 rounded-xl text-xs font-bold text-slate-700">
-      <span>📅 فترة السحب المخصصة:</span>
-      <span class="text-slate-500">من:</span>
-      <input id="scrape-custom-min" type="date" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5 text-xs text-slate-800">
-      <span class="text-slate-500">إلى:</span>
-      <input id="scrape-custom-max" type="date" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1.5 text-xs text-slate-800">
-    </div>
-    <div class="flex items-center gap-5 text-xs text-slate-600 flex-wrap pt-1 font-medium">
-      <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="stores_only" checked class="rounded text-blue-600"> المتاجر فقط (E-commerce)</label>
-      <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="exact" class="rounded text-blue-600"> عبارة حرفية</label>
-      <label class="flex items-center gap-2 cursor-pointer" title="يشغّل عدة تمريرات لدمج النتائج وتفادي قيود فيسبوك"><input type="checkbox" id="sweep" class="rounded text-blue-600"> 🔁 تغطية موسّعة (Sweep)</label>
-      <button onclick="stopEngine()" class="ms-auto text-rose-600 hover:underline font-bold">⏹ إيقاف المحرك</button>
+    <!-- What will happen -->
+    <div id="scrape-summary" class="text-xs bg-[#f8fbff] border border-[#cfe0f5] rounded-xl px-3.5 py-2.5 text-slate-700 leading-relaxed"></div>
+
+    <div class="flex items-center gap-3 flex-wrap">
+      <button id="btn-start" onclick="startEngine()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-sm text-white shadow-sm transition">▶ ابدأ السحب</button>
+      <button onclick="stopEngine()" class="text-rose-600 hover:underline text-xs font-bold">⏹ إيقاف</button>
+      <details id="adv-box" class="ms-auto text-xs text-slate-600">
+        <summary class="cursor-pointer font-bold select-none">⚙️ خيارات متقدمة</summary>
+        <div class="flex items-center gap-4 flex-wrap mt-2">
+          <label class="flex items-center gap-1.5">الدولة:
+            <select id="country-select" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 font-semibold">
+              <option value="DZ">🇩🇿 الجزائر</option>
+              <option value="ALL">🌍 كل الدول</option>
+              <option value="SA">🇸🇦 السعودية</option>
+              <option value="AE">🇦🇪 الإمارات</option>
+              <option value="FR">🇫🇷 فرنسا</option>
+            </select></label>
+          <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="exact" onchange="renderScrapeSummary()" class="rounded text-blue-600"> عبارة حرفية (للكلمات)</label>
+        </div>
+      </details>
     </div>
 
     <!-- Live Scrape Progress & Statistics Widget -->
@@ -2007,90 +2014,143 @@ async function loadStores() {
     </tr>`).join('') || '<tr><td colspan="5" class="text-center py-6 text-slate-400 font-semibold">لا توجد متاجر مكتشفة بعد.</td></tr>';
 }
 
-function toggleScrapeDateInputs() {
-  const p = document.getElementById('scrape-date-preset').value;
-  const customBox = document.getElementById('scrape-custom-dates');
-  if (customBox) {
-    customBox.classList.toggle('hidden', p !== 'custom');
+// ── Scrape panel: two modes, smart input, unified launch dates ──
+let scrapeMode = 'targeted';
+let scrapePreset = 'all';
+const DATE_CHIPS = [
+  ['all', 'كل الفترات'], ['today', 'اليوم'], ['yesterday', 'أمس'], ['last_7d', 'آخر 7 أيام'],
+  ['this_month', 'هذا الشهر'], ['day', 'يوم محدد'], ['custom', 'فترة مخصصة'],
+];
+const MARKET_ADS_PER_DAY = 3000;   // measured: Arabic launches per day (scanned)
+const SCAN_PER_SEC = 6;            // measured from one IP
+
+function detectScrapeInput(v) {
+  v = (v || '').trim(); const low = v.toLowerCase();
+  if (!v) return { kind: '', value: '' };
+  if (low.includes('facebook.com') && low.includes('/ads/library')) return { kind: 'link', value: v };
+  if (/^\d{9,20}$/.test(v)) return { kind: 'page', value: v };
+  if (low.includes('facebook.com/') || low.includes('fb.com/')) {
+    const m = v.match(/(?:id=|view_all_page_id=|page_id=)(\d{6,})/) || v.match(/-(\d{8,})\/?(?:\?|$)/) || v.match(/(\d{9,})/);
+    return { kind: 'page', value: m ? m[1] : '' };
+  }
+  if (!/\s/.test(v) && /^(https?:\/\/)?(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(v)) {
+    return { kind: 'domain', value: low.replace(/^https?:\/\//, '').replace(/^www\./, '').split(/[\/?#]/)[0] };
+  }
+  return { kind: 'keyword', value: v };
+}
+
+function todayDZ() {  // YYYY-MM-DD in Algeria (UTC+1)
+  return new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
+}
+function shiftDay(iso, n) { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function scrapeRange() {  // [min, max] as the server will resolve it ('' = no limit)
+  const t = todayDZ();
+  switch (scrapePreset) {
+    case 'today': return [t, t];
+    case 'yesterday': { const y = shiftDay(t, -1); return [y, y]; }
+    case 'last_7d': return [shiftDay(t, -6), t];
+    case 'this_month': return [t.slice(0, 8) + '01', t];
+    case 'day': { const d = document.getElementById('scrape-day').value; return [d, d]; }
+    case 'custom': {
+      let a = document.getElementById('scrape-custom-min').value, b = document.getElementById('scrape-custom-max').value || a;
+      if (a && b && a > b) [a, b] = [b, a];
+      return [a, b && b > t ? t : b];
+    }
+    default: return ['', ''];
   }
 }
 
-function applyViewDateFilter(preset) {
-  const today = new Date();
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  let minD = '', maxD = '';
-
-  if (preset === 'last_7d') {
-    const past = new Date(); past.setDate(past.getDate() - 7);
-    minD = fmt(past); maxD = fmt(today);
-  } else if (preset === 'this_month') {
-    const first = new Date(today.getFullYear(), today.getMonth(), 1);
-    minD = fmt(first); maxD = fmt(today);
-  } else if (preset === 'last_30d') {
-    const past = new Date(); past.setDate(past.getDate() - 30);
-    minD = fmt(past); maxD = fmt(today);
-  }
-
-  if (minD) {
-    document.getElementById('start-date-min').value = minD;
-    document.getElementById('start-date-max').value = maxD;
-    loadAds();
-  }
+function setScrapeMode(m) {
+  scrapeMode = m;
+  const on = 'bg-white text-blue-700 shadow-sm', off = 'text-slate-600 hover:text-slate-900';
+  document.getElementById('mode-targeted').className = 'py-2.5 rounded-lg transition ' + (m === 'targeted' ? on : off);
+  document.getElementById('mode-market').className = 'py-2.5 rounded-lg transition ' + (m === 'market' ? on : off);
+  document.getElementById('targeted-box').classList.toggle('hidden', m !== 'targeted');
+  document.getElementById('market-box').classList.toggle('hidden', m !== 'market');
+  document.getElementById('adv-box').classList.toggle('hidden', m !== 'targeted');
+  if (m === 'market' && scrapePreset === 'all') scrapePreset = 'this_month';
+  renderDateChips(); renderScrapeSummary();
 }
 
-async function startMonthScrape() {
-  if (!confirm('سحب كل إعلانات المتاجر في الجزائر من بداية الشهر حتى اليوم (الإعلانات العربية فقط)؟\n' +
-               'قد يستغرق عدة ساعات من جهاز واحد، ويُكمل تلقائياً عند الانقطاع. يمكنك إيقافه في أي وقت.')) return;
-  const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ mode: 'month_days' }) });
-  const d = await r.json();
-  if (!d.ok) return alert('⚠️ ' + (d.error || 'تعذّر بدء السحب'));
-  document.getElementById('live-status-note').innerText = d.queued
-    ? '🕒 سحب الشهر في قائمة الانتظار — سيبدأ بعد انتهاء السحب الحالي.'
-    : '🗓️ بدأ سحب الشهر يوماً بيوم (الأحدث أولاً).';
-  loadJobs();
+function setScrapePreset(p) { scrapePreset = p; renderDateChips(); renderScrapeSummary(); }
+
+function renderDateChips() {
+  const chips = DATE_CHIPS.filter(([k]) => !(scrapeMode === 'market' && k === 'all'));
+  document.getElementById('date-chips').innerHTML = chips.map(([k, label]) =>
+    `<button onclick="setScrapePreset('${k}')" class="text-xs px-3 py-1.5 rounded-lg border font-bold transition ${k === scrapePreset
+      ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-[#cfe0f5] hover:bg-[#eef6ff]'}">${label}</button>`).join('');
+  document.getElementById('date-day-row').classList.toggle('hidden', scrapePreset !== 'day');
+  document.getElementById('date-range-row').classList.toggle('hidden', scrapePreset !== 'custom');
+  const t = todayDZ();
+  for (const id of ['scrape-day', 'scrape-custom-min', 'scrape-custom-max']) document.getElementById(id).max = t;
+  if (scrapePreset === 'day' && !document.getElementById('scrape-day').value) document.getElementById('scrape-day').value = shiftDay(t, -1);
+}
+
+function renderScrapeSummary() {
+  const box = document.getElementById('scrape-summary');
+  const [a, b] = scrapeRange();
+  const when = !a ? 'بدون تقييد تاريخ' : (a === b ? `انطلقت يوم <b>${a}</b>` : `انطلقت من <b>${a}</b> إلى <b>${b}</b>`);
+  if (scrapeMode === 'market') {
+    if (!a) { box.innerHTML = '⚠️ اختر يوماً أو فترة.'; return; }
+    const days = Math.round((new Date(b) - new Date(a)) / 864e5) + 1;
+    const mins = Math.max(1, Math.round(days * MARKET_ADS_PER_DAY / SCAN_PER_SEC / 60));
+    const dur = mins >= 90 ? `~${(mins / 60).toFixed(1)} ساعة` : `~${mins} دقيقة`;
+    box.innerHTML = `🌍 سيُسحب: <b>كل إعلانات المتاجر العربية في الجزائر</b> التي ${when}` +
+      ` · <b>${days}</b> يوم · ~${(days * MARKET_ADS_PER_DAY).toLocaleString('en-US')} إعلان للفحص · المدة التقديرية <b>${dur}</b> من جهاز واحد` +
+      (days > 62 ? '<br><span class="text-rose-700 font-bold">⚠️ الحد الأقصى 62 يوماً.</span>' : '');
+    return;
+  }
+  const { kind, value } = detectScrapeInput(document.getElementById('q').value);
+  const KIND = {
+    keyword: ['🔤', 'كلمة مفتاحية', 'text-sky-700'], page: ['📄', 'صفحة فيسبوك', 'text-violet-700'],
+    domain: ['🏪', 'متجر', 'text-emerald-700'], link: ['🔗', 'رابط مكتبة إعلانات', 'text-amber-700'],
+  };
+  const kEl = document.getElementById('q-kind');
+  if (!kind) { kEl.innerHTML = ''; box.innerHTML = 'اكتب ما تريد سحبه بالأعلى.'; return; }
+  if (kind === 'page' && !value) {
+    kEl.innerHTML = '<span class="text-rose-700">⚠️ رابط الصفحة لا يحتوي رقمها (ID) — الصق رقم الصفحة أو رابط «كل إعلانات الصفحة» من مكتبة الإعلانات.</span>';
+    box.innerHTML = ''; return;
+  }
+  const [ic, name, cls] = KIND[kind];
+  kEl.innerHTML = `<span class="${cls}">✓ فهمتُها: ${ic} ${name} — <span dir="ltr" class="font-mono">${escT(value.length > 70 ? value.slice(0, 70) + '…' : value)}</span></span>`;
+  const what = { keyword: `الإعلانات التي تحتوي «${escT(value)}»${document.getElementById('exact').checked ? ' (عبارة حرفية)' : ''}`,
+                 page: 'كل إعلانات هذه الصفحة', domain: `كل الإعلانات التي تذكر المتجر <span dir="ltr">${escT(value)}</span>`,
+                 link: 'نتائج رابط مكتبة الإعلانات كما هو (بنفس اللغة والفلاتر)' }[kind];
+  box.innerHTML = `🔎 سيُسحب: ${what} — ${when} · المتاجر فقط` +
+    (kind === 'link' && a ? '<br><span class="text-slate-500">التاريخ المختار يُطبَّق إن لم يحدد الرابط تاريخه.</span>' : '');
 }
 
 async function startEngine() {
-  const q = document.getElementById('q').value.trim();
-  const c = document.getElementById('country-select').value;
-  if (!q) return alert('الرجاء كتابة كلمة مفتاحية أو رابط أو دومين');
-
-  const isUrl = /^https?:\/\//i.test(q) || /facebook\.com\/ads\/library/i.test(q);
-
-  const datePreset = document.getElementById('scrape-date-preset').value;
-  const dMin = document.getElementById('scrape-custom-min')?.value || '';
-  const dMax = document.getElementById('scrape-custom-max')?.value || '';
-
-  // Apply the same date filter to the view so user only sees ads from this range
-  if (datePreset !== 'all') {
-    applyViewDateFilter(datePreset);
+  const [a, b] = scrapeRange();
+  const body = { mode: scrapeMode === 'market' ? 'month_days' : 'targeted', date_preset: scrapePreset,
+                 start_date_min: scrapePreset === 'day' ? document.getElementById('scrape-day').value : document.getElementById('scrape-custom-min').value,
+                 start_date_max: document.getElementById('scrape-custom-max').value };
+  if (scrapeMode === 'market') {
+    if (!a) return alert('اختر يوماً أو فترة');
+    const days = Math.round((new Date(b) - new Date(a)) / 864e5) + 1;
+    if (!confirm(`سحب كل إعلانات المتاجر العربية في الجزائر لـ ${days} يوم (${a === b ? a : a + ' ← ' + b})؟\nيمكنك إيقافه في أي وقت، ويُكمل تلقائياً عند الانقطاع.`)) return;
+  } else {
+    const q = document.getElementById('q').value.trim();
+    if (!q) return alert('اكتب كلمة أو رابط صفحة أو دومين متجر أو رابط مكتبة إعلانات');
+    Object.assign(body, { query: q, country: document.getElementById('country-select').value,
+                          exact: document.getElementById('exact').checked });
   }
-
-  const r = await fetch('/api/start', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      query: isUrl ? '' : q,
-      url: isUrl ? q : '',
-      country: c,
-      date_preset: datePreset,
-      start_date_min: dMin,
-      start_date_max: dMax,
-      date_scope: document.getElementById('scrape-date-scope')?.value || 'launch',
-      exact: document.getElementById('exact').checked,
-      stores_only: document.getElementById('stores_only').checked,
-      sweep: document.getElementById('sweep').checked,
-      sort: 'total_impressions'
-    })
-  });
+  const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
   const d = await r.json();
-  if (!d.ok) { alert('⚠️ ' + (d.error || 'تعذّر بدء السحب')); return; }
-  // Every scrape is a saved job (resumes by itself after a disconnect).
-  if (d.queued) {
-    document.getElementById('live-status-note').innerText = '🕒 السحب في قائمة الانتظار — سيبدأ تلقائياً بعد انتهاء السحب الحالي.';
+  if (!d.ok) return alert('⚠️ ' + (d.error || 'تعذّر بدء السحب'));
+  // Show the same launch-date window in the ads view.
+  if (d.start_date_min) {
+    document.getElementById('start-date-min').value = d.start_date_min;
+    document.getElementById('start-date-max').value = d.start_date_max || '';
+    loadAds();
   }
+  document.getElementById('live-status-note').innerText = d.queued
+    ? '🕒 السحب في قائمة الانتظار — سيبدأ تلقائياً بعد انتهاء السحب الحالي.'
+    : (scrapeMode === 'market' ? `🌍 بدأ سحب السوق يوماً بيوم (${d.date_label || ''}).` : '▶ بدأ السحب.');
   loadJobs();
 }
+document.addEventListener('DOMContentLoaded', () => setScrapeMode('targeted'));
+
 async function stopEngine(){
   const note = document.getElementById('live-status-note');
   if (note) { note.classList.remove('text-rose-700'); note.innerText = '⏹ جارٍ إرسال أمر الإيقاف…'; }
@@ -2474,6 +2534,7 @@ function setState(run) {
 setInterval(async () => {
   try {
     const r = await fetch('/api/status');
+    if (!r.ok) return;  // signed out / not allowed: not a scrape error
     const s = await r.json();
     if (s.running) {
       setState(true);

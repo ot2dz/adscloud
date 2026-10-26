@@ -28,37 +28,61 @@ def with_params(base_url: str, **params) -> str:
     return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
+def _algeria_today() -> date:
+    try:
+        from db import algeria_today
+        return algeria_today()
+    except Exception:  # pragma: no cover - db not importable
+        return date.today()
+
+
 def resolve_date_range(preset: str = "all", min_date: str = "", max_date: str = "") -> tuple[str, str, str]:
-    """Resolve preset (this_month, last_month, last_7d, etc.) into ISO date strings and label."""
-    today = date.today()
+    """Launch-date window for a scrape, in Algeria time -> (min, max, label).
+
+    Presets: all, today, yesterday, last_7d, this_month, last_month, last_30d,
+    day (one date = ``min_date``) and custom (``min_date``..``max_date``).
+    Raises ValueError (Arabic message) on an invalid or future range.
+    """
+    today = _algeria_today()
     p = (preset or "all").lower().strip()
 
+    def iso(v: str, what: str) -> date:
+        try:
+            return date.fromisoformat((v or "").strip()[:10])
+        except ValueError:
+            raise ValueError(f"تاريخ {what} غير صالح")
+
+    if p == "today":
+        return today.isoformat(), today.isoformat(), f"اليوم ({today.isoformat()})"
+    if p == "yesterday":
+        y = today - timedelta(days=1)
+        return y.isoformat(), y.isoformat(), f"أمس ({y.isoformat()})"
+    if p == "last_7d":
+        start = today - timedelta(days=6)
+        return start.isoformat(), today.isoformat(), f"آخر 7 أيام ({start.isoformat()} ← {today.isoformat()})"
+    if p == "last_30d":
+        start = today - timedelta(days=29)
+        return start.isoformat(), today.isoformat(), f"آخر 30 يوماً ({start.isoformat()} ← {today.isoformat()})"
     if p == "this_month":
-        first_of_month = date(today.year, today.month, 1)
-        label = f"هذا الشهر (من {first_of_month.isoformat()} فصاعداً)"
-        return first_of_month.isoformat(), "", label
-
-    elif p == "last_month":
-        first_this = date(today.year, today.month, 1)
-        last_prev = first_this - timedelta(days=1)
-        first_prev = date(last_prev.year, last_prev.month, 1)
-        label = f"الشهر الماضي ({first_prev.isoformat()} إلى {last_prev.isoformat()})"
-        return first_prev.isoformat(), last_prev.isoformat(), label
-
-    elif p == "last_7d":
-        start_7d = today - timedelta(days=7)
-        label = f"آخر 7 أيام (من {start_7d.isoformat()} فصاعداً)"
-        return start_7d.isoformat(), "", label
-
-    elif p == "last_30d":
-        start_30d = today - timedelta(days=30)
-        label = f"آخر 30 يوماً (من {start_30d.isoformat()} فصاعداً)"
-        return start_30d.isoformat(), "", label
-
-    elif p == "custom" and (min_date or max_date):
-        label = f"فترة مخصصة (من {min_date or 'البداية'}{' إلى ' + max_date if max_date else ' فصاعداً'})"
-        return min_date.strip(), max_date.strip(), label
-
+        first = today.replace(day=1)
+        return first.isoformat(), today.isoformat(), f"هذا الشهر ({first.isoformat()} ← {today.isoformat()})"
+    if p == "last_month":
+        last_prev = today.replace(day=1) - timedelta(days=1)
+        first_prev = last_prev.replace(day=1)
+        return first_prev.isoformat(), last_prev.isoformat(), f"الشهر الماضي ({first_prev.isoformat()} ← {last_prev.isoformat()})"
+    if p == "day":
+        d = iso(min_date, "اليوم")
+        if d > today:
+            raise ValueError("لا يمكن اختيار يوم في المستقبل")
+        return d.isoformat(), d.isoformat(), f"يوم {d.isoformat()}"
+    if p == "custom":
+        d1, d2 = iso(min_date, "البداية"), iso(max_date or min_date, "النهاية")
+        if d1 > d2:
+            d1, d2 = d2, d1
+        if d1 > today:
+            raise ValueError("لا يمكن اختيار فترة في المستقبل")
+        d2 = min(d2, today)
+        return d1.isoformat(), d2.isoformat(), f"من {d1.isoformat()} إلى {d2.isoformat()}"
     return "", "", "كل الفترات (بدون تقييد تاريخ)"
 
 
