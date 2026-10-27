@@ -358,6 +358,9 @@ class Database:
             ("meta_ads", "preview_image_url", "TEXT"),
             ("meta_ads", "video_url", "TEXT"),
             ("meta_ads", "video_sd_url", "TEXT"),
+            ("meta_ads", "collation_id", "TEXT"),
+            ("meta_ads", "stopped_at", "TEXT"),
+            ("meta_ads", "status_checked_at", "TEXT"),
             ("meta_ads", "product_key", "TEXT"),
             ("meta_ads", "primary_niche", "TEXT"),
             ("meta_ads", "niche_checked_at", "TEXT"),
@@ -622,6 +625,56 @@ class Database:
             end = _to_algeria_date(last_seen_active) or end
         return max(1, (end - start).days + 1)
 
+    # ── daily status check (is the ad still running?) ─────────────────────
+    def status_check_pages(self) -> list[str]:
+        """Pages that still have ads marked active, in a stable order."""
+        rows = self._query("SELECT DISTINCT page_id FROM meta_ads "
+                           "WHERE is_active = 1 AND page_id IS NOT NULL AND page_id != '' ORDER BY page_id")
+        return [str(r["page_id"]) for r in rows]
+
+    def top_active_pages(self, n: int = 2) -> list[str]:
+        rows = self._query("SELECT page_id, COUNT(*) AS c FROM meta_ads WHERE is_active = 1 AND page_id IS NOT NULL "
+                           f"AND page_id != '' GROUP BY page_id ORDER BY c DESC LIMIT {int(n)}")
+        return [str(r["page_id"]) for r in rows]
+
+    def active_ads_of_pages(self, page_ids: list[str]) -> list[dict]:
+        if not page_ids:
+            return []
+        p = self._ph()
+        return self._query(
+            f"SELECT ad_id, page_id, collation_id, product_key, last_seen_active FROM meta_ads "
+            f"WHERE is_active = 1 AND page_id IN ({', '.join([p] * len(page_ids))})", tuple(page_ids))
+
+    def apply_status_check(self, confirmed: dict[str, str], stopped: list[str]) -> None:
+        """confirmed = {ad_id: collation_id or ''} seen running now; stopped =
+        ad_ids gone from Meta. A stopped ad keeps last_seen_active (its last
+        confirmed day), so days_active stops counting there."""
+        p = self._ph()
+        now = _now()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if confirmed:
+                cur.executemany(
+                    f"UPDATE meta_ads SET is_active = 1, stopped_at = NULL, last_seen_active = {p}, "
+                    f"status_checked_at = {p}, collation_id = COALESCE(NULLIF({p}, ''), collation_id) "
+                    f"WHERE ad_id = {p}",
+                    [(now, now, cid or "", aid) for aid, cid in confirmed.items()])
+            if stopped:
+                cur.executemany(
+                    f"UPDATE meta_ads SET is_active = 0, status_checked_at = {p}, "
+                    f"stopped_at = COALESCE(last_seen_active, {p}) WHERE ad_id = {p}",
+                    [(now, now, aid) for aid in stopped])
+            conn.commit()
+        finally:
+            conn.close()
+        for aid in stopped:
+            row = self._query_one(f"SELECT start_date, first_seen, last_seen_active FROM meta_ads WHERE ad_id = {p}", (aid,))
+            if row:
+                d = self._calc_days_active(row.get("start_date") or "", row.get("first_seen") or "",
+                                           False, row.get("last_seen_active") or "")
+                self._execute(f"UPDATE meta_ads SET days_active = {p} WHERE ad_id = {p}", (d, aid))
+
     def refresh_days_active(self) -> int:
         """Recompute days_active for every ad (run once a day). Returns rows changed."""
         p = self._ph()
@@ -676,7 +729,7 @@ class Database:
                 "store_domain", "platform", "body", "cta_text", "collation_count",
                 "publisher_platforms", "query", "country", "collected_at", "first_seen",
                 "last_seen_active", "days_active", "target_id", "preview_image_url",
-                "video_url", "video_sd_url", "product_key")
+                "video_url", "video_sd_url", "product_key", "collation_id")
         values = (
             ad_id,
             ad.get("page_name") or "",
@@ -701,6 +754,7 @@ class Database:
             _web_url(ad.get("video_url")),
             _web_url(ad.get("video_sd_url")),
             pkey,
+            str(ad.get("collation_id") or ""),
         )
         placeholders = ", ".join([p] * len(cols))
         col_list = ", ".join(cols)
@@ -710,12 +764,18 @@ class Database:
             # first_seen is preserved on updates
             if self.is_postgres:
                 updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("ad_id", "first_seen", "video_sd_url"))
+                updates = updates.replace("collation_id = EXCLUDED.collation_id",
+                                          "collation_id = COALESCE(NULLIF(EXCLUDED.collation_id, ''), meta_ads.collation_id)")
                 updates += ", video_sd_url = COALESCE(NULLIF(EXCLUDED.video_sd_url, ''), meta_ads.video_sd_url)"
+                updates += ", stopped_at = CASE WHEN EXCLUDED.is_active = 1 THEN NULL ELSE meta_ads.stopped_at END"
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT (ad_id) DO UPDATE SET {updates}")
             else:
                 updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c not in ("ad_id", "first_seen", "video_sd_url"))
+                updates = updates.replace("collation_id = excluded.collation_id",
+                                          "collation_id = COALESCE(NULLIF(excluded.collation_id, ''), meta_ads.collation_id)")
                 updates += ", video_sd_url = COALESCE(NULLIF(excluded.video_sd_url, ''), meta_ads.video_sd_url)"
+                updates += ", stopped_at = CASE WHEN excluded.is_active = 1 THEN NULL ELSE meta_ads.stopped_at END"
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT(ad_id) DO UPDATE SET {updates}")
             cur.execute(sql, values)

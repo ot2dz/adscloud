@@ -50,6 +50,7 @@ class Ad:
     preview_image_url: str = ""
     video_url: str = ""
     video_sd_url: str = ""  # light copy for weak connections
+    collation_id: str = ""  # Meta groups identical copies of one ad
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -118,6 +119,33 @@ def new_count_client(proxy: Optional[str] = None):
     """A bare Meta client for one-request result counts (uses the proxy pool)."""
     from meta_ads_collector.client import MetaAdsClient
     return MetaAdsClient(proxy=_proxy_arg(proxy))
+
+
+def active_ads_of_pages(page_ids: list, country: str = "DZ", proxy: Optional[str] = None,
+                        delay: float = 1.2, jitter: float = 0.8, should_stop=None,
+                        max_results: Optional[int] = None) -> tuple[list, bool, int]:
+    """Every ad still running for up to 50 pages, in one paginated search.
+
+    Returns (ads, complete, requests). ``complete`` is True only when Meta
+    said "no more results" with no error on the way; anything less must not
+    be used to decide that an ad stopped.
+    """
+    from meta_ads_collector.constants import SEARCH_EXACT as _EXACT
+    collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=delay, jitter=jitter)
+    ads: list = []
+    complete = False
+    try:
+        for m in collector.search(query="", country=country, status=STATUS_ACTIVE, search_type=_EXACT,
+                                  page_ids=[str(p) for p in page_ids], sort_by=SORT_IMPRESSIONS, page_size=30,
+                                  max_results=max_results):
+            ads.append(_adapt(m))
+            if should_stop and should_stop():
+                break
+        else:
+            complete = collector.stats.get("errors", 0) == 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("status batch failed: %s", exc)
+    return ads, complete, int(collector.stats.get("requests_made", 0) or 0)
 
 
 def entity_ad_count(client, kind: str, key: str, country: str = "DZ") -> Optional[int]:
@@ -226,6 +254,7 @@ def _adapt(m) -> Ad:
         video_url=(((getattr(cr, "video_url", "") or getattr(cr, "video_hd_url", "")
                      or getattr(cr, "video_sd_url", "")) if cr else "") or ""),
         video_sd_url=((getattr(cr, "video_sd_url", "") if cr else "") or ""),
+        collation_id=str(getattr(m, "collation_id", "") or ""),
     )
 
 

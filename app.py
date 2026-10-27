@@ -239,6 +239,7 @@ FIXED_LANGS = ["ar"]
 MONTH_MODE = "month_days"
 MONTH_LANGS = ["ar"]      # Arabic-language ads only
 MARKET_WILDCARD = '" "'   # Meta exact-phrase wildcard: matches every ad
+STATUS_MODE = "status_check"  # daily "is it still running?" check (status_check.py)
 
 SCRAPE_ENABLED = os.environ.get("SCRAPE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
@@ -401,7 +402,43 @@ class ScrapeManager:
         try:
             self._emit("started", {"query": query or url, "country": country})
 
-            if mode == MONTH_MODE:
+            if mode == STATUS_MODE:
+                import status_check
+                st = {}
+
+                def save_new(a):
+                    if self.stop_event.is_set():
+                        return False
+                    d = a.to_dict()
+                    d["keywords"] = []
+                    stored = db.save_ad(d, query="", country=country)
+                    if stored:
+                        seen_ad_ids.add(a.ad_id)
+                        self.state["stored"] += 1
+                    return stored
+
+                def status_cp(next_batch):
+                    outcome["checkpoint"] = {"pass": next_batch, "cursor": None}
+                    self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
+                    if on_checkpoint:
+                        on_checkpoint(outcome["checkpoint"])
+
+                try:
+                    outcome["status"] = status_check.run(
+                        db, progress=progress, should_stop=lambda: self.stop_event.is_set(),
+                        proxy=proxy_spec, start_batch=max(1, int(resume.get("pass") or 1)),
+                        on_checkpoint=status_cp, on_new_ad=save_new, stats=st)
+                except status_check.Blocked as exc:
+                    outcome.update(status="interrupted", error=f"Meta لا تُرجع نتائج (حجب مؤقت؟) — لم يُعلَّم أي إعلان: {exc}")
+                    progress("⏸ " + outcome["error"])
+                self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
+                st["finished_at"] = datetime.now(timezone.utc).isoformat()
+                st["status"] = outcome["status"]
+                db.set_setting("status_check_summary", json.dumps(st, ensure_ascii=False))
+                progress(f"🏁 فحص الحالة: {st.get('confirmed', 0)} نشط مؤكد، {st.get('stopped', 0)} توقف، "
+                         f"{st.get('new', 0)} إعلان جديد، {st.get('requests', 0)} طلب.")
+
+            elif mode == MONTH_MODE:
                 # Whole market for a date range, one launch day x language at
                 # a time (Meta's '" "' exact-phrase wildcard = every ad).
                 from slicing import build_day_passes
@@ -498,7 +535,7 @@ class ScrapeManager:
             # Never finish silently on an empty run: Meta answers HTTP 200 with
             # zero results when the egress IP is soft-blocked, which looks like
             # "success" but means nothing was collected.
-            if ((base_count + len(seen_ad_ids)) == 0
+            if ((base_count + len(seen_ad_ids)) == 0 and mode != STATUS_MODE
                     and outcome.get("status") not in ("stopped", "failed")
                     and not self.stop_event.is_set()):
                 reported = self.state.get("reported")
@@ -1529,6 +1566,10 @@ def api_get_settings():
         "month_rescan_enabled": s.get("month_rescan_enabled", "true"),
         "month_rescan_hour": s.get("month_rescan_hour", "23"),
         "month_rescan_last": s.get("month_rescan_last", ""),
+        "status_check_enabled": s.get("status_check_enabled", "true"),
+        "status_check_hour": s.get("status_check_hour", "3"),
+        "status_check_last": s.get("status_check_last", ""),
+        "status_check_summary": s.get("status_check_summary", ""),
     })
 
 
@@ -1563,6 +1604,13 @@ def api_set_settings():
     if "month_rescan_hour" in cfg:
         try:
             db.set_setting("month_rescan_hour", str(max(0, min(23, int(cfg["month_rescan_hour"])))))
+        except (TypeError, ValueError):
+            pass
+    if "status_check_enabled" in cfg:
+        db.set_setting("status_check_enabled", "true" if cfg["status_check_enabled"] else "false")
+    if "status_check_hour" in cfg:
+        try:
+            db.set_setting("status_check_hour", str(max(0, min(23, int(cfg["status_check_hour"])))))
         except (TypeError, ValueError):
             pass
     if "meta_ads_proxy" in cfg:
@@ -2044,6 +2092,42 @@ def _queue_month_scrape(source: str, start: Optional[str] = None, end: Optional[
     return job_id, busy
 
 
+def _queue_status_check(source: str):
+    """Queue the "is it still running?" check. Returns (job_id, queued_behind)."""
+    busy = bool(manager.state.get("running")) or db.has_pending_jobs()
+    job_id = db.create_job(query="فحص حالة الإعلانات (نشط / متوقف)", country=DEFAULT_COUNTRY,
+                           stores_only=True, source=source, mode=STATUS_MODE)
+    job_wakeup.set()
+    manager._emit("log", {"text": "🔎 أُضيف فحص حالة الإعلانات" + (" إلى قائمة الانتظار." if busy else ".")})
+    return job_id, busy
+
+
+def _status_check_due(settings: dict) -> bool:
+    """Once per Algerian day, after the configured hour (default 03:00)."""
+    from datetime import datetime as _dt
+    from db import ALGERIA_TZ, algeria_today
+    if settings.get("status_check_enabled", "true").lower() not in ("1", "true", "yes", "on"):
+        return False
+    try:
+        hour = int(settings.get("status_check_hour", "3") or 3)
+    except ValueError:
+        hour = 3
+    if _dt.now(ALGERIA_TZ).hour < hour:
+        return False
+    if settings.get("status_check_last", "") == algeria_today().isoformat():
+        return False
+    return not db.has_open_mode_job(STATUS_MODE)
+
+
+@app.route("/api/status-check/start", methods=["POST"])
+@admin_required
+def api_status_check_start():
+    if db.has_open_mode_job(STATUS_MODE):
+        return jsonify({"ok": False, "error": "فحص الحالة موجود في القائمة أو يعمل الآن."}), 409
+    job_id, queued = _queue_status_check("manual")
+    return jsonify({"ok": True, "job_id": job_id, "queued": queued})
+
+
 def _month_rescan_due(settings: dict) -> bool:
     """Daily re-scan of today + yesterday: once per Algerian day, after the
     configured hour, unless a market scrape is already queued or running."""
@@ -2087,6 +2171,9 @@ def scheduler_loop() -> None:
                 y = (today_dz - timedelta(days=1)).isoformat()
                 _queue_month_scrape("daily_rescan", start=y, end=today_dz.isoformat())
                 db.set_setting("month_rescan_last", today_dz.isoformat())
+            if _status_check_due(s):
+                _queue_status_check("daily")
+                db.set_setting("status_check_last", today_dz.isoformat())
             if s.get("schedule_enabled", "false").lower() in ("1", "true", "yes", "on"):
                 targets = [t for t in db.list_targets() if t.get("enabled")]
                 now_utc = datetime.now(timezone.utc)

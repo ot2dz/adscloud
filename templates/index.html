@@ -514,6 +514,22 @@
               <input id="cfg-month-rescan-hour" type="number" min="0" max="23" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
           </div>
 
+          <div class="text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5] space-y-2">
+            <div class="flex items-center gap-3">
+              <input type="checkbox" id="cfg-status-check" class="rounded text-blue-600 cursor-pointer">
+              <div class="flex-1">
+                <div class="font-bold text-[#102a56]">فحص يومي: هل الإعلان ما زال شغالاً؟</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">مرة يومياً بعد الساعة المحددة يسأل Meta عن كل الصفحات التي لها إعلانات نشطة (50 صفحة في الطلب) ويعلّم المتوقفة. يتوقف تلقائياً إن لاحظ حجباً ولا يعلّم شيئاً حينها.</div>
+              </div>
+              <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
+                <input id="cfg-status-check-hour" type="number" min="0" max="23" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
+            </div>
+            <div class="flex items-center justify-between gap-2">
+              <span id="status-check-summary" class="text-[11px] text-slate-500"></span>
+              <button type="button" onclick="startStatusCheck(this)" class="shrink-0 px-3 py-1.5 rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] font-bold hover:bg-[#e8f1ff]">🔎 افحص الآن</button>
+            </div>
+          </div>
+
           <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
             <input type="checkbox" id="cfg-registration-open" class="rounded text-blue-600">
             <div>
@@ -1631,7 +1647,9 @@ function openAdDetails(adId) {
   if (a.collected_at) rows.push(row('تاريخ السحب', escT(String(a.collected_at).slice(0, 10)), 'font-mono'));
   if (a.start_date) rows.push(row('تاريخ الإطلاق', escT(a.start_date), 'font-mono'));
   if (a.days_active != null) rows.push(row('الأيام النشطة', a.days_active, 'num'));
-  rows.push(row('الحالة', a.is_active ? 'نشط' : 'متوقف', a.is_active ? 'text-emerald-700' : 'text-rose-700'));
+  rows.push(row('الحالة', a.is_active ? 'نشط' : `توقف بعد ${a.days_active || 1} يوم`, a.is_active ? 'text-emerald-700' : 'text-rose-700'));
+  if (!a.is_active && a.stopped_at) rows.push(row('آخر يوم شوهد نشطاً', escT(String(a.stopped_at).slice(0, 10)), 'font-mono'));
+  if (a.status_checked_at) rows.push(row('آخر فحص للحالة', escT(String(a.status_checked_at).slice(0, 10)), 'font-mono'));
   if ((a.publisher_platforms || []).length) rows.push(row('المنصات', escT((a.publisher_platforms || []).join(', '))));
   if (a.cta_text) rows.push(row('CTA', escT(a.cta_text)));
   if (a.collation_count) rows.push(row('عدد النسخ', a.collation_count, 'num'));
@@ -1724,6 +1742,23 @@ function switchModalQuality(btn) {
   btn.textContent = toHd ? '⚡ جودة خفيفة (SD)' : '🎞️ جودة عالية (HD)';
 }
 
+function statusCheckSummary(raw) {
+  let s = null;
+  try { s = raw ? JSON.parse(raw) : null; } catch (e) { s = null; }
+  if (!s) return 'لم يُشغَّل بعد.';
+  const when = String(s.finished_at || '').slice(0, 16).replace('T', ' ');
+  const tail = s.status === 'interrupted' ? ' — توقف بسبب حجب مؤقت وسيُستأنف.' : '';
+  return `آخر فحص ${when}: ${s.confirmed || 0} نشط مؤكد · ${s.stopped || 0} توقف · ${s.new || 0} جديد · ${s.requests || 0} طلب${tail}`;
+}
+async function startStatusCheck(btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/status-check/start', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    alert(d.ok ? (d.queued ? '🔎 أُضيف فحص الحالة إلى قائمة الانتظار.' : '🔎 بدأ فحص الحالة.') : (d.error || 'تعذّر البدء'));
+  } finally { btn.disabled = false; }
+}
+
 // Plays the ad video inside its card (one card video at a time).
 function playCardVideo(btn) {
   pauseCardVideos();
@@ -1788,7 +1823,9 @@ function adCardHtml(raw, opts = {}) {
         <div>
           <div class="flex items-center justify-between gap-2">
             <h3 class="font-bold text-[15px] text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
-            <span class="shrink-0 text-[11px] font-bold ${active ? 'text-emerald-600' : 'text-slate-400'}">${active ? '● نشط' : '○ متوقف'}</span>
+            ${active
+              ? `<span class="shrink-0 text-[11px] font-bold text-emerald-600" title="${raw.status_checked_at ? 'آخر تأكيد: ' + escT(String(raw.status_checked_at).slice(0, 10)) : 'لم يُفحص بعد'}">● نشط</span>`
+              : `<span class="shrink-0 text-[11px] font-bold text-slate-500" title="${raw.stopped_at ? 'آخر يوم شوهد نشطاً: ' + escT(String(raw.stopped_at).slice(0, 10)) : ''}">⚫ توقف بعد ${days} ${days === 1 ? 'يوم' : 'أيام'}</span>`}
           </div>
           <div class="text-[11.5px] text-slate-500 font-mono truncate" dir="ltr" style="text-align:right" title="${a.store_domain || ''}">${a.store_domain || 'بدون متجر'}</div>
         </div>
@@ -2221,6 +2258,9 @@ async function loadSettings() {
   document.getElementById('cfg-cta-allowlist').value = (s.cta_allowlist || '').split(',').join(', ');
   document.getElementById('cfg-month-rescan').checked = (s.month_rescan_enabled || 'true') === 'true';
   document.getElementById('cfg-month-rescan-hour').value = s.month_rescan_hour || 23;
+  document.getElementById('cfg-status-check').checked = (s.status_check_enabled || 'true') === 'true';
+  document.getElementById('cfg-status-check-hour').value = s.status_check_hour || 3;
+  document.getElementById('status-check-summary').innerText = statusCheckSummary(s.status_check_summary);
   document.getElementById('month-rescan-last').innerText = s.month_rescan_last ? `(آخر تشغيل: ${s.month_rescan_last})` : '';
   document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
@@ -2260,6 +2300,8 @@ async function saveAllSettings() {
       cta_allowlist: document.getElementById('cfg-cta-allowlist').value,
       month_rescan_enabled: document.getElementById('cfg-month-rescan').checked,
       month_rescan_hour: parseInt(document.getElementById('cfg-month-rescan-hour').value || '23'),
+      status_check_enabled: document.getElementById('cfg-status-check').checked,
+      status_check_hour: parseInt(document.getElementById('cfg-status-check-hour').value || '3'),
       notify_enabled: notifEn,
       telegram_token: token,
       telegram_chat_id: chat,
