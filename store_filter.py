@@ -73,6 +73,9 @@ def is_big_marketplace(domain: str, extra: Optional[list] = None) -> bool:
 # (fb.netshort.com, m.mydramawave.com, w2a.reelshort.com, hotsdrama.com …).
 _DRAMA_HOST = _re.compile(
     r"(?:^|[.\-0-9])[a-z]{0,6}?(drama|reels?|shorts?|novels?|episodes?|stor(?:y|ies))", _re.I)
+# Unambiguous drama words in the brand itself ("reel"/"story" also appear in
+# store names such as dareeliterie.online, so they are left out here).
+_DRAMA_BRAND = _re.compile(r"drama|short|novel|episode", _re.I)
 _DRAMA_TEXT = _re.compile(r"مدبلج|دراما|مسلسل|بقية القصة|episode|drama", _re.I)
 _SHOP_CTAS = {"SHOP_NOW", "BUY_NOW", "ORDER_NOW", "GET_OFFER"}
 # Country TLDs of other markets: never an Algerian store.
@@ -88,9 +91,10 @@ JUNK_LIKE_PATTERNS = (
 def junk_reason(domain: str, cta: str = "", body: str = "") -> str:
     """Why an ad is not an Algerian store ad ("" = keep it).
 
-    A drama-looking host is only junk when the ad is not selling (watch /
-    download CTA) or its text talks about drama: stores such as
-    urstory.a.ayor.ai (SHOP_NOW) stay.
+    A drama word in the brand itself (reelshort.com, hotsdrama.com) is always
+    junk, whatever the button says. Elsewhere in the host it is only junk when
+    the ad is not selling (watch / download CTA) or its text talks about
+    drama: stores such as urstory.a.ayor.ai (SHOP_NOW) stay.
     """
     d = (domain or "").strip().lower()
     if not d:
@@ -98,7 +102,10 @@ def junk_reason(domain: str, cta: str = "", body: str = "") -> str:
     if _FOREIGN_TLD.search(d):
         return "foreign"
     if _DRAMA_HOST.search(d):
-        if (cta or "").strip().upper() not in _SHOP_CTAS or _DRAMA_TEXT.search(body or ""):
+        labels = d.split(".")
+        brand = labels[-2] if len(labels) >= 2 else d
+        if _DRAMA_BRAND.search(brand) or (cta or "").strip().upper() not in _SHOP_CTAS \
+                or _DRAMA_TEXT.search(body or ""):
             return "drama"
     return ""
 
