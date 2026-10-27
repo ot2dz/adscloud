@@ -1622,13 +1622,20 @@ function openAdDetails(adId) {
   if (a.page_name) rows.push(row('المعلن', escT(a.page_name), 'text-[#102a56]'));
   if (a.page_id) rows.push(row('Page ID', escT(a.page_id), 'font-mono'));
   if (a.store_domain) rows.push(row('المتجر', escT(a.store_domain), 'font-mono text-blue-700'));
+  if (a.platform) rows.push(row('المنصة', escT(a.platform)));
+  if (a.collected_at) rows.push(row('تاريخ السحب', escT(String(a.collected_at).slice(0, 10)), 'font-mono'));
   if (a.start_date) rows.push(row('تاريخ الإطلاق', escT(a.start_date), 'font-mono'));
   if (a.days_active != null) rows.push(row('الأيام النشطة', a.days_active, 'num'));
   rows.push(row('الحالة', a.is_active ? 'نشط' : 'متوقف', a.is_active ? 'text-emerald-700' : 'text-rose-700'));
   if ((a.publisher_platforms || []).length) rows.push(row('المنصات', escT((a.publisher_platforms || []).join(', '))));
   if (a.cta_text) rows.push(row('CTA', escT(a.cta_text)));
   if (a.collation_count) rows.push(row('عدد النسخ', a.collation_count, 'num'));
-  if (g) rows.push(row('ضمن مجموعة', `${g.count} إعلان`, 'num'));
+  if (g) {
+    rows.push(row('ضمن مجموعة', `${g.count} إعلان (${g.active} نشط)`, 'num'));
+    if (g.first_launch) rows.push(row('أول إطلاق للمنتج', escT(String(g.first_launch).slice(0, 10)), 'font-mono'));
+    if (g.last_launch) rows.push(row('آخر إطلاق للمنتج', escT(String(g.last_launch).slice(0, 10)), 'font-mono'));
+    if (g.texts) rows.push(row('نصوص مختلفة', g.texts, 'num'));
+  }
   if (a.page_total_ads != null) rows.push(row('إجمالي إعلانات الصفحة', a.page_total_ads, 'num'));
   if (a.domain_total_ads != null) rows.push(row('إجمالي إعلانات المتجر', a.domain_total_ads, 'num'));
 
@@ -1647,7 +1654,12 @@ function openAdDetails(adId) {
       <span class="font-bold text-slate-500">استعلام البحث (يُفتح في متصفحك):</span>
       <div class="font-mono break-all mt-0.5" dir="auto">${escT(adGoogleQuery(a))}</div>
     </div>
+    ${g && g.count > 1 ? `<button data-key="${escT(g.key)}" data-title="${escT((a.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
+        onclick="closeAdModal(); openGroupModal(this.dataset.key, this.dataset.title)"
+        class="w-full py-2 rounded-xl ${(groupTone(g.count) || {}).badge || 'bg-blue-600'} hover:opacity-90 text-white font-bold text-xs">👁️ عرض كل الـ ${g.count} إعلان لهذا المنتج</button>` : ''}
     ${kws.length ? `<div class="flex flex-wrap gap-1.5">${kws.map(k => keywordChipHtml(k)).join('')}</div>` : ''}
+    ${adNicheChips(a).replace('mb-2.5', '')}
+    ${entityBadges(escAd(a)).replace('mb-2.5', '')}
     <div class="grid sm:grid-cols-2 gap-2 text-xs text-slate-700 bg-[#f8fbff] border border-[#cfe0f5] rounded-xl p-3">${rows.join('')}</div>
     <div>
       <div class="text-xs font-bold text-slate-500 mb-1">نص الإعلان</div>
@@ -1705,6 +1717,14 @@ function pauseCardVideos() {
   document.querySelectorAll('video.card-video').forEach(v => { if (!v.paused) v.pause(); });
 }
 
+const AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'ماي', 'جوان', 'جويلية', 'أوت', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+function fmtDayAr(d) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ''));
+  return m ? `${parseInt(m[3], 10)} ${AR_MONTHS[parseInt(m[2], 10) - 1]}` : '';
+}
+
+// Compact ad card: media, who, three numbers, two lines of copy, actions.
+// Everything else (keywords, niches, CTA, group stats…) lives in the details modal.
 function adCardHtml(raw, opts = {}) {
     const a = escAd(raw);
     const g = (!opts.plain && a.group && a.group.count > 1) ? a.group : null;
@@ -1715,131 +1735,58 @@ function adCardHtml(raw, opts = {}) {
     const adFbUrl = `https://www.facebook.com/ads/library/?id=${encodeURIComponent(raw.ad_id || '')}`;
     const previewImg = a.preview_image_url || '';
     const videoSrc = /^https?:\/\//i.test(raw.video_url || '') ? `/api/video?u=${encodeURIComponent(raw.video_url)}` : '';
+    const active = g ? g.active > 0 : a.is_active;
+    const iconBtn = 'w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-[#d7e3f4] text-[#174ea6] hover:bg-[#eef5ff] transition';
 
     return `
-    <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl p-4 flex flex-col justify-between shadow-[0_8px_22px_rgba(23,43,77,0.06)] hover:shadow-md transition">
-      <div>
-        <!-- Top Media Container (Matching screenshot style) -->
-        <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center">
-          ${previewImg ? `
-            <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" class="w-full h-full object-cover" onerror="this.parentElement.innerHTML='<div class=\\'text-slate-400 text-xs font-bold\\'>لا توجد صورة</div>'">
-          ` : `
-            <div class="text-[#153e75] font-bold text-xs flex flex-col items-center gap-1">
-              <span class="text-2xl">🖼️</span>
-              <span>${a.platform || 'إعلان'}</span>
-            </div>
-          `}
-          <!-- Floating Status Pills -->
-          <div class="absolute top-2.5 right-2.5 flex gap-1.5 flex-wrap">
-            ${isWin ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold shadow-sm">🏆 منتج رابح</span>' : ''}
-            ${isNew ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-500 text-white font-bold shadow-sm">🚀 جديد</span>' : ''}
-          </div>
-          <div class="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-white/90 backdrop-blur text-[11px] font-bold text-[#102a56] shadow-sm">
-            ${g ? `🟢 ${g.active} نشط من ${g.count}` : (a.is_active ? '🟢 نشط' : '⏸️ متوقف')}
-          </div>
-          ${g ? `
-            <div class="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg ${tone.badge} text-white font-extrabold text-sm shadow-md">
-              📦 <span class="num">${g.count}</span> إعلان${tone.label ? ` <span class="text-[10px] font-bold opacity-90">· ${tone.label}</span>` : ''}
-            </div>` : ''}
-          ${videoSrc ? `
-            <button type="button" data-src="${videoSrc}" onclick="playCardVideo(this)" title="تشغيل الفيديو"
-              class="absolute inset-0 flex items-center justify-center group">
-              <span class="w-14 h-14 rounded-full bg-black/55 group-hover:bg-black/75 text-white flex items-center justify-center text-2xl shadow-lg transition">▶</span>
-            </button>` : ''}
-        </div>
-
+    <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl overflow-hidden flex flex-col shadow-[0_6px_18px_rgba(23,43,77,0.05)] hover:shadow-md transition">
+      <div class="relative w-full aspect-[4/3] shrink-0 overflow-hidden bg-[#eef3f9] flex items-center justify-center">
+        ${previewImg ? `
+          <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" class="absolute inset-0 w-full h-full object-cover" onerror="this.remove()">
+        ` : `<span class="text-3xl opacity-40">🖼️</span>`}
+        ${videoSrc ? `
+          <button type="button" data-src="${videoSrc}" onclick="playCardVideo(this)" title="تشغيل الفيديو"
+            class="absolute inset-0 flex items-center justify-center group">
+            <span class="w-14 h-14 rounded-full bg-black/55 group-hover:bg-black/75 text-white flex items-center justify-center text-2xl shadow-lg transition">▶</span>
+          </button>` : ''}
+        ${isWin ? '<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500 text-white font-bold shadow-sm pointer-events-none">🏆 رابح</span>'
+          : (isNew ? '<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full bg-sky-500 text-white font-bold shadow-sm pointer-events-none">🚀 جديد</span>' : '')}
         ${g ? `
-          <div class="grid grid-cols-3 gap-1.5 mb-2.5 text-center text-[10.5px] font-bold">
-            <div class="rounded-lg bg-slate-50 border border-slate-200 py-1"><div class="text-slate-500 font-semibold">أول إطلاق</div><div class="font-mono text-[#102a56]">${(g.first_launch || '').slice(0, 10) || '—'}</div></div>
-            <div class="rounded-lg bg-slate-50 border border-slate-200 py-1"><div class="text-slate-500 font-semibold">آخر إطلاق</div><div class="font-mono text-[#102a56]">${(g.last_launch || '').slice(0, 10) || '—'}</div></div>
-            <div class="rounded-lg bg-slate-50 border border-slate-200 py-1"><div class="text-slate-500 font-semibold">نصوص مختلفة</div><div class="num text-[#102a56]">${g.texts}</div></div>
-          </div>` : ''}
+          <button type="button" data-key="${escT(g.key)}" data-title="${escT((raw.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
+            onclick="openGroupModal(this.dataset.key, this.dataset.title)" title="عرض كل إعلانات هذا المنتج"
+            class="absolute top-2.5 left-2.5 z-10 px-2.5 py-0.5 rounded-full ${tone.badge} text-white text-[11px] font-bold shadow-sm hover:opacity-90">
+            📦 <span class="num">${g.count}</span> إعلانات
+          </button>` : ''}
+      </div>
 
-        <!-- Header: Page Name & Domain -->
-        <div class="space-y-1 mb-2.5">
+      <div class="p-3.5 flex flex-col gap-2 flex-1">
+        <div>
           <div class="flex items-center justify-between gap-2">
-            <h3 class="font-bold text-base text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
-            <span class="text-[11px] text-slate-500 shrink-0 font-mono">${(a.start_date || a.collected_at || '').slice(0, 10)}</span>
+            <h3 class="font-bold text-[15px] text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
+            <span class="shrink-0 text-[11px] font-bold ${active ? 'text-emerald-600' : 'text-slate-400'}">${active ? '● نشط' : '○ متوقف'}</span>
           </div>
-          ${a.store_domain ? `
-            <div class="text-xs text-slate-600 flex items-center justify-between">
-              <span class="font-mono text-blue-700 truncate cursor-pointer hover:underline font-bold" data-domain="${a.store_domain}" onclick="trackDomain(this.dataset.domain)">🔗 ${a.store_domain}</span>
-              <span class="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">${a.platform || 'Store'}</span>
-            </div>
-          ` : `
-            <div class="text-[11px] text-slate-400">بدون رابط متجر خارجي</div>
-          `}
-        </div>
-        <div class="flex items-center gap-2.5 flex-wrap text-[10.5px] text-slate-500 mb-1.5">
-          ${a.collected_at ? `<span>📥 سُحب: <b class="font-mono text-slate-700">${(a.collected_at || '').slice(0, 10)}</b></span>` : ''}
-          ${isNewToday(a) ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 border border-emerald-300 font-bold">🆕 جديد</span>' : ''}
-        </div>
-        ${adKeywordChips(a, { group: !!g })}
-        ${adNicheChips(a)}
-        ${entityBadges(a)}
-
-        <!-- Metric Badges (Matching screenshot pills) -->
-        <div class="flex flex-wrap gap-1.5 mb-3" dir="ltr">
-          <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
-            Active: <b>${days}</b> ${days === 1 ? 'day' : 'days'}
-          </span>
-          ${a.cta_text ? `
-            <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
-              CTA: ${a.cta_text}
-            </span>
-          ` : ''}
-          ${a.collation_count > 1 ? `
-            <span class="px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] text-[11px] font-bold border border-[#cfe0f5]">
-              Ads count: ${a.collation_count}
-            </span>
-          ` : ''}
+          <div class="text-[11.5px] text-slate-500 font-mono truncate" dir="ltr" style="text-align:right" title="${a.store_domain || ''}">${a.store_domain || 'بدون متجر'}</div>
         </div>
 
-        <!-- Ad Copy Snippet -->
-        ${a.body ? `
-          <div class="text-xs text-slate-700 bg-slate-50 border border-slate-100 p-2.5 rounded-xl line-clamp-3 leading-relaxed mb-3">
-            ${escT((raw.body || '').slice(0, 180))}
-          </div>
-        ` : ''}
+        <div class="flex items-center gap-3 text-[11.5px] text-slate-600 flex-wrap">
+          ${a.start_date ? `<span title="تاريخ الإطلاق">📅 ${fmtDayAr(a.start_date)}</span>` : ''}
+          <span title="الأيام النشطة">⏱️ <b class="num text-slate-800">${days}</b> ${days === 1 ? 'يوم' : 'أيام'}</span>
+          ${a.domain_total_ads != null ? `<span title="إجمالي إعلانات المتجر">🏪 <b class="num text-slate-800">${a.domain_total_ads}</b> للمتجر</span>` : ''}
+          ${isNewToday(a) ? '<span class="px-1.5 rounded bg-emerald-100 text-emerald-700 font-bold" title="سُحب اليوم">🆕</span>' : ''}
+        </div>
+
+        ${a.body ? `<p class="text-[12.5px] text-slate-700 leading-relaxed line-clamp-2">${escT((raw.body || '').slice(0, 220))}</p>` : ''}
+
+        <div class="flex items-center gap-1.5 mt-auto pt-1">
+          <button type="button" onclick="openAdDetails('${a.ad_id}')"
+            class="flex-1 h-9 rounded-lg bg-[#174ea6] hover:bg-[#123f87] text-white font-bold text-xs transition">التفاصيل</button>
+          ${a.link_url ? `<a href="${a.link_url}" target="_blank" rel="noopener" title="فتح المتجر" class="${iconBtn}">🛒</a>` : ''}
+          <a href="${adFbUrl}" target="_blank" rel="noopener" title="فتح الإعلان في مكتبة الإعلانات" class="${iconBtn}">↗</a>
+          <button type="button" data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" title="نسخ النص" class="${iconBtn}">📋</button>
+          ${a.page_id ? `<button type="button" data-page="${a.page_id}" data-name="${a.page_name || ''}" onclick="trackPage(this.dataset.page, this.dataset.name)" title="تتبع الصفحة" class="${iconBtn}">👁️</button>`
+            : (a.store_domain ? `<button type="button" data-domain="${a.store_domain}" onclick="trackDomain(this.dataset.domain)" title="تتبع المتجر" class="${iconBtn}">👁️</button>` : '')}
+        </div>
       </div>
-
-      <!-- Action Buttons 2x2 Grid (Exact replica of screenshot) -->
-      <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-xs">
-        <a href="${adFbUrl}" target="_blank" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
-          فتح الإعلان ↗
-        </a>
-        ${a.link_url ? `
-          <a href="${a.link_url}" target="_blank" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
-            فتح المتجر 🛒
-          </a>
-        ` : `
-          <button disabled class="py-2 px-2 text-center rounded-lg bg-slate-50 border border-slate-200 text-slate-400 font-bold opacity-60">
-            لا يوجد متجر
-          </button>
-        `}
-        ${a.page_id ? `
-          <button data-page="${a.page_id}" data-name="${a.page_name || ''}" onclick="trackPage(this.dataset.page, this.dataset.name)" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
-            + تتبع الصفحة
-          </button>
-        ` : `
-          <button data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
-            نسخ النص 📋
-          </button>
-        `}
-        <button data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" class="py-2 px-2 text-center rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] hover:bg-[#e8f1ff] font-bold transition truncate shadow-sm">
-          نسخ النص 📋
-        </button>
-      </div>
-      <button type="button" onclick="openAdDetails('${a.ad_id}')"
-        class="mt-2 w-full py-2 rounded-lg bg-[#174ea6] hover:bg-[#123f87] text-white font-bold text-xs shadow-sm transition">
-        🔎 عرض تفاصيل أكثر
-      </button>
-      ${g ? `
-        <button data-key="${escT(g.key)}" data-title="${escT((raw.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
-          onclick="openGroupModal(this.dataset.key, this.dataset.title)"
-          class="mt-2 w-full py-2 rounded-lg ${tone.badge} hover:opacity-90 text-white font-bold text-xs shadow-sm transition">
-          👁️ عرض كل الـ ${g.count} إعلان
-        </button>` : ''}
     </article>`;
 }
 
