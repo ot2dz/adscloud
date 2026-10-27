@@ -1591,6 +1591,7 @@ function copyAdGoogleQuery(adId) {
 }
 
 function openAdDetails(adId) {
+  pauseCardVideos();
   const a = adCache[String(adId)];
   if (!a) return;
   const box = document.getElementById('ad-modal-body');
@@ -1686,6 +1687,24 @@ function isNewToday(a) {
   return !!fs && fs === dzToday();
 }
 
+// Plays the ad video inside its card (one card video at a time).
+function playCardVideo(btn) {
+  pauseCardVideos();
+  const box = btn.parentElement;
+  const v = document.createElement('video');
+  v.src = btn.dataset.src;
+  v.controls = true; v.autoplay = true; v.playsInline = true;
+  v.className = 'card-video absolute inset-0 w-full h-full object-contain bg-black';
+  v.onerror = () => { v.replaceWith(Object.assign(document.createElement('div'), {
+    className: 'absolute inset-0 flex items-center justify-center bg-black/70 text-white text-xs font-bold p-3 text-center',
+    textContent: 'تعذّر تشغيل الفيديو — جرّب «فتح الإعلان ↗»' })); };
+  box.appendChild(v);
+  btn.remove();
+}
+function pauseCardVideos() {
+  document.querySelectorAll('video.card-video').forEach(v => { if (!v.paused) v.pause(); });
+}
+
 function adCardHtml(raw, opts = {}) {
     const a = escAd(raw);
     const g = (!opts.plain && a.group && a.group.count > 1) ? a.group : null;
@@ -1695,12 +1714,13 @@ function adCardHtml(raw, opts = {}) {
     const isNew = days <= 3 && a.is_active;
     const adFbUrl = `https://www.facebook.com/ads/library/?id=${encodeURIComponent(raw.ad_id || '')}`;
     const previewImg = a.preview_image_url || '';
+    const videoSrc = /^https?:\/\//i.test(raw.video_url || '') ? `/api/video?u=${encodeURIComponent(raw.video_url)}` : '';
 
     return `
     <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl p-4 flex flex-col justify-between shadow-[0_8px_22px_rgba(23,43,77,0.06)] hover:shadow-md transition">
       <div>
         <!-- Top Media Container (Matching screenshot style) -->
-        <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center cursor-pointer" onclick="openAdDetails('${a.ad_id}')" title="اضغط لعرض تفاصيل الإعلان والفيديو">
+        <div class="relative w-full aspect-[4/3] bg-[#eef3f9] rounded-xl overflow-hidden border border-[#cfe0f5] mb-3 flex items-center justify-center">
           ${previewImg ? `
             <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" class="w-full h-full object-cover" onerror="this.parentElement.innerHTML='<div class=\\'text-slate-400 text-xs font-bold\\'>لا توجد صورة</div>'">
           ` : `
@@ -1721,10 +1741,11 @@ function adCardHtml(raw, opts = {}) {
             <div class="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg ${tone.badge} text-white font-extrabold text-sm shadow-md">
               📦 <span class="num">${g.count}</span> إعلان${tone.label ? ` <span class="text-[10px] font-bold opacity-90">· ${tone.label}</span>` : ''}
             </div>` : ''}
-          ${a.video_url ? `
-            <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <span class="w-12 h-12 rounded-full bg-black/55 text-white flex items-center justify-center text-xl shadow-lg">▶</span>
-            </div>` : ''}
+          ${videoSrc ? `
+            <button type="button" data-src="${videoSrc}" onclick="playCardVideo(this)" title="تشغيل الفيديو"
+              class="absolute inset-0 flex items-center justify-center group">
+              <span class="w-14 h-14 rounded-full bg-black/55 group-hover:bg-black/75 text-white flex items-center justify-center text-2xl shadow-lg transition">▶</span>
+            </button>` : ''}
         </div>
 
         ${g ? `
@@ -1809,6 +1830,10 @@ function adCardHtml(raw, opts = {}) {
           نسخ النص 📋
         </button>
       </div>
+      <button type="button" onclick="openAdDetails('${a.ad_id}')"
+        class="mt-2 w-full py-2 rounded-lg bg-[#174ea6] hover:bg-[#123f87] text-white font-bold text-xs shadow-sm transition">
+        🔎 عرض تفاصيل أكثر
+      </button>
       ${g ? `
         <button data-key="${escT(g.key)}" data-title="${escT((raw.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
           onclick="openGroupModal(this.dataset.key, this.dataset.title)"
