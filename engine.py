@@ -49,6 +49,7 @@ class Ad:
     publisher_platforms: list = field(default_factory=list)
     preview_image_url: str = ""
     video_url: str = ""
+    video_sd_url: str = ""  # light copy for weak connections
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -224,6 +225,7 @@ def _adapt(m) -> Ad:
         preview_image_url=((getattr(cr, "image_url", "") or getattr(cr, "thumbnail_url", "")) if cr else "") or "",
         video_url=(((getattr(cr, "video_url", "") or getattr(cr, "video_hd_url", "")
                      or getattr(cr, "video_sd_url", "")) if cr else "") or ""),
+        video_sd_url=((getattr(cr, "video_sd_url", "") if cr else "") or ""),
     )
 
 

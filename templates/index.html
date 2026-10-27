@@ -1600,14 +1600,19 @@ function openAdDetails(adId) {
   title.textContent = a.page_name || 'تفاصيل الإعلان';
   lastAdBody = a.body || '';
 
-  const rawVideo = /^https?:\/\//i.test(a.video_url || '') ? a.video_url : '';
   // Same-origin proxy: signed fbcdn URLs are blocked cross-origin by some
   // browsers (and expire), so the server streams the bytes for us.
-  const video = rawVideo ? `/api/video?u=${encodeURIComponent(rawVideo)}` : '';
+  // Starts with the light SD copy; one click switches to HD.
+  const sd = proxiedVideo(a.video_sd_url), hd = proxiedVideo(a.video_url);
+  const video = sd || hd;
   const img = safeUrl(a.preview_image_url);
   const media = video
-    ? `<video src="${video}" controls autoplay playsinline class="w-full max-h-[62vh] rounded-xl bg-black"></video>
-       <div class="text-[11px] text-slate-400 mt-1">إن لم يعمل التشغيل، استخدم زر «فتح في مكتبة الإعلانات».</div>`
+    ? `<video id="ad-modal-video" src="${video}" controls autoplay playsinline class="w-full max-h-[62vh] rounded-xl bg-black"></video>
+       <div class="flex items-center justify-between gap-2 text-[11px] text-slate-400 mt-1">
+         <span>إن لم يعمل التشغيل، استخدم زر «فتح في مكتبة الإعلانات».</span>
+         ${sd && hd && sd !== hd ? `<button type="button" data-sd="${sd}" data-hd="${hd}" data-q="sd" onclick="switchModalQuality(this)"
+           class="shrink-0 px-2.5 py-1 rounded-lg border border-[#cfe0f5] text-[#174ea6] font-bold hover:bg-[#eef6ff]">🎞️ جودة عالية (HD)</button>` : ''}
+       </div>`
     : (img
         ? `<img src="${img}" alt="صورة الإعلان" class="w-full max-h-[62vh] object-contain rounded-xl bg-slate-100">`
         : `<div class="w-full h-56 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold">لا توجد وسائط</div>`);
@@ -1699,6 +1704,26 @@ function isNewToday(a) {
   return !!fs && fs === dzToday();
 }
 
+// Video URLs go through our own proxy. The card uses Meta's light SD copy
+// when it exists (plays fast on weak connections); HD stays in the modal.
+function proxiedVideo(u) {
+  return /^https?:\/\//i.test(u || '') ? `/api/video?u=${encodeURIComponent(u)}` : '';
+}
+function cardVideoSrc(a) {
+  return proxiedVideo(a.video_sd_url) || proxiedVideo(a.video_url);
+}
+// Switches the modal player between SD and HD, keeping the position.
+function switchModalQuality(btn) {
+  const v = document.getElementById('ad-modal-video');
+  if (!v) return;
+  const t = v.currentTime || 0;
+  const toHd = btn.dataset.q !== 'hd';
+  v.src = toHd ? btn.dataset.hd : btn.dataset.sd;
+  v.addEventListener('loadedmetadata', () => { v.currentTime = t; v.play().catch(() => {}); }, { once: true });
+  btn.dataset.q = toHd ? 'hd' : 'sd';
+  btn.textContent = toHd ? '⚡ جودة خفيفة (SD)' : '🎞️ جودة عالية (HD)';
+}
+
 // Plays the ad video inside its card (one card video at a time).
 function playCardVideo(btn) {
   pauseCardVideos();
@@ -1734,7 +1759,7 @@ function adCardHtml(raw, opts = {}) {
     const isNew = days <= 3 && a.is_active;
     const adFbUrl = `https://www.facebook.com/ads/library/?id=${encodeURIComponent(raw.ad_id || '')}`;
     const previewImg = a.preview_image_url || '';
-    const videoSrc = /^https?:\/\//i.test(raw.video_url || '') ? `/api/video?u=${encodeURIComponent(raw.video_url)}` : '';
+    const videoSrc = cardVideoSrc(raw);
     const active = g ? g.active > 0 : a.is_active;
     const iconBtn = 'w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-[#d7e3f4] text-[#174ea6] hover:bg-[#eef5ff] transition';
 

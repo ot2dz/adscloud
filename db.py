@@ -357,6 +357,7 @@ class Database:
             ("meta_ads", "target_id", "INTEGER"),
             ("meta_ads", "preview_image_url", "TEXT"),
             ("meta_ads", "video_url", "TEXT"),
+            ("meta_ads", "video_sd_url", "TEXT"),
             ("meta_ads", "product_key", "TEXT"),
             ("meta_ads", "primary_niche", "TEXT"),
             ("meta_ads", "niche_checked_at", "TEXT"),
@@ -675,7 +676,7 @@ class Database:
                 "store_domain", "platform", "body", "cta_text", "collation_count",
                 "publisher_platforms", "query", "country", "collected_at", "first_seen",
                 "last_seen_active", "days_active", "target_id", "preview_image_url",
-                "video_url", "product_key")
+                "video_url", "video_sd_url", "product_key")
         values = (
             ad_id,
             ad.get("page_name") or "",
@@ -698,6 +699,7 @@ class Database:
             target_id,
             preview_img,
             _web_url(ad.get("video_url")),
+            _web_url(ad.get("video_sd_url")),
             pkey,
         )
         placeholders = ", ".join([p] * len(cols))
@@ -707,11 +709,13 @@ class Database:
             cur = conn.cursor()
             # first_seen is preserved on updates
             if self.is_postgres:
-                updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("ad_id", "first_seen"))
+                updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("ad_id", "first_seen", "video_sd_url"))
+                updates += ", video_sd_url = COALESCE(NULLIF(EXCLUDED.video_sd_url, ''), meta_ads.video_sd_url)"
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT (ad_id) DO UPDATE SET {updates}")
             else:
-                updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c not in ("ad_id", "first_seen"))
+                updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c not in ("ad_id", "first_seen", "video_sd_url"))
+                updates += ", video_sd_url = COALESCE(NULLIF(excluded.video_sd_url, ''), meta_ads.video_sd_url)"
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT(ad_id) DO UPDATE SET {updates}")
             cur.execute(sql, values)
