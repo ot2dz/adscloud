@@ -999,12 +999,22 @@ def api_ads_group():
 
 
 @app.route("/api/video")
-@login_required
 def api_video():
     """Stream a Facebook video through our own origin (signed fbcdn URLs expire
     / are blocked cross-origin by some browsers). Only Meta CDN hosts are
-    allowed, so this cannot be used as an open proxy."""
+    allowed, so this cannot be used as an open proxy.
+
+    No login is required (media elements / plain fetch may omit cookies); the
+    fbcdn allow-list plus a same-origin Referer check keep it from being abused
+    by other sites."""
     from urllib.parse import urlsplit
+    ref = request.headers.get("Referer") or request.headers.get("Origin") or ""
+    if ref:
+        ref_host = (urlsplit(ref).hostname or "").lower()
+        own_host = (request.host or "").split(":")[0].lower()
+        if ref_host and ref_host not in (own_host, "ads.botdz.com", "127.0.0.1", "localhost"):
+            return jsonify({"error": "forbidden"}), 403
+
     raw = (request.args.get("u") or "").strip()
     if not raw:
         return jsonify({"error": "u required"}), 400
