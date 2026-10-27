@@ -6,6 +6,7 @@ social networks, app stores, link-in-bio pages and URL shorteners are rejected.
 """
 from __future__ import annotations
 
+import re as _re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -66,6 +67,40 @@ def is_big_marketplace(domain: str, extra: Optional[list] = None) -> bool:
         elif d == b or d.endswith("." + b):
             return True
     return False
+
+
+# Drama / short-video / web-novel apps: a word at the start of a host label
+# (fb.netshort.com, m.mydramawave.com, w2a.reelshort.com, hotsdrama.com …).
+_DRAMA_HOST = _re.compile(
+    r"(?:^|[.\-0-9])[a-z]{0,6}?(drama|reels?|shorts?|novels?|episodes?|stor(?:y|ies))", _re.I)
+_DRAMA_TEXT = _re.compile(r"مدبلج|دراما|مسلسل|بقية القصة|episode|drama", _re.I)
+_SHOP_CTAS = {"SHOP_NOW", "BUY_NOW", "ORDER_NOW", "GET_OFFER"}
+# Country TLDs of other markets: never an Algerian store.
+_FOREIGN_TLD = _re.compile(
+    r"\.(?:in|ma|tn|eg|sa|ae|pk|ph|id|ng|tr|br|qa|kw|jo|iq|om|bh|co\.uk|us)$", _re.I)
+# SQL LIKE prefilters matching every host the two rules above could flag.
+JUNK_LIKE_PATTERNS = (
+    ["%drama%", "%reel%", "%short%", "%novel%", "%episode%", "%story%", "%stories%"]
+    + ["%." + t for t in ("in", "ma", "tn", "eg", "sa", "ae", "pk", "ph", "id", "ng", "tr",
+                          "br", "qa", "kw", "jo", "iq", "om", "bh", "co.uk", "us")])
+
+
+def junk_reason(domain: str, cta: str = "", body: str = "") -> str:
+    """Why an ad is not an Algerian store ad ("" = keep it).
+
+    A drama-looking host is only junk when the ad is not selling (watch /
+    download CTA) or its text talks about drama: stores such as
+    urstory.a.ayor.ai (SHOP_NOW) stay.
+    """
+    d = (domain or "").strip().lower()
+    if not d:
+        return ""
+    if _FOREIGN_TLD.search(d):
+        return "foreign"
+    if _DRAMA_HOST.search(d):
+        if (cta or "").strip().upper() not in _SHOP_CTAS or _DRAMA_TEXT.search(body or ""):
+            return "drama"
+    return ""
 
 
 def host_of(url: str) -> str:

@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import niches as niche_defs
-from store_filter import BIG_MARKETPLACES, is_big_marketplace
+from store_filter import BIG_MARKETPLACES, JUNK_LIKE_PATTERNS, is_big_marketplace, junk_reason
 
 logger = logging.getLogger("meta_ads_db")
 
@@ -499,6 +499,9 @@ class Database:
             purged = self.purge_blocked_ads()
             if purged:
                 logger.info("purged %s big-marketplace ads", purged)
+            purged = self.purge_junk_ads()
+            if purged:
+                logger.info("purged %s drama-app / foreign-site ads", purged)
         except Exception as exc:  # noqa: BLE001
             logger.warning("blocked-domain purge notice: %s", exc)
 
@@ -663,7 +666,7 @@ class Database:
         ad["link_url"] = _web_url(ad.get("link_url"))
         preview_img = _web_url(ad.get("preview_image_url"))
         # Big marketplaces are never stored (they are also purged on startup).
-        if self.is_blocked_domain(ad.get("store_domain") or ""):
+        if self.is_blocked_domain(ad.get("store_domain") or "") or self.is_unwanted_ad(ad):
             return False
         from store_filter import product_key
         pkey = product_key(str(ad.get("page_id") or ""), ad.get("link_url") or "",
@@ -945,6 +948,15 @@ class Database:
     def is_blocked_domain(self, domain: str) -> bool:
         return is_big_marketplace(domain, self._blocked_domains)
 
+    def is_unwanted_ad(self, ad: dict) -> bool:
+        """Drama apps, foreign sites and ads whose CTA would be hidden anyway
+        are never stored."""
+        cta = (ad.get("cta_text") or "").strip().upper()
+        if junk_reason(ad.get("store_domain") or "", cta, ad.get("body") or ""):
+            return True
+        allow = self.cta_allowlist()
+        return bool(allow) and cta not in allow
+
     def purge_blocked_ads(self) -> int:
         """Permanently delete ads of big marketplaces (and their tags/links)."""
         domains = [d for d in (list(BIG_MARKETPLACES) + list(self._blocked_domains))
@@ -965,7 +977,20 @@ class Database:
         if not conds:
             return 0
         rows = self._query(f"SELECT ad_id FROM meta_ads WHERE {' OR '.join(conds)}", tuple(params))
-        ids = [str(r["ad_id"]) for r in rows]
+        return self._delete_ads([str(r["ad_id"]) for r in rows])
+
+    def purge_junk_ads(self) -> int:
+        """Permanently delete drama-app and foreign-site ads (see junk_reason)."""
+        p = self._ph()
+        conds = " OR ".join([f"LOWER(store_domain) LIKE {p}"] * len(JUNK_LIKE_PATTERNS))
+        rows = self._query(
+            f"SELECT ad_id, store_domain, cta_text, body FROM meta_ads WHERE {conds}",
+            tuple(JUNK_LIKE_PATTERNS))
+        return self._delete_ads([str(r["ad_id"]) for r in rows
+                                 if junk_reason(r["store_domain"], r.get("cta_text") or "", r.get("body") or "")])
+
+    def _delete_ads(self, ids: list[str]) -> int:
+        p = self._ph()
         if not ids:
             return 0
         for i in range(0, len(ids), 400):

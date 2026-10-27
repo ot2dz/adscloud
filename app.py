@@ -370,6 +370,9 @@ class ScrapeManager:
             # Big marketplaces are purged from the bank — never ingest them.
             if ad.store_domain and db.is_blocked_domain(ad.store_domain):
                 return
+            # Drama apps / foreign sites / hidden CTAs: not collected or shown.
+            if db.is_unwanted_ad(d):
+                return
             aid = d.get("ad_id")
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
