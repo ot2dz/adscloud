@@ -5,6 +5,7 @@ async function loadSettings() {
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
   document.getElementById('cfg-registration-open').checked = s.registration_open === 'true';
   document.getElementById('cfg-cta-filter').checked = (s.cta_filter_enabled || 'true') === 'true';
+  document.getElementById('cfg-arabic-only').checked = (s.arabic_only || 'true') === 'true';
   document.getElementById('cfg-cta-allowlist').value = (s.cta_allowlist || '').split(',').join(', ');
   document.getElementById('cfg-month-rescan').checked = (s.month_rescan_enabled || 'true') === 'true';
   document.getElementById('cfg-month-rescan-hour').value = s.month_rescan_hour || 23;
@@ -47,6 +48,7 @@ async function saveAllSettings() {
       entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
       registration_open: document.getElementById('cfg-registration-open').checked,
       cta_filter_enabled: document.getElementById('cfg-cta-filter').checked,
+      arabic_only: document.getElementById('cfg-arabic-only').checked,
       cta_allowlist: document.getElementById('cfg-cta-allowlist').value,
       month_rescan_enabled: document.getElementById('cfg-month-rescan').checked,
       month_rescan_hour: parseInt(document.getElementById('cfg-month-rescan-hour').value || '23'),

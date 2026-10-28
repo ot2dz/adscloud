@@ -56,6 +56,7 @@ def api_get_settings():
         "env_meta_ads_proxy": bool(os.environ.get("META_ADS_PROXY")),
         "blocked_domains": s.get("blocked_domains", ""),
         "cta_filter_enabled": s.get("cta_filter_enabled", "true"),
+        "arabic_only": s.get("arabic_only", "true"),
         "cta_allowlist": s.get("cta_allowlist", ",".join(db.DEFAULT_CTA_ALLOWLIST)),
         "month_rescan_enabled": s.get("month_rescan_enabled", "true"),
         "month_rescan_hour": s.get("month_rescan_hour", "23"),
@@ -110,6 +111,12 @@ def api_set_settings():
     if "meta_ads_proxy" in cfg:
         db.set_setting("meta_ads_proxy", str(cfg["meta_ads_proxy"] or "").strip())
     purged = None
+    if "arabic_only" in cfg:
+        db.set_setting("arabic_only", "true" if cfg["arabic_only"] else "false")
+        if cfg["arabic_only"]:
+            n = db.purge_non_arabic_ads()
+            if n:
+                manager._emit("log", {"text": f"🧹 حُذف {n} إعلانًا غير عربي من القاعدة."})
     if "blocked_domains" in cfg:
         db.set_setting("blocked_domains", str(cfg["blocked_domains"] or "").strip())
         db._load_blocked_domains()

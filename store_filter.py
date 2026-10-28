@@ -88,6 +88,23 @@ JUNK_LIKE_PATTERNS = (
                           "br", "qa", "kw", "jo", "iq", "om", "bh", "co.uk", "us")])
 
 
+# Arabic-only bank: an ad whose letters are (almost) all Latin is French /
+# English / Latin-script Darija. Mixed ads with real Arabic text stay, and an
+# ad without any text cannot be judged, so it stays too.
+ARABIC_MIN_RATIO = 0.15
+_AR_LETTER = _re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
+_LATIN_LETTER = _re.compile(r"[A-Za-z\u00C0-\u024F]")
+
+
+def is_non_arabic(text: str) -> bool:
+    t = text or ""
+    ar = len(_AR_LETTER.findall(t))
+    la = len(_LATIN_LETTER.findall(t))
+    if ar + la == 0:
+        return False
+    return ar / (ar + la) < ARABIC_MIN_RATIO
+
+
 def junk_reason(domain: str, cta: str = "", body: str = "") -> str:
     """Why an ad is not an Algerian store ad ("" = keep it).
 

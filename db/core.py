@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import niches as niche_defs
-from store_filter import BIG_MARKETPLACES, JUNK_LIKE_PATTERNS, is_big_marketplace, junk_reason
+from store_filter import BIG_MARKETPLACES, JUNK_LIKE_PATTERNS, is_big_marketplace, is_non_arabic, junk_reason
 
 logger = logging.getLogger("meta_ads_db")
 
@@ -68,7 +68,7 @@ class Database:
         self._blocked_domains: list[str] = []
         self._init_schema()
 
-    # â”€â”€ connection helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── connection helpers ────────────────────────────────────────────────
     def _ph(self) -> str:
         return "%s" if self.is_postgres else "?"
 
@@ -184,7 +184,7 @@ class Database:
         )
         """)
 
-        # â”€â”€ Page tracking (browser-extension integration) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Page tracking (browser-extension integration) ──────────────────
         cur.execute("""
         CREATE TABLE IF NOT EXISTS tracked_pages (
             page_id TEXT PRIMARY KEY,
@@ -215,7 +215,7 @@ class Database:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_page ON page_snapshots (page_id)")
 
-        # â”€â”€ Per-user ownership: who saved which ad / tracks which page â”€â”€â”€â”€â”€
+        # ── Per-user ownership: who saved which ad / tracks which page ─────
         # Ads and pages stay global (one scrape serves everyone); these link
         # tables decide what each user sees.
         cur.execute("""
@@ -418,7 +418,7 @@ class Database:
         except Exception as exc:  # noqa: BLE001
             logger.warning("ad_keywords backfill notice: %s", exc)
 
-        # â”€â”€ Niche taxonomy + per-ad classification (multi-label) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Niche taxonomy + per-ad classification (multi-label) ──────────
         cur.execute(f"""
         CREATE TABLE IF NOT EXISTS niches (
             id {idcol},
@@ -506,6 +506,9 @@ class Database:
             purged = self.purge_junk_ads()
             if purged:
                 logger.info("purged %s drama-app / foreign-site ads", purged)
+            purged = self.purge_non_arabic_ads()
+            if purged:
+                logger.info("purged %s non-Arabic ads", purged)
         except Exception as exc:  # noqa: BLE001
             logger.warning("blocked-domain purge notice: %s", exc)
 
@@ -527,7 +530,7 @@ class Database:
         if total:
             logger.info("product_key backfilled for %s ads", total)
 
-    # â”€â”€ low-level helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── low-level helpers ─────────────────────────────────────────────────
     def _execute(self, sql: str, params: tuple = ()) -> None:
         conn = self._connect()
         try:
@@ -554,7 +557,7 @@ class Database:
         rows = self._query(sql, params)
         return rows[0] if rows else None
 
-    # â”€â”€ per-user scoping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── per-user scoping ──────────────────────────────────────────────────
     def _user_scope_sql(self, prefix: str = "") -> str:
         """WHERE fragment for the ads a user sees (params: _user_scope_params):
         ads they saved, every ad of the pages they track, and the ads
@@ -608,7 +611,7 @@ class Database:
         rows = self._query(f"SELECT page_id FROM user_pages WHERE user_id={self._ph()}", (int(user_id),))
         return [str(r["page_id"]) for r in rows]
 
-    # â”€â”€ public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── public API ────────────────────────────────────────────────────────
     def _calc_days_active(self, start_date_str: str, first_seen_str: str,
                           is_active: bool = True, last_seen_active: str = "") -> int:
         """Days the ad has been running, launch day = day 1, in Algeria time.
@@ -625,7 +628,7 @@ class Database:
             end = _to_algeria_date(last_seen_active) or end
         return max(1, (end - start).days + 1)
 
-    # â”€â”€ daily status check (is the ad still running?) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── daily status check (is the ad still running?) ─────────────────────
     def status_check_pages(self) -> list[str]:
         """Pages that still have ads marked active, in a stable order."""
         rows = self._query("SELECT DISTINCT page_id FROM meta_ads "
@@ -815,7 +818,7 @@ class Database:
     def ad_exists(self, ad_id: str) -> bool:
         return self._query_one(f"SELECT 1 AS x FROM meta_ads WHERE ad_id={self._ph()}", (str(ad_id),)) is not None
 
-    # â”€â”€ CTA allow-list (which call-to-action buttons are shown) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── CTA allow-list (which call-to-action buttons are shown) ───────────
     DEFAULT_CTA_ALLOWLIST = ("SHOP_NOW", "BUY_NOW", "ORDER_NOW", "GET_OFFER", "MESSAGE_PAGE",
                              "WHATSAPP_MESSAGE", "GET_DETAILS", "LEARN_MORE")
     _cta_cache: tuple = (0.0, None)
@@ -998,7 +1001,7 @@ class Database:
             r["keywords"] = ks
         return rows
 
-    # â”€â”€ big-marketplace blocklist (purged permanently) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── big-marketplace blocklist (purged permanently) ────────────────────
     def _load_blocked_domains(self) -> None:
         """Extra blocked domains from Settings (comma/newline separated)."""
         extra = ""
@@ -1012,11 +1015,26 @@ class Database:
     def is_blocked_domain(self, domain: str) -> bool:
         return is_big_marketplace(domain, self._blocked_domains)
 
+    _arabic_cache: tuple = (0.0, None)
+
+    def arabic_only(self) -> bool:
+        """Keep only Arabic ads (setting arabic_only, on by default). Cached briefly."""
+        import time as _t
+        ts, val = self._arabic_cache
+        if val is not None and _t.monotonic() - ts < 10:
+            return val
+        row = self._query_one("SELECT value FROM settings WHERE key = 'arabic_only'")
+        val = str((row or {}).get("value") or "true").lower() in ("1", "true", "yes", "on")
+        self._arabic_cache = (_t.monotonic(), val)
+        return val
+
     def is_unwanted_ad(self, ad: dict) -> bool:
-        """Drama apps, foreign sites and ads whose CTA would be hidden anyway
-        are never stored."""
+        """Drama apps, foreign sites, non-Arabic ads and ads whose CTA would
+        be hidden anyway are never stored."""
         cta = (ad.get("cta_text") or "").strip().upper()
         if junk_reason(ad.get("store_domain") or "", cta, ad.get("body") or ""):
+            return True
+        if self.arabic_only() and is_non_arabic(ad.get("body") or ""):
             return True
         allow = self.cta_allowlist()
         return bool(allow) and cta not in allow
@@ -1053,6 +1071,13 @@ class Database:
         return self._delete_ads([str(r["ad_id"]) for r in rows
                                  if junk_reason(r["store_domain"], r.get("cta_text") or "", r.get("body") or "")])
 
+    def purge_non_arabic_ads(self) -> int:
+        """Permanently delete ads written in Latin script (see is_non_arabic)."""
+        if not self.arabic_only():
+            return 0
+        rows = self._query("SELECT ad_id, body FROM meta_ads")
+        return self._delete_ads([str(r["ad_id"]) for r in rows if is_non_arabic(r.get("body") or "")])
+
     def _delete_ads(self, ids: list[str]) -> int:
         p = self._ph()
         if not ids:
@@ -1068,7 +1093,7 @@ class Database:
             self._execute(f"DELETE FROM meta_ads WHERE ad_id IN ({in_list})", tuple(chunk))
         return len(ids)
 
-    # â”€â”€ niche classification (multi-label, rules-based) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── niche classification (multi-label, rules-based) ───────────────────
     def _load_niches(self) -> None:
         rows = self._query(
             "SELECT id, slug, name_ar, name_fr, keywords, negatives FROM niches WHERE enabled = 1")
@@ -1210,7 +1235,7 @@ class Database:
                       ((best or {}).get("slug") or "", ad_id))
         return True
 
-    # â”€â”€ page / domain totals on Meta â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── page / domain totals on Meta ──────────────────────────────────────
     def save_entity_stat(self, kind: str, key: str, ads: Optional[int], status: str = "ok") -> None:
         p = self._ph()
         sql = (f"INSERT INTO entity_stats (ent_kind, ent_key, ent_ads, ent_checked_at, ent_status) "
@@ -1278,7 +1303,7 @@ class Database:
             a["domain_pages"] = dom_pages.get(a.get("store_domain") or "", 0)
         return ads
 
-    # â”€â”€ product groups (same advertiser + same product) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── product groups (same advertiser + same product) ───────────────────
     _GROUP_ORDER = {
         "longest_running": "max_days DESC, active DESC",
         "newest_launch": "last_launch DESC",
@@ -1480,7 +1505,7 @@ class Database:
     def clear_ads(self) -> None:
         self._execute("DELETE FROM meta_ads")
 
-    # â”€â”€ jobs (remote scrape queue) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── jobs (remote scrape queue) ────────────────────────────────────────
     def get_known_ad_ids(self, query: str = "", store_domain: str = "",
                          page_id: str = "", limit: int = 150) -> list[str]:
         """Fetch recently stored ad IDs for early stopping."""
@@ -1709,7 +1734,7 @@ class Database:
             self.release_job(row["id"])
         return len(rows)
 
-    # â”€â”€ targets (Pages, Domains, Keywords, Custom URLs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── targets (Pages, Domains, Keywords, Custom URLs) ───────────────────
     def add_target(self, type: str, target_value: str, label: str = "",
                    country: str = "DZ", interval_hours: float = 12.0) -> bool:
         val = (target_value or "").strip()
@@ -1759,7 +1784,7 @@ class Database:
         self._execute(f"UPDATE targets SET last_scraped_at={self._ph()} WHERE id={self._ph()}",
                       (_now(), target_id))
 
-    # â”€â”€ competitors per user (shared targets + user_targets links) â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── competitors per user (shared targets + user_targets links) ────────
     def get_target(self, target_id: int) -> Optional[dict]:
         return self._query_one(f"SELECT * FROM targets WHERE id={self._ph()}", (int(target_id),))
 
@@ -1915,7 +1940,7 @@ class Database:
                 self.set_user_target_enabled(None, t["id"], False)
         return moved
 
-    # â”€â”€ tracked pages (browser-extension integration) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── tracked pages (browser-extension integration) ─────────────────────
     def upsert_tracked_page(self, page_id, page_name: str = "", page_url: str = "",
                             page_likes: int = 0, platform: str = "", country: str = "DZ",
                             source: str = "extension") -> bool:
@@ -2037,8 +2062,8 @@ class Database:
     def toggle_keyword(self, kw_id: int, enabled: bool) -> None:
         self.toggle_target(kw_id, enabled)
 
-    # â”€â”€ settings (schedule) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # â”€â”€ users & authentication â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── settings (schedule) ───────────────────────────────────────────────
+    # ── users & authentication ───────────────────────────────────────────
     def create_user(self, email: str, password_hash: str, role: str = "user", is_active: int = 1) -> Optional[int]:
         p = self._ph()
         conn = self._connect()
@@ -2075,7 +2100,7 @@ class Database:
             "(SELECT COUNT(*) FROM user_pages up WHERE up.user_id = users.id) AS tracked_pages_count "
             "FROM users ORDER BY id ASC")
 
-    # â”€â”€ server-side sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── server-side sessions ──────────────────────────────────────────────
     @staticmethod
     def _sid_hash(sid: str) -> str:
         import hashlib
@@ -2132,7 +2157,7 @@ class Database:
         cut = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
         self._execute(f"DELETE FROM user_sessions WHERE expires_at < {self._ph()}", (cut,))
 
-    # â”€â”€ brute-force throttling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── brute-force throttling ────────────────────────────────────────────
     def record_auth_attempt(self, kind: str, email: str, ip: str, success: bool) -> None:
         p = self._ph()
         self._execute(f"INSERT INTO auth_attempts (kind, email, ip, success, created_at) VALUES ({p},{p},{p},{p},{p})",
@@ -2158,7 +2183,7 @@ class Database:
         cut = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
         self._execute(f"DELETE FROM auth_attempts WHERE created_at < {self._ph()}", (cut,))
 
-    # â”€â”€ security audit log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── security audit log ────────────────────────────────────────────────
     def log_security_event(self, event: str, user_id: Optional[int] = None, email: str = "",
                            ip: str = "", detail: str = "") -> None:
         p = self._ph()
@@ -2175,7 +2200,7 @@ class Database:
             return self._query(f"SELECT * FROM security_events WHERE event={p} ORDER BY id DESC LIMIT {int(limit)}", (event,))
         return self._query(f"SELECT * FROM security_events ORDER BY id DESC LIMIT {int(limit)}")
 
-    # â”€â”€ extension tokens (hashed, revocable) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── extension tokens (hashed, revocable) ──────────────────────────────
     def migrate_plain_api_tokens(self) -> int:
         """Move tokens stored in clear (users.api_token) to hashed rows, so
         installed extensions keep working but the database holds no token."""
@@ -2260,6 +2285,8 @@ class Database:
     def set_setting(self, key: str, value: str) -> None:
         if key in ("cta_filter_enabled", "cta_allowlist"):
             self._cta_cache = (0.0, None)
+        if key == "arabic_only":
+            self._arabic_cache = (0.0, None)
         p = self._ph()
         conn = self._connect()
         try:
