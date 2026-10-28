@@ -585,8 +585,9 @@ job_wakeup = threading.Event()
 
 # ── Pages ─────────────────────────────────────────────────────────────
 def _asset_v() -> str:
-    paths = [os.path.join(app.static_folder, "css", "app.css"),
-             os.path.join(app.static_folder, "js", "app.js")]
+    css = os.path.join(app.static_folder, "css", "app.css")
+    js_dir = os.path.join(app.static_folder, "js")
+    paths = [css] + [os.path.join(js_dir, f) for f in os.listdir(js_dir) if f.endswith(".js")]
     try:
         return str(int(max(os.path.getmtime(p) for p in paths)))
     except OSError:
