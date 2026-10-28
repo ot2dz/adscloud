@@ -1,0 +1,16 @@
+  <!-- Navigation Tabs -->
+  <div class="flex gap-2.5 border-b border-[#cfe0f5] pb-3 flex-wrap items-center">
+    <button onclick="showTab('ads')" id="tab-ads" class="px-5 py-2.5 rounded-xl bg-blue-600 text-sm font-bold text-white shadow-sm transition">🛍️ بنك الإعلانات والتجسس</button>
+    <button onclick="showTab('targets')" id="tab-targets" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🎯 تتبع المنافسين</button>
+    <button onclick="showTab('stores')" id="tab-stores" class="px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">🏪 المتاجر المكتشفة</button>
+    <button onclick="showTab('jobs')" id="tab-jobs" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">📋 قائمة المهام</button>
+    <button onclick="showTab('settings')" id="tab-settings" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">⚙️ الإعدادات والربط</button>
+    <button onclick="showTab('users')" id="tab-users" data-admin-only class="hidden px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition">👥 إدارة المستخدمين</button>
+    <div class="ms-auto flex gap-2 items-center">
+      <select id="admin-user-filter" data-admin-only onchange="onAdminUserFilterChange()" title="عرض بيانات مستخدم محدد" class="hidden text-xs bg-white text-slate-700 font-bold rounded-lg px-3 py-2 border border-[#b7c9e2] shadow-sm">
+        <option value="">👥 كل المستخدمين</option>
+      </select>
+      <button onclick="exportData('csv')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير CSV</button>
+      <button onclick="exportData('json')" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-lg px-3.5 py-2 border border-[#b7c9e2] transition shadow-sm">تصدير JSON</button>
+    </div>
+  </div>

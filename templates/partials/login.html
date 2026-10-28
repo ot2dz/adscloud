@@ -1,0 +1,34 @@
+<!-- Auth Modal (Login / Register) -->
+<div id="auth-modal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-white border border-[#cfe0f5] rounded-3xl p-6 sm:p-8 w-full max-w-md shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-200">
+    <div class="text-center space-y-1.5">
+      <div class="text-3xl">🕵️</div>
+      <h2 class="text-xl font-black text-[#102a56]">MetaAds <span class="text-blue-600">Spy</span></h2>
+      <p id="auth-subtitle" class="text-xs text-slate-500 font-semibold">تسجيل الدخول للوصول إلى لوحة التحكم وبنك الإعلانات</p>
+    </div>
+
+    <!-- Auth Tabs -->
+    <div class="flex rounded-xl bg-slate-100 p-1 text-xs font-bold">
+      <button id="tab-login-btn" onclick="setAuthMode('login')" class="flex-1 py-2 rounded-lg bg-white text-blue-700 shadow-sm transition">تسجيل الدخول</button>
+      <button id="tab-register-btn" onclick="setAuthMode('register')" class="flex-1 py-2 rounded-lg text-slate-600 hover:text-slate-900 transition">حساب جديد</button>
+    </div>
+
+    <!-- Auth Form -->
+    <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="space-y-3.5 text-xs">
+      <div>
+        <label class="block text-slate-700 font-bold mb-1">البريد الإلكتروني:</label>
+        <input id="auth-email" type="email" required placeholder="name@example.com" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-slate-800 placeholder-slate-400 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div>
+        <label class="block text-slate-700 font-bold mb-1">كلمة المرور:</label>
+        <input id="auth-password" type="password" required placeholder="••••••••" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2.5 text-slate-800 placeholder-slate-400 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+
+      <div id="auth-error-msg" class="hidden p-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold leading-relaxed"></div>
+
+      <button id="auth-submit-btn" type="submit" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-sm shadow-sm transition">
+        دخول إلى المنصة
+      </button>
+    </form>
+  </div>
+</div>

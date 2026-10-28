@@ -1,0 +1,20 @@
+<!-- Header -->
+<header class="border-b border-[#cfe0f5] bg-white sticky top-0 z-20 shadow-sm">
+  <div class="max-w-7xl mx-auto px-4 py-3.5 flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-3">
+      <span class="text-xl font-black tracking-tight text-[#102a56]">🕵️ MetaAds<span class="text-blue-600">Spy</span></span>
+      <span class="text-xs px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] font-bold border border-[#cfe0f5]" id="db-backend">SQLite</span>
+    </div>
+    <div class="flex items-center gap-4 text-sm font-semibold flex-wrap">
+      <span class="flex items-center gap-1.5 text-slate-700">📦 <b class="num text-blue-700 text-base" id="stat-total">0</b> إعلان محفوظ</span>
+      <span class="flex items-center gap-1.5 text-slate-700">🏪 <b class="num text-emerald-700 text-base" id="stat-stores">0</b> متجر</span>
+      <button id="btn-reset-db" onclick="resetAll()" class="hidden text-rose-600 hover:text-rose-700 text-xs font-bold hover:underline">مسح القاعدة</button>
+      <div id="auth-user-info" class="flex items-center gap-2.5 ps-3 border-s border-slate-200">
+        <span id="auth-user-badge" class="text-[11px] px-2.5 py-0.5 rounded-full font-bold"></span>
+        <span id="auth-user-email" class="text-xs text-slate-700 font-bold max-w-[150px] truncate"></span>
+        <button onclick="logout()" class="text-xs px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold transition">خروج</button>
+        <button onclick="logoutAll()" title="إنهاء جلساتك على كل الأجهزة والمتصفحات" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 font-bold transition">خروج من كل الأجهزة</button>
+      </div>
+    </div>
+  </div>
+</header>

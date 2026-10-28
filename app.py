@@ -584,9 +584,18 @@ job_wakeup = threading.Event()
 
 
 # ── Pages ─────────────────────────────────────────────────────────────
+def _asset_v() -> str:
+    paths = [os.path.join(app.static_folder, "css", "app.css"),
+             os.path.join(app.static_folder, "js", "app.js")]
+    try:
+        return str(int(max(os.path.getmtime(p) for p in paths)))
+    except OSError:
+        return "1"
+
+
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", asset_v=_asset_v())
 
 
 # ── CORS & Private Network Access (Chrome Extensions support) ─────────

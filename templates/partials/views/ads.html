@@ -1,0 +1,125 @@
+  <!-- VIEW: ADS (SPY ENGINE) -->
+  <section id="view-ads" class="space-y-4">
+
+    <!-- Target Filter Banner -->
+    <div id="target-filter-banner" class="hidden bg-[#e8f1ff] border border-[#9fbbe0] rounded-2xl px-5 py-3.5 flex items-center justify-between text-xs text-[#153e75] gap-3 flex-wrap shadow-sm">
+      <div class="flex items-center gap-2.5">
+        <span class="text-lg">🎯</span>
+        <span class="font-bold">مفلتر بالهدف:</span>
+        <b id="target-filter-label" class="text-[#102a56] text-sm font-black"></b>
+        <span id="target-filter-type" class="px-2.5 py-0.5 rounded-full bg-blue-600 text-white text-[10px] font-bold"></span>
+      </div>
+      <button onclick="clearTargetFilter()" class="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
+        ✕ إلغاء الفلتر وعرض جميع الإعلانات
+      </button>
+    </div>
+
+    <!-- Filters: one always-visible row + a collapsible filter panel -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-3.5 sm:p-4 space-y-2.5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="flex items-center gap-2 flex-wrap">
+        <input id="search" oninput="debounceLoadAds()" placeholder="بحث: نص الإعلان، اسم الصفحة، أو رابط المتجر…"
+          class="flex-1 min-w-[15rem] bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+
+        <select id="sort-by" onchange="loadAds()" title="الترتيب حسب"
+          class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-2 text-xs font-bold text-slate-700 shrink-0">
+          <option value="collected_at">الأحدث مسحاً</option>
+          <option value="longest_running">الأطول عمراً (الأكثر ربحاً)</option>
+          <option value="newest_launch">الأحدث إطلاقاً</option>
+          <option value="most_collated">الأكثر انتشاراً (Scaling)</option>
+          <option value="biggest_page">📄 أكبر المعلنين (إعلانات الصفحة)</option>
+        </select>
+
+        <button type="button" id="filters-toggle" onclick="toggleFiltersPanel()"
+          class="px-3 py-2 rounded-lg border border-[#cfe0f5] bg-white text-[#174ea6] text-xs font-bold hover:bg-[#eef6ff] flex items-center gap-1.5 shrink-0">
+          ⚙️ الفلاتر <span id="filters-count" class="hidden num px-1.5 rounded bg-[#e8f1ff] text-[10px]">0</span> ▾
+        </button>
+
+        <label class="flex items-center gap-1.5 cursor-pointer select-none bg-white border border-[#cfe0f5] rounded-lg px-2.5 py-2 shadow-sm text-xs font-bold text-slate-700 shrink-0">
+          <input id="group-toggle" type="checkbox" class="accent-blue-600" onchange="setGroupMode(this.checked)">
+          🧩 دمج
+        </label>
+
+        <span class="ms-auto text-xs text-slate-600 font-semibold whitespace-nowrap">
+          <span id="ads-total-label">المعروضة:</span> <b class="num text-blue-700 text-sm font-bold" id="ads-total">0</b>
+          <span id="ads-total-sub" class="text-slate-500"></span>
+          <span id="active-filter-indicator" class="text-blue-600 font-bold"></span>
+        </span>
+      </div>
+
+      <div id="filters-panel" class="hidden space-y-2.5 pt-2.5 border-t border-slate-100">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-[11px] font-bold text-slate-500 shrink-0 w-16">🔥 نوع:</span>
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <button onclick="setPreset('')" id="preset-all" class="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white font-bold shadow-sm transition">الكل</button>
+            <button onclick="setPreset('winning')" id="preset-winning" class="text-xs px-3 py-1.5 rounded-lg bg-white text-amber-700 border border-amber-300 hover:bg-amber-50 font-bold transition shadow-sm">🏆 رابحة (+5 أيام)</button>
+            <button onclick="setPreset('new_launches')" id="preset-new_launches" class="text-xs px-3 py-1.5 rounded-lg bg-white text-sky-700 border border-sky-300 hover:bg-sky-50 font-bold transition shadow-sm">🚀 حديثة (3 أيام)</button>
+            <button onclick="setPreset('active')" id="preset-active" class="text-xs px-3 py-1.5 rounded-lg bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 font-bold transition shadow-sm">🟢 نشطة</button>
+            <button onclick="setPreset('stopped')" id="preset-stopped" class="text-xs px-3 py-1.5 rounded-lg bg-white text-rose-700 border border-rose-300 hover:bg-rose-50 font-bold transition shadow-sm">⏸️ متوقفة</button>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap text-[11px] font-bold text-slate-600">
+          <span class="shrink-0 w-16">📅 الإطلاق:</span>
+          <input id="start-date-min" type="date" onchange="loadAds()" title="من"
+            class="bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <span class="text-slate-400">←</span>
+          <input id="start-date-max" type="date" onchange="loadAds()" title="إلى"
+            class="bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <span class="ms-2">⏳ نشط ≥</span>
+          <input id="min-days" type="number" min="0" placeholder="0" onchange="loadAds()"
+            class="w-14 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-center text-slate-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <span>يوم</span>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap text-[11px] font-bold text-slate-600">
+          <span class="shrink-0 w-16">📦 للمنتج:</span>
+          <div id="min-product-ads-btns" class="flex items-center gap-1.5 flex-wrap"></div>
+          <label class="flex items-center gap-1.5">أو ≥
+            <input id="min-product-ads" type="number" min="0" placeholder="—" onchange="setMinProductAds(this.value)"
+              class="w-14 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-center text-slate-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          </label>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-[11px] font-bold text-slate-500 shrink-0 w-16">🏷️ وسوم:</span>
+          <div class="relative ms-wrap flex items-center gap-1.5 flex-wrap" id="kw-wrap">
+            <button type="button" onclick="toggleMs('kw')" class="px-3 py-1.5 rounded-lg border border-[#cfe0f5] bg-white text-[#174ea6] text-xs font-bold hover:bg-[#eef6ff] flex items-center gap-1.5">
+              🏷️ الكلمات <span id="kw-count" class="num px-1.5 rounded bg-[#e8f1ff] text-[10px]">0</span> ▾
+            </button>
+            <div id="kw-selected" class="flex items-center gap-1 flex-wrap"></div>
+            <div id="kw-panel" class="hidden absolute z-40 mt-2 top-full right-0 w-[min(22rem,calc(100vw-2rem))] bg-white border border-[#cfe0f5] rounded-xl shadow-xl p-2">
+              <input id="kw-search" oninput="renderKeywordMenu()" placeholder="ابحث عن كلمة…" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2.5 py-1.5 text-xs mb-2 focus:outline-none focus:ring-1 focus:ring-blue-500">
+              <div id="kw-items" class="max-h-64 overflow-auto space-y-0.5"></div>
+              <div class="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-slate-100">
+                <button type="button" onclick="clearKeywordFilter()" class="text-[11px] font-bold text-rose-700 px-2 py-1 rounded-lg hover:bg-rose-50">مسح الكل</button>
+                <button type="button" onclick="toggleMs('kw', false)" class="text-[11px] font-bold text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">إغلاق</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="relative ms-wrap flex items-center gap-1.5 flex-wrap" id="niche-wrap">
+            <button type="button" onclick="toggleMs('niche')" class="px-3 py-1.5 rounded-lg border border-[#cfe0f5] bg-white text-indigo-700 text-xs font-bold hover:bg-indigo-50 flex items-center gap-1.5">
+              🧩 النيشات <span id="niche-count" class="num px-1.5 rounded bg-indigo-50 text-[10px]">0</span> ▾
+            </button>
+            <div id="niche-selected" class="flex items-center gap-1 flex-wrap"></div>
+            <div id="niche-panel" class="hidden absolute z-40 mt-2 top-full right-0 w-[min(22rem,calc(100vw-2rem))] bg-white border border-[#cfe0f5] rounded-xl shadow-xl p-2">
+              <div id="niche-items" class="max-h-72 overflow-auto space-y-0.5"></div>
+              <div class="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-slate-100">
+                <button type="button" onclick="clearNicheFilter()" class="text-[11px] font-bold text-rose-700 px-2 py-1 rounded-lg hover:bg-rose-50">مسح الكل</button>
+                <button type="button" onclick="toggleMs('niche', false)" class="text-[11px] font-bold text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">إغلاق</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pagination (top) -->
+    <div class="ads-pager flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-slate-600 px-1"></div>
+
+    <!-- Ads Grid (Cards identical to screenshot) -->
+    <div id="ads" class="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+
+    <!-- Pagination (bottom) -->
+    <div class="ads-pager flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-slate-600 px-1 pt-2"></div>
+  </section>

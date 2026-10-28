@@ -1,0 +1,82 @@
+  <!-- Manual Scrape Bar (admin only) -->
+  <section id="engine-bar" data-admin-only class="hidden bg-white border border-[#cfe0f5] rounded-2xl p-3.5 sm:p-4 space-y-2.5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+    <!-- Row 1: mode • target • date • start • help • state -->
+    <div class="flex items-center gap-2 flex-wrap">
+      <div class="inline-flex bg-slate-100 p-0.5 rounded-lg text-xs font-bold shrink-0">
+        <button id="mode-targeted" onclick="setScrapeMode('targeted')" class="px-2.5 py-1.5 rounded-md transition">🔎 مستهدف</button>
+        <button id="mode-market" onclick="setScrapeMode('market')" class="px-2.5 py-1.5 rounded-md transition">🌍 كل السوق</button>
+      </div>
+
+      <div id="targeted-box" class="flex-1 min-w-[15rem]">
+        <input id="q" oninput="renderScrapeSummary()" onkeydown="if(event.key==='Enter')startEngine()"
+          placeholder="كلمة، رابط صفحة، دومين متجر، أو رابط مكتبة إعلانات…"
+          class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3.5 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+
+      <div id="market-box" class="hidden flex-1 min-w-[15rem] text-[11px] bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-slate-700">
+        🌍 <b class="text-indigo-900">كل السوق العربي</b> — تُسحب يوماً بيوم، الأحدث أولاً، وتُكمل عند الانقطاع.
+      </div>
+
+      <select id="date-chips" onchange="setScrapePreset(this.value)" title="تاريخ الإطلاق"
+        class="bg-white border border-[#b7c9e2] rounded-lg px-2 py-2 text-xs font-bold text-slate-700 shrink-0"></select>
+
+      <button id="btn-start" onclick="startEngine()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-5 py-2 font-bold text-sm text-white shadow-sm transition shrink-0">▶ ابدأ</button>
+
+      <button type="button" id="summary-toggle" onclick="toggleScrapeSummary()" title="ماذا سأفعل بالضبط؟"
+        class="w-8 h-8 shrink-0 rounded-lg border border-[#cfe0f5] bg-white text-slate-500 hover:bg-[#eef6ff] font-black text-xs">؟</button>
+
+      <span id="engine-state" class="text-[11px] px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200 shrink-0">متوقف</span>
+    </div>
+
+    <div id="q-kind" class="text-[11px] font-bold px-1 empty:hidden"></div>
+
+    <!-- Only shown for 'day' / custom range -->
+    <div id="date-day-row" class="hidden flex items-center gap-2 text-xs font-bold text-slate-700">
+      <span>اليوم:</span><input id="scrape-day" type="date" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1">
+    </div>
+    <div id="date-range-row" class="hidden flex items-center gap-2 text-xs font-bold text-slate-700 flex-wrap">
+      <span>من:</span><input id="scrape-custom-min" type="date" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1">
+      <span>إلى:</span><input id="scrape-custom-max" type="date" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2.5 py-1">
+    </div>
+
+    <!-- Behind the ? button -->
+    <div id="scrape-summary" class="hidden text-xs bg-[#f8fbff] border border-[#cfe0f5] rounded-xl px-3.5 py-2.5 text-slate-700 leading-relaxed"></div>
+
+    <details id="adv-box" class="text-xs text-slate-600">
+      <summary class="cursor-pointer font-bold select-none text-slate-500">⚙️ خيارات متقدمة</summary>
+      <div class="flex items-center gap-4 flex-wrap mt-2">
+        <label class="flex items-center gap-1.5">الدولة:
+          <select id="country-select" onchange="renderScrapeSummary()" class="bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 font-semibold">
+            <option value="DZ">🇩🇿 الجزائر</option>
+            <option value="ALL">🌍 كل الدول</option>
+            <option value="SA">🇸🇦 السعودية</option>
+            <option value="AE">🇦🇪 الإمارات</option>
+            <option value="FR">🇫🇷 فرنسا</option>
+          </select></label>
+        <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="exact" onchange="renderScrapeSummary()" class="rounded text-blue-600"> عبارة حرفية (للكلمات)</label>
+      </div>
+    </details>
+
+    <!-- Compact live progress -->
+    <div id="live-progress-box" class="hidden bg-[#f0f7ff] border border-[#9fbbe0] rounded-xl px-3 py-2.5 space-y-2 transition-all duration-300">
+      <div class="flex items-center gap-2.5 flex-wrap text-xs font-bold">
+        <span class="animate-pulse">⚡</span>
+        <span id="live-target-label" class="text-slate-600">جاري السحب:</span>
+        <b id="live-target-name" class="text-[#102a56]">...</b>
+        <span class="px-2 py-0.5 rounded-full bg-white border border-[#cfe0f5] text-emerald-700">
+          📥 <b id="live-scraped" class="num">0</b> / <b id="live-reported" class="num text-blue-800">…</b>
+        </span>
+        <span id="live-percent" class="text-blue-700 num">0%</span>
+        <button type="button" onclick="toggleLiveDetails()" class="text-[11px] text-slate-600 hover:underline font-bold">تفاصيل</button>
+        <button type="button" onclick="stopEngine()" class="ms-auto px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-sm transition">⏹ إيقاف</button>
+      </div>
+      <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+        <div id="live-progress-fill" class="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 rounded-full transition-all duration-300" style="width: 0%"></div>
+      </div>
+      <div id="live-details" class="hidden flex items-center gap-x-4 gap-y-1 flex-wrap text-[11px] text-slate-600 font-bold pt-0.5">
+        <span>⏳ متبقي تقريباً: <b id="live-remaining" class="num text-amber-800">-</b></span>
+        <span>🏪 متاجر فريدة: <b id="live-stores" class="num text-purple-800">0</b></span>
+        <span id="live-status-note" class="font-medium text-slate-500">جاري فتح صفحة فيسبوك واستخراج النتائج...</span>
+      </div>
+    </div>
+  </section>

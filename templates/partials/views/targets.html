@@ -1,0 +1,54 @@
+  <!-- VIEW: TARGETS (SPY ON PAGES, STORES, KEYWORDS) -->
+  <section id="view-targets" class="hidden space-y-4">
+    <!-- Add Target Card -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div>
+        <h3 class="font-bold text-[#102a56] text-sm">🎯 إضافة منافس جديد للتتبع</h3>
+        <p class="text-xs text-slate-500 mt-1">صفحة فيسبوك، متجر، كلمة مفتاحية أو رابط مكتبة إعلانات. الصفحات التي تتبّعها من إضافة المتصفح تظهر هنا أيضاً.</p>
+      </div>
+      <div id="schedule-off-note" class="hidden text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">⏸ الفحص الدوري التلقائي معطّل حالياً من الإعدادات — استعمل «فحص الآن» أو اطلب من المدير تفعيله.</div>
+      <div class="grid md:grid-cols-12 gap-3">
+        <select id="new-target-type" class="md:col-span-3 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <option value="page">صفحة فيسبوك (رابط أو ID)</option>
+          <option value="domain">دومين متجر (مثل bxrrt.com)</option>
+          <option value="keyword">كلمة مفتاحية</option>
+          <option value="custom_url">رابط مكتبة إعلانات كامل ومخصص</option>
+        </select>
+        <input id="new-target-value" placeholder="القيمة: رابط الصفحة، bxrrt.com، كلمة مفتاحية، أو رابط مخصص…" class="md:col-span-5 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <input id="new-target-label" placeholder="تسمية اختيارية (اسم المنافس)…" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <button onclick="addTarget()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl font-bold text-sm text-white px-4 py-2.5 transition shadow-sm">+ تتبّع المنافس</button>
+      </div>
+      <div class="flex items-center gap-4 text-xs text-slate-500 flex-wrap font-medium">
+        <span>فحص دوري كل:</span>
+        <input id="new-target-interval" type="number" min="1" value="12" class="w-16 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1 text-slate-800 font-bold text-center">
+        <span>ساعة</span>
+        <span>· يقوم النظام بفحص الهدف وسحب الإعلانات الجديدة فقط مع التوقف الذكي لتوفير الرام.</span>
+      </div>
+    </div>
+
+    <!-- Targets List Table -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/60">
+        <h4 class="font-bold text-[#102a56] text-sm">منافسوك <span id="targets-count" class="text-slate-400 font-semibold"></span></h4>
+        <div class="flex gap-2.5">
+          <button onclick="scanAllTargets()" class="text-xs bg-white hover:bg-[#eef6ff] text-blue-700 px-3.5 py-1.5 rounded-lg border border-[#cfe0f5] font-bold shadow-sm transition">⚡ فحص الكل الآن</button>
+          <button onclick="loadTargets()" class="text-xs text-slate-600 hover:text-blue-600 font-bold">تحديث</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-slate-500 text-xs bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="py-3 px-5 text-right font-bold">النوع</th>
+              <th class="text-right px-5 font-bold">المنافس</th>
+              <th class="text-right px-5 font-bold">النشاط</th>
+              <th class="text-right px-5 font-bold">التكرار</th>
+              <th class="text-right px-5 font-bold">آخر فحص</th>
+              <th class="text-center px-5 font-bold">إجراءات</th>
+            </tr>
+          </thead>
+          <tbody id="targets-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>

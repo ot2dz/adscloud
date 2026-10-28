@@ -1,0 +1,64 @@
+  <!-- VIEW: USERS (ADMIN ONLY) -->
+  <section id="view-users" class="hidden space-y-4">
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h3 class="font-bold text-[#102a56] text-sm">👥 قائمة المستخدمين المسجلين في النظام</h3>
+          <p class="text-xs text-slate-500 mt-1">التحكم في صلاحيات المستخدمين، تفعيل أو تجميد الحسابات، وترقية أو إزالة المدراء.</p>
+        </div>
+        <button onclick="loadAdminUsers()" class="text-xs bg-white hover:bg-[#eef6ff] text-slate-700 px-3.5 py-2 rounded-lg border border-[#cfe0f5] font-bold shadow-sm transition">تحديث القائمة</button>
+      </div>
+      <div class="grid md:grid-cols-12 gap-2 mt-4 text-sm">
+        <input id="new-user-email" type="email" placeholder="بريد المستخدم الجديد" class="md:col-span-4 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2">
+        <input id="new-user-password" type="password" placeholder="كلمة مرور (10 أحرف على الأقل)" autocomplete="new-password" class="md:col-span-4 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2">
+        <select id="new-user-role" class="md:col-span-2 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 font-semibold">
+          <option value="user">مستخدم عادي</option>
+          <option value="admin">مدير</option>
+        </select>
+        <button onclick="adminCreateUser()" class="md:col-span-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold px-3 py-2">+ إنشاء حساب</button>
+      </div>
+    </div>
+
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-slate-500 text-xs bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="py-3 px-5 text-right font-bold">#</th>
+              <th class="text-right px-5 font-bold">البريد الإلكتروني</th>
+              <th class="text-right px-5 font-bold">الصلاحية</th>
+              <th class="text-right px-5 font-bold">الحالة</th>
+              <th class="text-right px-5 font-bold">إعلانات محفوظة</th>
+              <th class="text-right px-5 font-bold">صفحات متتبعة</th>
+              <th class="text-right px-5 font-bold">تاريخ التسجيل</th>
+              <th class="text-right px-5 font-bold">آخر دخول</th>
+              <th class="text-center px-5 font-bold">الإجراءات</th>
+            </tr>
+          </thead>
+          <tbody id="admin-users-list" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Security audit log -->
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl overflow-hidden shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/60">
+        <h4 class="font-bold text-[#102a56] text-sm">🛡️ سجل الأحداث الأمنية</h4>
+        <button onclick="loadSecurityEvents()" class="text-xs text-slate-600 hover:text-blue-600 font-bold">تحديث</button>
+      </div>
+      <div class="overflow-x-auto max-h-96">
+        <table class="w-full text-xs">
+          <thead class="text-slate-500 bg-slate-50 border-b border-slate-200 sticky top-0">
+            <tr>
+              <th class="py-2 px-4 text-right font-bold">الوقت</th>
+              <th class="text-right px-4 font-bold">الحدث</th>
+              <th class="text-right px-4 font-bold">الحساب</th>
+              <th class="text-right px-4 font-bold">IP</th>
+              <th class="text-right px-4 font-bold">تفاصيل</th>
+            </tr>
+          </thead>
+          <tbody id="security-events" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MetaAds Spy — منصة تجسس إعلانات فيسبوك</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ asset_v }}">
+</head>
+<body class="min-h-screen">
+{% include "partials/header.html" %}
+{% include "partials/login.html" %}
+{% block content %}{% endblock %}
+<script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_v }}"></script>
+</body>
+</html>

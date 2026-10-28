@@ -1,0 +1,12 @@
+  <!-- Console Log Box -->
+  <section class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+    <div class="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+      <span>سجل الأحداث والمحرك</span>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="clearLogs()" class="text-[11px] px-2 py-0.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 font-bold">مسح</button>
+        <span class="text-[11px] text-slate-400 font-mono">Live Logs</span>
+      </div>
+    </div>
+    <pre id="log" class="text-xs bg-slate-900 text-slate-300 rounded-xl p-3.5 h-56 overflow-auto whitespace-pre-wrap leading-5 font-mono" dir="auto"></pre>
+  </section>
+
