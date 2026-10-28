@@ -164,7 +164,7 @@ def api_ext_track_page():
         return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
     data = request.get_json(force=True, silent=True) or {}
     page_id = str(data.get("facebook_page_id") or data.get("pageId") or "").strip()
-    page_name = data.get("page_name") or f"ط·آµط¸ظ¾ط·آ­ط·آ© {page_id}"
+    page_name = data.get("page_name") or f"صفحة {page_id}"
     if not page_id:
         return jsonify({"ok": False, "error": {"message": "facebook_page_id required"}}), 400
 
@@ -214,7 +214,7 @@ def api_ext_page_snapshot():
         return jsonify({"ok": False, "error": {"message": "unauthorized"}}), 401
     data = request.get_json(force=True, silent=True) or {}
     page_id = str(data.get("facebook_page_id") or "").strip()
-    page_name = data.get("page_name") or f"ط·آµط¸ظ¾ط·آ­ط·آ© {page_id}"
+    page_name = data.get("page_name") or f"صفحة {page_id}"
     ads = data.get("ads") or []
 
     if page_id:
@@ -318,7 +318,7 @@ def api_ext_sync_pages():
     return jsonify({"ok": True, "data": {"synced": len(items)}})
 
 
-# أ¢â€‌â‚¬أ¢â€‌â‚¬ Tracked Pages (Dashboard API) أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+# ── Tracked Pages (Dashboard API) ─────────────────────────────────────
 @bp.route("/api/tracked-pages", methods=["GET"])
 @login_required
 def api_tracked_pages():
@@ -330,7 +330,7 @@ def api_tracked_pages():
 def api_tracked_page_snapshots(page_id):
     uid = _scope_user_id()
     if uid is not None and g.user.get("role") != "admin" and str(page_id) not in db.list_user_page_ids(uid):
-        return jsonify({"ok": False, "error": "ط·ط›ط¸ظ¹ط·آ± ط¸â€¦ط·آ³ط¸â€¦ط¸ث†ط·آ­"}), 403
+        return jsonify({"ok": False, "error": "غير مسموح"}), 403
     return jsonify({"page_id": page_id, "snapshots": db.get_page_snapshots(page_id, limit=200)})
 
 

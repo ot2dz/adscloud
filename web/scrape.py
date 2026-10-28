@@ -78,16 +78,16 @@ def api_start():
             d_min, d_max, label = resolve_date_range("this_month")
         days = (_date.fromisoformat(d_max) - _date.fromisoformat(d_min)).days + 1
         if days > MARKET_MAX_DAYS:
-            return jsonify({"ok": False, "error": f"ط·آ§ط¸â€‍ط¸ظ¾ط·ع¾ط·آ±ط·آ© ط·آ·ط¸ث†ط¸ظ¹ط¸â€‍ط·آ© ط·آ¬ط·آ¯ط·آ§ط¸â€¹ ({days} ط¸ظ¹ط¸ث†ط¸â€¦ط·آ§ط¸â€¹). ط·آ§ط¸â€‍ط·آ­ط·آ¯ ط·آ§ط¸â€‍ط·آ£ط¸â€ڑط·آµط¸â€° {MARKET_MAX_DAYS} ط¸ظ¹ط¸ث†ط¸â€¦ط·آ§ط¸â€¹."}), 400
+            return jsonify({"ok": False, "error": f"الفترة طويلة جداً ({days} يوماً). الحد الأقصى {MARKET_MAX_DAYS} يوماً."}), 400
         job_id, queued = _queue_month_scrape("manual", start=d_min, end=d_max)
         return jsonify({"ok": True, "queued": queued, "job_id": job_id, "mode": MONTH_MODE,
                         "start_date_min": d_min, "start_date_max": d_max, "date_label": label, "days": days})
 
     raw = (cfg.get("query") or cfg.get("url") or "").strip()
     if not raw:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸ئ’ط·ع¾ط·آ¨ ط¸ئ’ط¸â€‍ط¸â€¦ط·آ© ط·آ£ط¸ث† ط·آ±ط·آ§ط·آ¨ط·آ· ط·آµط¸ظ¾ط·آ­ط·آ© ط·آ£ط¸ث† ط·آ¯ط¸ث†ط¸â€¦ط¸ظ¹ط¸â€  ط¸â€¦ط·ع¾ط·آ¬ط·آ± ط·آ£ط¸ث† ط·آ±ط·آ§ط·آ¨ط·آ· ط¸â€¦ط¸ئ’ط·ع¾ط·آ¨ط·آ© ط·آ¥ط·آ¹ط¸â€‍ط·آ§ط¸â€ ط·آ§ط·ع¾"}), 400
+        return jsonify({"ok": False, "error": "اكتب كلمة أو رابط صفحة أو دومين متجر أو رابط مكتبة إعلانات"}), 400
     if len(raw) > 2000:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط¸â€ ط·آµ ط·آ·ط¸ث†ط¸ظ¹ط¸â€‍ ط·آ¬ط·آ¯ط·آ§ط¸â€¹"}), 400
+        return jsonify({"ok": False, "error": "النص طويل جداً"}), 400
     country = (cfg.get("country") or DEFAULT_COUNTRY).strip().upper()
     if country != "ALL" and not (len(country) == 2 and country.isalpha()):
         country = DEFAULT_COUNTRY
@@ -97,7 +97,7 @@ def api_start():
         url = value
     elif kind == "page":
         if not value:
-            return jsonify({"ok": False, "error": "ط·آ±ط·آ§ط·آ¨ط·آ· ط·آ§ط¸â€‍ط·آµط¸ظ¾ط·آ­ط·آ© ط¸â€‍ط·آ§ ط¸ظ¹ط·آ­ط·ع¾ط¸ث†ط¸ظ¹ ط·آ±ط¸â€ڑط¸â€¦ط¸â€،ط·آ§ (ID). ط·آ§ط¸â€‍ط·آµط¸â€ڑ ط·آ±ط¸â€ڑط¸â€¦ ط·آ§ط¸â€‍ط·آµط¸ظ¾ط·آ­ط·آ© ط·آ£ط¸ث† ط·آ±ط·آ§ط·آ¨ط·آ· ط¢آ«ط¸ئ’ط¸â€‍ ط·آ¥ط·آ¹ط¸â€‍ط·آ§ط¸â€ ط·آ§ط·ع¾ ط·آ§ط¸â€‍ط·آµط¸ظ¾ط·آ­ط·آ©ط¢آ» ط¸â€¦ط¸â€  ط¸â€¦ط¸ئ’ط·ع¾ط·آ¨ط·آ© ط·آ§ط¸â€‍ط·آ¥ط·آ¹ط¸â€‍ط·آ§ط¸â€ ط·آ§ط·ع¾."}), 400
+            return jsonify({"ok": False, "error": "رابط الصفحة لا يحتوي رقمها (ID). الصق رقم الصفحة أو رابط «كل إعلانات الصفحة» من مكتبة الإعلانات."}), 400
         url = resolve_target_url("page", value, country=country)
     elif kind == "domain":
         query, exact = value, True   # every ad mentioning the store's domain
@@ -114,7 +114,7 @@ def api_start():
     )
     job_wakeup.set()
     if busy:
-        manager._emit("log", {"text": f"ظ‹ع؛â€¢â€™ ط·آ£ط¸عˆط·آ¶ط¸ظ¹ط¸ظ¾ ط·آ§ط¸â€‍ط·آ³ط·آ­ط·آ¨ ط¢آ«{query or url}ط¢آ» ط·آ¥ط¸â€‍ط¸â€° ط¸â€ڑط·آ§ط·آ¦ط¸â€¦ط·آ© ط·آ§ط¸â€‍ط·آ§ط¸â€ ط·ع¾ط·آ¸ط·آ§ط·آ± ط¸ث†ط·آ³ط¸ظ¹ط·آ¨ط·آ¯ط·آ£ ط·آ¨ط·آ¹ط·آ¯ ط·آ§ط¸â€ ط·ع¾ط¸â€،ط·آ§ط·طŒ ط·آ§ط¸â€‍ط·آ³ط·آ­ط·آ¨ ط·آ§ط¸â€‍ط·آ­ط·آ§ط¸â€‍ط¸ظ¹."})
+        manager._emit("log", {"text": f"🕒 أُضيف السحب «{query or url}» إلى قائمة الانتظار وسيبدأ بعد انتهاء السحب الحالي."})
     return jsonify({"ok": True, "queued": busy, "job_id": job_id, "kind": kind, "value": value,
                     "start_date_min": d_min, "start_date_max": d_max, "date_label": label, "date_scope": date_scope})
 
@@ -132,8 +132,8 @@ def api_stop():
             logger.exception("request_stop failed for job %s", jid)
     cancelled = db.cancel_pending_jobs(source="manual")
     if cancelled:
-        manager._emit("log", {"text": f"أ¢عˆآ¹ ط·آ£ط¸عˆط¸â€‍ط·ط›ط¸ظ¹ {cancelled} ط¸â€¦ط¸â€،ط¸â€¦ط·آ© ط¸ظ¾ط¸ظ¹ ط·آ§ط¸â€‍ط·آ§ط¸â€ ط·ع¾ط·آ¸ط·آ§ط·آ±."})
-    manager._emit("log", {"text": f"أ¢عˆآ¹ ط·ع¾ط¸â€¦ ط·آ¥ط·آ±ط·آ³ط·آ§ط¸â€‍ ط·آ£ط¸â€¦ط·آ± ط·آ§ط¸â€‍ط·آ¥ط¸ظ¹ط¸â€ڑط·آ§ط¸ظ¾{f' ط¸â€‍ط¸â€‍ط¸â€¦ط¸â€،ط¸â€¦ط·آ© #{jid}' if jid else ''}."})
+        manager._emit("log", {"text": f"⏹ أُلغي {cancelled} مهمة في الانتظار."})
+    manager._emit("log", {"text": f"⏹ تم إرسال أمر الإيقاف{f' للمهمة #{jid}' if jid else ''}."})
     return jsonify({"ok": True, "job_id": jid, "cancelled": cancelled})
 
 
@@ -168,7 +168,7 @@ def api_stream():
                              "Connection": "keep-alive"})
 
 
-# أ¢â€‌â‚¬أ¢â€‌â‚¬ Data Endpoints أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+# ── Data Endpoints ────────────────────────────────────────────────────
 def _token_matches(provided: str, expected: str) -> bool:
     """Constant-time compare; an unset secret never matches anything."""
     import hmac
@@ -203,7 +203,7 @@ def api_ingest():
     return jsonify({"ok": True, "received": len(ads), "stored": stored})
 
 
-# أ¢â€‌â‚¬أ¢â€‌â‚¬ Remote Job Queue أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+# ── Remote Job Queue ──────────────────────────────────────────────────
 def _worker_token() -> str:
     return (os.environ.get("WORKER_TOKEN") or os.environ.get("INGEST_TOKEN") or "").strip()
 
@@ -325,12 +325,12 @@ def api_job_stop(job_id):
     return jsonify({"ok": True})
 
 
-# أ¢â€‌â‚¬أ¢â€‌â‚¬ Competitors (per user: Pages, Stores, Keywords, Custom URLs) أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+# ── Competitors (per user: Pages, Stores, Keywords, Custom URLs) ──────
 @bp.route("/api/status-check/start", methods=["POST"])
 @admin_required
 def api_status_check_start():
     if db.has_open_mode_job(STATUS_MODE):
-        return jsonify({"ok": False, "error": "ط¸ظ¾ط·آ­ط·آµ ط·آ§ط¸â€‍ط·آ­ط·آ§ط¸â€‍ط·آ© ط¸â€¦ط¸ث†ط·آ¬ط¸ث†ط·آ¯ ط¸ظ¾ط¸ظ¹ ط·آ§ط¸â€‍ط¸â€ڑط·آ§ط·آ¦ط¸â€¦ط·آ© ط·آ£ط¸ث† ط¸ظ¹ط·آ¹ط¸â€¦ط¸â€‍ ط·آ§ط¸â€‍ط·آ¢ط¸â€ ."}), 409
+        return jsonify({"ok": False, "error": "فحص الحالة موجود في القائمة أو يعمل الآن."}), 409
     job_id, queued = _queue_status_check("manual")
     return jsonify({"ok": True, "job_id": job_id, "queued": queued})
 

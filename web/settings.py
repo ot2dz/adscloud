@@ -115,7 +115,7 @@ def api_set_settings():
         db._load_blocked_domains()
         purged = db.purge_blocked_ads()
         if purged:
-            manager._emit("log", {"text": f"ظ‹ع؛آ§آ¹ ط·آ­ط¸عˆط·آ°ط¸ظ¾ {purged} ط·آ¥ط·آ¹ط¸â€‍ط·آ§ط¸â€ ط¸â€¹ط·آ§ ط¸â€‍ط·آ´ط·آ±ط¸ئ’ط·آ§ط·ع¾ ط¸ئ’ط·آ¨ط·آ±ط¸â€° ط¸â€¦ط¸â€  ط·آ§ط¸â€‍ط¸â€ڑط·آ§ط·آ¹ط·آ¯ط·آ©."})
+            manager._emit("log", {"text": f"🧹 حُذف {purged} إعلانًا لشركات كبرى من القاعدة."})
     _audit("settings_changed", ",".join(sorted(k for k in cfg if k not in ("telegram_token", "meta_ads_proxy"))) +
            (",telegram_token" if "telegram_token" in cfg else "") +
            (",meta_ads_proxy" if "meta_ads_proxy" in cfg else ""))
@@ -130,7 +130,7 @@ def api_proxy_test():
     spec = (str(cfg.get("meta_ads_proxy") or "")).strip() or _proxy_setting() \
         or (os.environ.get("META_ADS_PROXY") or "").strip()
     if not spec:
-        return jsonify({"ok": False, "error": "ط¸â€‍ط·آ§ ط¸ظ¹ط¸ث†ط·آ¬ط·آ¯ ط·آ¨ط·آ±ط¸ث†ط¸ئ’ط·آ³ط¸ظ¹ ط¸â€¦ط·آ¶ط·آ¨ط¸ث†ط·آ·"}), 400
+        return jsonify({"ok": False, "error": "لا يوجد بروكسي مضبوط"}), 400
 
     from meta_ads_collector.proxy_pool import parse_proxy, _redact_proxy
     from curl_cffi import requests as creq
@@ -140,7 +140,7 @@ def api_proxy_test():
         try:
             purl = parse_proxy(raw)
         except Exception as exc:  # noqa: BLE001
-            results.append({"proxy": "proxy", "ok": False, "error": f"ط·آµط¸ظ¹ط·ط›ط·آ© ط·ط›ط¸ظ¹ط·آ± ط·آµط·آ­ط¸ظ¹ط·آ­ط·آ©: {exc}"})
+            results.append({"proxy": "proxy", "ok": False, "error": f"صيغة غير صحيحة: {exc}"})
             continue
         label = _redact_proxy(purl)
         try:
@@ -192,11 +192,11 @@ def api_schedule_run_now():
         )
         db.update_target_scraped(t["id"])
         count += 1
-    manager.events.put({"type": "log", "data": {"text": f"أ¢ع‘طŒ ط·ع¾ط¸â€¦ ط·آ¥ط·آ·ط¸â€‍ط·آ§ط¸â€ڑ ط¸ظ¾ط·آ­ط·آµ ط·آ´ط·آ§ط¸â€¦ط¸â€‍ ط¸â€‍ط¸â‚¬ {count} ط·آ£ط¸â€،ط·آ¯ط·آ§ط¸ظ¾ ط¸â€¦ط·آ¬ط·آ¯ط¸ث†ط¸â€‍ط·آ© ط·آ§ط¸â€‍ط·آ¢ط¸â€ ."}})
+    manager.events.put({"type": "log", "data": {"text": f"⚡ تم إطلاق فحص شامل لـ {count} أهداف مجدولة الآن."}})
     return jsonify({"ok": True, "enqueued": count})
 
 
-# أ¢â€‌â‚¬أ¢â€‌â‚¬ Chrome Extension (adlibrary) Integration API أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+# ── Chrome Extension (adlibrary) Integration API ───────────────────────
 
 
 

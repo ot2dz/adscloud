@@ -57,7 +57,7 @@ def api_auth_login():
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
     if not email or not password:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط·آ¨ط·آ±ط¸ظ¹ط·آ¯ ط·آ§ط¸â€‍ط·آ¥ط¸â€‍ط¸ئ’ط·ع¾ط·آ±ط¸ث†ط¸â€ ط¸ظ¹ ط¸ث†ط¸ئ’ط¸â€‍ط¸â€¦ط·آ© ط·آ§ط¸â€‍ط¸â€¦ط·آ±ط¸ث†ط·آ± ط¸â€¦ط·آ·ط¸â€‍ط¸ث†ط·آ¨ط·آ§ط¸â€ "}), 400
+        return jsonify({"ok": False, "error": "البريد الإلكتروني وكلمة المرور مطلوبان"}), 400
 
     user, err, code = _check_credentials(email, password)
     if not user:
@@ -79,31 +79,31 @@ def api_auth_login():
 @bp.route("/api/auth/register", methods=["POST"])
 def api_auth_register():
     if not _registration_open():
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط·ع¾ط·آ³ط·آ¬ط¸ظ¹ط¸â€‍ ط¸â€¦ط·ط›ط¸â€‍ط¸â€ڑ ط·آ­ط·آ§ط¸â€‍ط¸ظ¹ط·آ§ط¸â€¹. ط·آ§ط·آ·ط¸â€‍ط·آ¨ ط¸â€¦ط¸â€  ط·آ§ط¸â€‍ط¸â€¦ط·آ¯ط¸ظ¹ط·آ± ط¸ظ¾ط·ع¾ط·آ­ط¸â€، ط·آ£ط¸ث† ط·آ¥ط¸â€ ط·آ´ط·آ§ط·طŒ ط·آ­ط·آ³ط·آ§ط·آ¨ط¸ئ’."}), 403
+        return jsonify({"ok": False, "error": "التسجيل مغلق حالياً. اطلب من المدير فتحه أو إنشاء حسابك."}), 403
     if db.count_attempts("register", 60, _client_ip()) >= REGISTER_MAX_PER_IP_HOUR:
-        return jsonify({"ok": False, "error": "ط¸â€¦ط·آ­ط·آ§ط¸ث†ط¸â€‍ط·آ§ط·ع¾ ط·ع¾ط·آ³ط·آ¬ط¸ظ¹ط¸â€‍ ط¸ئ’ط·آ«ط¸ظ¹ط·آ±ط·آ© ط¸â€¦ط¸â€  ط¸â€،ط·آ°ط·آ§ ط·آ§ط¸â€‍ط·آ¬ط¸â€،ط·آ§ط·آ². ط·آ­ط·آ§ط¸ث†ط¸â€‍ ط¸â€‍ط·آ§ط·آ­ط¸â€ڑط·آ§ط¸â€¹."}), 429
+        return jsonify({"ok": False, "error": "محاولات تسجيل كثيرة من هذا الجهاز. حاول لاحقاً."}), 429
     data = request.get_json(force=True, silent=True) or {}
     email = str(data.get("email") or "").strip().lower()
     password = str(data.get("password") or "")
     if not email or not password:
-        return jsonify({"ok": False, "error": "ط¸ظ¹ط·آ±ط·آ¬ط¸â€° ط¸â€¦ط¸â€‍ط·طŒ ط·آ¬ط¸â€¦ط¸ظ¹ط·آ¹ ط·آ§ط¸â€‍ط·آ­ط¸â€ڑط¸ث†ط¸â€‍ ط·آ§ط¸â€‍ط¸â€¦ط·آ·ط¸â€‍ط¸ث†ط·آ¨ط·آ©"}), 400
+        return jsonify({"ok": False, "error": "يرجى ملء جميع الحقول المطلوبة"}), 400
     import re as _re
     if len(email) > 254 or not _re.fullmatch(r"[^@\s<>\"'`]+@[^@\s<>\"'`]+\.[A-Za-z]{2,}", email):
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط·آ¨ط·آ±ط¸ظ¹ط·آ¯ ط·آ§ط¸â€‍ط·آ¥ط¸â€‍ط¸ئ’ط·ع¾ط·آ±ط¸ث†ط¸â€ ط¸ظ¹ ط·ط›ط¸ظ¹ط·آ± ط·آµط·آ§ط¸â€‍ط·آ­"}), 400
+        return jsonify({"ok": False, "error": "البريد الإلكتروني غير صالح"}), 400
     if len(password) < MIN_PASSWORD_LEN:
-        return jsonify({"ok": False, "error": f"ط¸ئ’ط¸â€‍ط¸â€¦ط·آ© ط·آ§ط¸â€‍ط¸â€¦ط·آ±ط¸ث†ط·آ± ط¸ظ¹ط·آ¬ط·آ¨ ط·آ£ط¸â€  ط¸â€‍ط·آ§ ط·ع¾ط¸â€ڑط¸â€‍ ط·آ¹ط¸â€  {MIN_PASSWORD_LEN} ط·آ£ط·آ­ط·آ±ط¸ظ¾"}), 400
+        return jsonify({"ok": False, "error": f"كلمة المرور يجب أن لا تقل عن {MIN_PASSWORD_LEN} أحرف"}), 400
     if password.lower() == email or password.lower() in email or len(set(password)) < 4:
-        return jsonify({"ok": False, "error": "ط¸ئ’ط¸â€‍ط¸â€¦ط·آ© ط·آ§ط¸â€‍ط¸â€¦ط·آ±ط¸ث†ط·آ± ط·آ¶ط·آ¹ط¸ظ¹ط¸ظ¾ط·آ© ط·آ¬ط·آ¯ط·آ§ط¸â€¹"}), 400
+        return jsonify({"ok": False, "error": "كلمة المرور ضعيفة جداً"}), 400
     db.record_auth_attempt("register", email, _client_ip(), True)
 
     existing = db.get_user_by_email(email)
     if existing:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط·آ¨ط·آ±ط¸ظ¹ط·آ¯ ط·آ§ط¸â€‍ط·آ¥ط¸â€‍ط¸ئ’ط·ع¾ط·آ±ط¸ث†ط¸â€ ط¸ظ¹ ط¸â€¦ط·آ³ط·آ¬ط¸â€‍ ط¸â€¦ط·آ³ط·آ¨ط¸â€ڑط·آ§ط¸â€¹"}), 400
+        return jsonify({"ok": False, "error": "البريد الإلكتروني مسجل مسبقاً"}), 400
 
     hashed = generate_password_hash(password)
     user_id = db.create_user(email=email, password_hash=hashed, role="user", is_active=1)
     if not user_id:
-        return jsonify({"ok": False, "error": "ط¸ظ¾ط·آ´ط¸â€‍ ط·آ¥ط¸â€ ط·آ´ط·آ§ط·طŒ ط·آ§ط¸â€‍ط·آ­ط·آ³ط·آ§ط·آ¨ط·إ’ ط¸ظ¹ط·آ±ط·آ¬ط¸â€° ط·آ§ط¸â€‍ط¸â€¦ط·آ­ط·آ§ط¸ث†ط¸â€‍ط·آ© ط¸â€‍ط·آ§ط·آ­ط¸â€ڑط·آ§ط¸â€¹"}), 500
+        return jsonify({"ok": False, "error": "فشل إنشاء الحساب، يرجى المحاولة لاحقاً"}), 500
 
     _start_session({"id": user_id, "email": email, "role": "user"})
     _audit("register", "", user={"id": user_id, "email": email})
@@ -160,7 +160,7 @@ def api_revoke_my_extension_tokens():
     return jsonify({"ok": True, "revoked": n})
 
 
-# أ¢â€‌â‚¬أ¢â€‌â‚¬ Admin User Management Endpoints أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+# ── Admin User Management Endpoints ────────────────────────────────────
 @bp.route("/api/admin/users", methods=["GET"])
 @admin_required
 def api_admin_users():
@@ -171,10 +171,10 @@ def api_admin_users():
 @admin_required
 def api_admin_toggle_user_status(user_id):
     if user_id == int(g.user["id"]):
-        return jsonify({"ok": False, "error": "ط¸â€‍ط·آ§ ط¸ظ¹ط¸â€¦ط¸ئ’ط¸â€ ط¸ئ’ ط·ع¾ط·آ¹ط·آ·ط¸ظ¹ط¸â€‍ ط·آ­ط·آ³ط·آ§ط·آ¨ط¸ئ’ ط·آ§ط¸â€‍ط·آ­ط·آ§ط¸â€‍ط¸ظ¹"}), 400
+        return jsonify({"ok": False, "error": "لا يمكنك تعطيل حسابك الحالي"}), 400
     user = db.get_user_by_id(user_id)
     if not user:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط¸â€¦ط·آ³ط·ع¾ط·آ®ط·آ¯ط¸â€¦ ط·ط›ط¸ظ¹ط·آ± ط¸â€¦ط¸ث†ط·آ¬ط¸ث†ط·آ¯"}), 404
+        return jsonify({"ok": False, "error": "المستخدم غير موجود"}), 404
     new_status = not bool(user.get("is_active"))
     db.update_user_status(user_id, new_status)
     _audit("user_enabled" if new_status else "user_disabled", f"target={user['email']}")
@@ -185,12 +185,12 @@ def api_admin_toggle_user_status(user_id):
 @admin_required
 def api_admin_update_user_role(user_id):
     if user_id == int(g.user["id"]):
-        return jsonify({"ok": False, "error": "ط¸â€‍ط·آ§ ط¸ظ¹ط¸â€¦ط¸ئ’ط¸â€ ط¸ئ’ ط·ع¾ط·ط›ط¸ظ¹ط¸ظ¹ط·آ± ط·آ±ط·ع¾ط·آ¨ط·آ© ط·آ­ط·آ³ط·آ§ط·آ¨ط¸ئ’ ط·آ§ط¸â€‍ط·آ­ط·آ§ط¸â€‍ط¸ظ¹"}), 400
+        return jsonify({"ok": False, "error": "لا يمكنك تغيير رتبة حسابك الحالي"}), 400
     data = request.get_json(force=True, silent=True) or {}
     new_role = "admin" if data.get("role") == "admin" else "user"
     target = db.get_user_by_id(user_id)
     if not target:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط¸â€¦ط·آ³ط·ع¾ط·آ®ط·آ¯ط¸â€¦ ط·ط›ط¸ظ¹ط·آ± ط¸â€¦ط¸ث†ط·آ¬ط¸ث†ط·آ¯"}), 404
+        return jsonify({"ok": False, "error": "المستخدم غير موجود"}), 404
     db.update_user_role(user_id, new_role)
     _audit("role_changed", f"target={target['email']} {target.get('role')}->{new_role}")
     return jsonify({"ok": True, "role": new_role})
@@ -200,7 +200,7 @@ def api_admin_update_user_role(user_id):
 @admin_required
 def api_admin_delete_user(user_id):
     if user_id == int(g.user["id"]):
-        return jsonify({"ok": False, "error": "ط¸â€‍ط·آ§ ط¸ظ¹ط¸â€¦ط¸ئ’ط¸â€ ط¸ئ’ ط·آ­ط·آ°ط¸ظ¾ ط·آ­ط·آ³ط·آ§ط·آ¨ط¸ئ’ ط·آ§ط¸â€‍ط·آ­ط·آ§ط¸â€‍ط¸ظ¹"}), 400
+        return jsonify({"ok": False, "error": "لا يمكنك حذف حسابك الحالي"}), 400
     target = db.get_user_by_id(user_id)
     db.delete_user(user_id)
     _audit("user_deleted", f"target={(target or {}).get('email', user_id)}")
@@ -217,11 +217,11 @@ def api_admin_create_user():
     password = str(data.get("password") or "")
     role = "admin" if data.get("role") == "admin" else "user"
     if len(email) > 254 or not _re.fullmatch(r"[^@\s<>\"'`]+@[^@\s<>\"'`]+\.[A-Za-z]{2,}", email):
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط·آ¨ط·آ±ط¸ظ¹ط·آ¯ ط·آ§ط¸â€‍ط·آ¥ط¸â€‍ط¸ئ’ط·ع¾ط·آ±ط¸ث†ط¸â€ ط¸ظ¹ ط·ط›ط¸ظ¹ط·آ± ط·آµط·آ§ط¸â€‍ط·آ­"}), 400
+        return jsonify({"ok": False, "error": "البريد الإلكتروني غير صالح"}), 400
     if len(password) < MIN_PASSWORD_LEN:
-        return jsonify({"ok": False, "error": f"ط¸ئ’ط¸â€‍ط¸â€¦ط·آ© ط·آ§ط¸â€‍ط¸â€¦ط·آ±ط¸ث†ط·آ± ط¸ظ¹ط·آ¬ط·آ¨ ط·آ£ط¸â€  ط¸â€‍ط·آ§ ط·ع¾ط¸â€ڑط¸â€‍ ط·آ¹ط¸â€  {MIN_PASSWORD_LEN} ط·آ£ط·آ­ط·آ±ط¸ظ¾"}), 400
+        return jsonify({"ok": False, "error": f"كلمة المرور يجب أن لا تقل عن {MIN_PASSWORD_LEN} أحرف"}), 400
     if db.get_user_by_email(email):
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط·آ¨ط·آ±ط¸ظ¹ط·آ¯ ط·آ§ط¸â€‍ط·آ¥ط¸â€‍ط¸ئ’ط·ع¾ط·آ±ط¸ث†ط¸â€ ط¸ظ¹ ط¸â€¦ط·آ³ط·آ¬ط¸â€‍ ط¸â€¦ط·آ³ط·آ¨ط¸â€ڑط·آ§ط¸â€¹"}), 400
+        return jsonify({"ok": False, "error": "البريد الإلكتروني مسجل مسبقاً"}), 400
     uid = db.create_user(email=email, password_hash=generate_password_hash(password), role=role, is_active=1)
     _audit("user_created_by_admin", f"target={email} role={role}")
     return jsonify({"ok": True, "id": uid})
@@ -233,7 +233,7 @@ def api_admin_sign_out_user(user_id):
     """Force a user out everywhere: dashboard sessions and extension tokens."""
     target = db.get_user_by_id(user_id)
     if not target:
-        return jsonify({"ok": False, "error": "ط·آ§ط¸â€‍ط¸â€¦ط·آ³ط·ع¾ط·آ®ط·آ¯ط¸â€¦ ط·ط›ط¸ظ¹ط·آ± ط¸â€¦ط¸ث†ط·آ¬ط¸ث†ط·آ¯"}), 404
+        return jsonify({"ok": False, "error": "المستخدم غير موجود"}), 404
     s, t = db.revoke_user_sessions(user_id), db.revoke_api_tokens(user_id)
     _audit("user_signed_out_by_admin", f"target={target['email']} sessions={s} tokens={t}")
     return jsonify({"ok": True, "sessions": s, "tokens": t})
