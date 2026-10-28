@@ -7,7 +7,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from db import db
-from scrape_manager import manager, job_wakeup, DEFAULT_COUNTRY
+from pages import resolve_target_url
+from scrape_manager import (
+    manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, _proxy_setting,
+)
 
 logger = logging.getLogger("web_app")
 
