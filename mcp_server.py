@@ -348,6 +348,10 @@ def main() -> None:
                 return JSONResponse({"ok": True, "service": "adscloud-mcp"})
             auth = request.headers.get("authorization", "")
             provided = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
+            if not provided:
+                provided = (request.headers.get("x-mcp-token", "")
+                            or request.query_params.get("token", "")
+                            or request.query_params.get("access_token", "")).strip()
             if not provided or not hmac.compare_digest(provided, token):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
             return await call_next(request)
