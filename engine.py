@@ -111,6 +111,62 @@ IN_RUN_RETRY_WAITS = (30, 120)
 # are exhausted and the rest of the scan is wasted requests. 0 disables it.
 LAUNCH_EARLY_STOP = int(_env_float("META_ADS_LAUNCH_EARLY_STOP", 500))
 
+# Smart slowdown. Meta answers a rate-limited IP with *empty* results (HTTP 200)
+# instead of an error, which used to end a scrape as if it were finished. When
+# a run ends on an empty page (or on endless empty pages), one probe request
+# for "any ad in Algeria" tells a real end from a block. On a block the pace
+# slows down, the run pauses, then resumes from the last good page.
+BLOCK_PAUSES_MIN = tuple(int(x) for x in (os.environ.get("META_ADS_BLOCK_PAUSES_MIN") or "20,40").split(",") if x.strip())
+PACE_MAX_DELAY = 6.0
+PACE_AFTER_BLOCK = 1.5      # never faster than this once a block was seen
+
+
+class Pace:
+    """Delay between requests, shared by every scrape of this process."""
+
+    def __init__(self, base: float):
+        self.base = base
+        self.delay = base
+        self.blocks = 0
+        self._ok_pages = 0
+
+    def slow_down(self) -> float:
+        self.blocks += 1
+        self._ok_pages = 0
+        self.delay = min(PACE_MAX_DELAY, max(PACE_AFTER_BLOCK, self.delay * 2))
+        return self.delay
+
+    def page_ok(self) -> float:
+        """Every 20 good pages, creep back 10% toward the base pace."""
+        self._ok_pages += 1
+        if self._ok_pages >= 20 and self.delay > self.base:
+            self._ok_pages = 0
+            floor = PACE_AFTER_BLOCK if self.blocks else self.base
+            self.delay = max(floor, round(self.delay * 0.9, 2))
+        return self.delay
+
+
+PACE = Pace(REQUEST_DELAY)
+
+
+def meta_blocked(proxy: Optional[str] = None) -> bool:
+    """One request for any ad running in Algeria: none at all = blocked."""
+    collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=0, jitter=0)
+    try:
+        for _ in collector.search(query='" "', country="DZ", status=STATUS_ACTIVE, search_type=SEARCH_EXACT,
+                                  sort_by=SORT_RELEVANCY_MONTHLY_GROUPED, max_results=1):
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.info("block probe failed: %s", exc)
+        return True
+    finally:
+        try:
+            collector.close()
+        except Exception:
+            pass
+
+
 # Errors that will not go away by retrying the same cursor.
 _PERMANENT_ERRORS = ("Repeated pagination cursor", "consecutive empty pages")
 
@@ -131,7 +187,7 @@ def active_ads_of_pages(page_ids: list, country: str = "DZ", proxy: Optional[str
     be used to decide that an ad stopped.
     """
     from meta_ads_collector.constants import SEARCH_EXACT as _EXACT
-    collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=delay, jitter=jitter)
+    collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=max(delay, PACE.delay), jitter=jitter)
     ads: list = []
     complete = False
     try:
@@ -343,19 +399,40 @@ def scrape(
     older_streak = 0
     early_stopped = False
 
+    collector = None
+
     def _checkpoint(next_cursor: Optional[str]) -> None:
         nonlocal exhausted
         res.cursor = next_cursor
         exhausted = next_cursor is None
+        if collector is not None:
+            collector.rate_limit_delay = PACE.page_ok()
         if on_checkpoint:
             on_checkpoint(next_cursor)
+
+    block_pauses = 0
+
+    def _on_block() -> bool:
+        """Slow down and pause; False = out of pauses (run is interrupted)."""
+        nonlocal block_pauses
+        delay = PACE.slow_down()
+        if block_pauses >= len(BLOCK_PAUSES_MIN):
+            res.interrupted = True
+            res.error = "حظر مؤقت من Meta (نتائج فارغة) — سيُستأنف لاحقاً من نفس النقطة"
+            progress(f"⏸ {res.error}.")
+            return False
+        wait_min = BLOCK_PAUSES_MIN[block_pauses]
+        block_pauses += 1
+        progress(f"🐢 Meta بدأت تُرجع نتائج فارغة (حظر مؤقت) — إبطاء السحب إلى {delay:.1f} ث بين الطلبات، "
+                 f"استراحة {wait_min} دقيقة ثم استئناف من آخر صفحة ({block_pauses}/{len(BLOCK_PAUSES_MIN)}).")
+        return True
 
     if resume_cursor:
         progress("↩️ استئناف السحب من آخر نقطة محفوظة (بدون إعادة الصفحات السابقة).")
 
     attempt = 0
     while True:
-        collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=REQUEST_DELAY,
+        collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=PACE.delay,
                                      jitter=REQUEST_JITTER)
         try:
             # Best-effort estimated count (one extra request; never fatal).
@@ -422,7 +499,18 @@ def scrape(
                 if total % 25 == 0:
                     progress(f"… تم جمع {total} إعلان")
             # Generator ended normally: exhausted, max_results reached, smart
-            # stop, or user stop.
+            # stop, user stop - or an empty page that may be a soft block.
+            ended_on_empty_page = (not exhausted and not early_stopped and not res.stopped
+                                   and not (max_results and scanned >= max_results))
+            if ended_on_empty_page:
+                if meta_blocked(proxy):
+                    if not _on_block():
+                        break
+                    if _sleep_unless_stopped(BLOCK_PAUSES_MIN[block_pauses - 1] * 60, should_stop):
+                        res.stopped = True
+                        break
+                    continue
+                _checkpoint(None)  # Meta answers normally: this search is really over
             if early_stopped and not res.stopped:
                 _checkpoint(None)  # nothing left worth fetching for this window
             res.completed = (exhausted or early_stopped) and not res.stopped
@@ -432,6 +520,14 @@ def scrape(
             if should_stop and should_stop():
                 res.stopped = True
                 break
+            if "consecutive empty pages" in str(exc) and meta_blocked(proxy):
+                res.error = ""
+                if not _on_block():
+                    break
+                if _sleep_unless_stopped(BLOCK_PAUSES_MIN[block_pauses - 1] * 60, should_stop):
+                    res.stopped = True
+                    break
+                continue
             if _is_permanent(exc):
                 logger.error("HTTP scrape failed permanently: %s", exc)
                 progress(f"⛔ خطأ دائم، لن تتم إعادة المحاولة: {exc}")
