@@ -101,7 +101,9 @@ def api_start():
             return jsonify({"ok": False, "error": "رابط الصفحة لا يحتوي رقمها (ID). الصق رقم الصفحة أو رابط «كل إعلانات الصفحة» من مكتبة الإعلانات."}), 400
         url = resolve_target_url("page", value, country=country)
     elif kind == "domain":
-        query, exact = value, True   # every ad mentioning the store's domain
+        # Meta matches the destination domain in the ad link; the exact-phrase
+        # flag would search the copy only and return nothing for most stores.
+        query, exact = value, bool(cfg.get("exact", False))
     else:
         query = value
 
