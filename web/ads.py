@@ -71,6 +71,18 @@ def api_ads():
     if request.args.get("group", "0") == "1":
         # One card per product (same advertiser + same product link); paging
         # and ``total`` count products, ``total_ads`` the ads behind them.
+        if sort_by == "hunter":
+            # Rank by Hunter Score: score the most recent candidates, then
+            # sort in Python (the score needs keyword/age maths SQL lacks).
+            pool = min(600, max(limit * 8, 200))
+            rows = scoring.attach(db.attach_entity_stats(
+                db.get_ad_groups(limit=pool, offset=0, sort_by="collected_at", **filters)))
+            rows.sort(key=lambda r: (r.get("hunter", {}).get("score", 0),
+                                     (r.get("group") or {}).get("active", 0)), reverse=True)
+            return jsonify({"ads": rows[offset:offset + limit],
+                            "total": db.count_ad_groups(**filters),
+                            "total_ads": total_ads, "grouped": True,
+                            "ranked": "hunter", "ranked_pool": len(rows)})
         items = scoring.attach(db.attach_entity_stats(
             db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters)))
         return jsonify({"ads": items, "total": db.count_ad_groups(**filters),

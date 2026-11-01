@@ -430,6 +430,7 @@ function fmtDayAr(d) {
 function adCardHtml(raw, opts = {}) {
     const a = escAd(raw);
     const g = (!opts.plain && a.group && a.group.count > 1) ? a.group : null;
+    const h = (!opts.plain && raw.hunter) ? raw.hunter : null;
     const tone = g ? groupTone(g.count) : null;
     const days = Math.max(a.days_active || 1, g ? g.max_days : 0);
     const isWin = days >= 5 && a.is_active;
@@ -473,6 +474,7 @@ function adCardHtml(raw, opts = {}) {
         </div>
 
         <div class="flex items-center gap-3 text-[11.5px] text-slate-600 flex-wrap">
+          ${h ? `<span class="px-1.5 py-0.5 rounded font-bold (h.label === 'strong' ? 'bg-emerald-100 text-emerald-700' : (h.label === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600')) + "' title="قوة المنتج">\u25cf <b class="num">${h.score}</b></span>` : ''}
           ${a.start_date ? `<span title="تاريخ الإطلاق">📅 ${fmtDayAr(a.start_date)}</span>` : ''}
           <span title="الأيام النشطة">⏱️ <b class="num text-slate-800">${days}</b> ${days === 1 ? 'يوم' : 'أيام'}</span>
           ${a.domain_total_ads != null ? `<span title="إجمالي إعلانات المتجر">🏪 <b class="num text-slate-800">${a.domain_total_ads}</b> للمتجر</span>` : ''}
