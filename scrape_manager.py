@@ -25,7 +25,6 @@ MARKET_WILDCARD = '" "'   # Meta exact-phrase wildcard: matches every ad
 STATUS_MODE = "status_check"  # daily "is it still running?" check (status_check.py)
 
 SCRAPE_ENABLED = os.environ.get("SCRAPE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
-PARALLEL_WORKERS = max(1, int(os.environ.get("SCRAPE_PARALLEL", "1") or "1"))
 
 def _proxy_setting() -> str:
     """Proxy saved from Settings (empty -> engine falls back to META_ADS_PROXY)."""
@@ -239,37 +238,7 @@ class ScrapeManager:
                 start_pass = max(1, int(resume.get("pass") or 1))
                 if start_pass > 1:
                     progress(f"↩️ استئناف من الشريحة {start_pass}/{total_passes}.")
-                if PARALLEL_WORKERS > 1 and total_passes > 1:
-                    from parallel_passes import run_passes
-                    done = set(resume.get("done") or [])
-
-                    def _runner(idx, p):
-                        progress(f"[par] {idx}/{total_passes}: {p['label']}")
-                        self._emit("slice_update", {"pass": idx, "total_passes": total_passes,
-                                                    "label": p["label"],
-                                                    "accumulated": (base_count + len(seen_ad_ids))})
-                        return scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
-                                      sort_mode="relevancy_monthly_grouped",
-                                      start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
-                                      content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
-                                      progress=progress, on_ad=on_ad, on_scanned=on_scanned,
-                                      should_stop=lambda: self.stop_event.is_set(), proxy=proxy_spec,
-                                      resume_cursor=None, on_checkpoint=None)
-
-                    def _pass_done(idx, keep):
-                        done.add(idx)
-                        nxt = min((n for n in range(1, total_passes + 1) if n not in done),
-                                  default=total_passes + 1)
-                        outcome["checkpoint"] = {"pass": nxt, "cursor": None, "done": sorted(done)}
-
-                    _par = run_passes(passes, start_pass=start_pass, done=done,
-                                      workers=PARALLEL_WORKERS, runner=_runner, absorb=absorb,
-                                      should_stop=lambda: self.stop_event.is_set(),
-                                      progress=progress, on_pass_done=_pass_done)
-                    if _par["aborted"] and self.stop_event.is_set():
-                        outcome["status"] = "stopped"
-
-                for idx, p in ((enumerate(passes, 1)) if not (PARALLEL_WORKERS > 1 and total_passes > 1) else ()):
+                for idx, p in enumerate(passes, 1):
                     if idx < start_pass:
                         continue
                     if self.stop_event.is_set():
