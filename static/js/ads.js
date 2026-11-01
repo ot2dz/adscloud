@@ -248,6 +248,7 @@ function openAdDetails(adId) {
   const box = document.getElementById('ad-modal-body');
   const title = document.getElementById('ad-modal-title');
   const g = a.group || null;
+  const h = a.hunter || null;
   title.textContent = a.page_name || 'تفاصيل الإعلان';
   lastAdBody = a.body || '';
 
@@ -294,10 +295,16 @@ function openAdDetails(adId) {
     if (g.last_launch) rows.push(row('آخر إطلاق للمنتج', escT(String(g.last_launch).slice(0, 10)), 'font-mono'));
     if (g.texts) rows.push(row('نصوص مختلفة', g.texts, 'num'));
   }
+  if (h) {
+    const _hl = h.label === 'strong' ? '\u0645\u0631\u0634\u062d \u0642\u0648\u064a' : (h.label === 'medium' ? '\u0645\u062a\u0648\u0633\u0637' : '\u0636\u0639\u064a\u0641');
+    const _hc = h.label === 'strong' ? 'text-emerald-700' : (h.label === 'medium' ? 'text-amber-600' : 'text-rose-600');
+    rows.push(row('\u0642\u0648\u0629 \u0627\u0644\u0645\u0646\u062a\u062c', h.score + '/100 \u2014 ' + _hl, _hc));
+  }
   if (a.page_total_ads != null) rows.push(row('إجمالي إعلانات الصفحة', a.page_total_ads, 'num'));
   if (a.domain_total_ads != null) rows.push(row('إجمالي إعلانات المتجر', a.domain_total_ads, 'num'));
 
   box.innerHTML = `
+    ${h ? '<div class="mb-2 flex flex-wrap gap-2 items-center"><span class="text-xs font-black px-3 py-1 rounded-full ' + (h.label === 'strong' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : (h.label === 'medium' ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-rose-50 text-rose-700 border border-rose-200')) + '">\u0642\u0648\u0629 \u0627\u0644\u0645\u0646\u062a\u062c: ' + h.score + '/100</span>' + (h.confirmed ? '<span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200">\u0645\u0624\u0643\u062f \u0628\u0643\u0644\u0645\u062a\u064a\u0646+</span>' : '') + '</div>' : ''}
     ${media}
     <div class="flex flex-wrap gap-2">
       <button onclick="searchAdOnGoogle('${a.ad_id}')" class="px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700" title="site:facebook.com &quot;نص الإعلان&quot; &quot;اسم الصفحة&quot;">🔎 ابحث عن المنشور في جوجل</button>

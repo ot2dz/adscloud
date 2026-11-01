@@ -15,6 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from db import db
 from pages import clean_domain, extract_page_id, resolve_target_url
 from store_filter import extract_store_domain
+import scoring
 from scrape_manager import (
     manager, job_wakeup, DEFAULT_COUNTRY, FIXED_COUNTRY, FIXED_LANGS,
     MONTH_MODE, MONTH_LANGS, MARKET_WILDCARD, STATUS_MODE, SCRAPE_ENABLED, _proxy_setting,
@@ -70,11 +71,11 @@ def api_ads():
     if request.args.get("group", "0") == "1":
         # One card per product (same advertiser + same product link); paging
         # and ``total`` count products, ``total_ads`` the ads behind them.
-        items = db.attach_entity_stats(
-            db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters))
+        items = scoring.attach(db.attach_entity_stats(
+            db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters)))
         return jsonify({"ads": items, "total": db.count_ad_groups(**filters),
                         "total_ads": total_ads, "grouped": True})
-    ads = db.attach_entity_stats(db.get_ads(limit=limit, offset=offset, sort_by=sort_by, **filters))
+    ads = scoring.attach(db.attach_entity_stats(db.get_ads(limit=limit, offset=offset, sort_by=sort_by, **filters)))
     return jsonify({"ads": ads, "total": total_ads, "total_ads": total_ads, "grouped": False})
 
 
