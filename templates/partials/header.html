@@ -6,6 +6,11 @@
       <span class="text-xs px-2.5 py-0.5 rounded-full bg-[#e8f1ff] text-[#153e75] font-bold border border-[#cfe0f5]" id="db-backend">SQLite</span>
     </div>
     <div class="flex items-center gap-4 text-sm font-semibold flex-wrap">
+      <span id="egress-ip-badge" class="hidden" title="">
+        <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold">
+          IP: <b class="num" id="egress-ip">--</b>
+        </span>
+      </span>
       <span class="flex items-center gap-1.5 text-slate-700">📦 <b class="num text-blue-700 text-base" id="stat-total">0</b> إعلان محفوظ</span>
       <span class="flex items-center gap-1.5 text-slate-700">🏪 <b class="num text-emerald-700 text-base" id="stat-stores">0</b> متجر</span>
       <button id="btn-reset-db" onclick="resetAll()" class="hidden text-rose-600 hover:text-rose-700 text-xs font-bold hover:underline">مسح القاعدة</button>

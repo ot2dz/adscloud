@@ -392,3 +392,24 @@ function showTab(t) {
   if (t === 'users') { loadAdminUsers(); loadSecurityEvents(); }
 }
 
+
+// ---- egress IP badge (public IP the scraper goes out from) ----
+(function egressIpBadge() {
+  const badge = document.getElementById('egress-ip-badge');
+  const value = document.getElementById('egress-ip');
+  if (!badge || !value) return;
+  async function load() {
+    try {
+      const r = await fetch('/api/egress-ip', { credentials: 'same-origin' });
+      if (!r.ok) { badge.classList.add('hidden'); return; }
+      const j = await r.json();
+      if (!j || !j.ok || !j.ip) { badge.classList.add('hidden'); return; }
+      value.textContent = j.ip;
+      badge.title = 'source: ' + (j.source || '?') + (j.proxy ? ' | proxy: ' + j.proxy : '')
+        + (j.rotator && j.rotator.ip ? ' | rotator: ' + j.rotator.ip : '');
+      badge.classList.remove('hidden');
+    } catch (_e) { badge.classList.add('hidden'); }
+  }
+  load();
+  setInterval(load, 60000);
+})();
