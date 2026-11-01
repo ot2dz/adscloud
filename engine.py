@@ -136,7 +136,7 @@ LAUNCH_EARLY_STOP = int(_env_float("META_ADS_LAUNCH_EARLY_STOP", 500))
 # a run ends on an empty page (or on endless empty pages), one probe request
 # for "any ad in Algeria" tells a real end from a block. On a block the pace
 # slows down, the run pauses, then resumes from the last good page.
-BLOCK_PAUSES_MIN = tuple(int(x) for x in (os.environ.get("META_ADS_BLOCK_PAUSES_MIN") or "20,40").split(",") if x.strip())
+BLOCK_PAUSES_MIN = tuple(float(x) for x in (os.environ.get("META_ADS_BLOCK_PAUSES_MIN") or "20,40").split(",") if x.strip())
 PACE_MAX_DELAY = 6.0
 PACE_AFTER_BLOCK = 1.5      # never faster than this once a block was seen
 
