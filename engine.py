@@ -78,17 +78,35 @@ class ScrapeResult:
     scanned: int = 0
 
 
-def _proxy_arg(spec: Optional[str] = None):
+# Which entry of a multi-proxy list the next collector gets. Advancing one
+# step per collector creation (not per request) means: when Meta blocks the
+# current IP, the next retry starts on a *different* IP immediately, with no
+# PPPoE re-dial and no long pause.
+_PROXY_CYCLE = {"i": 0}
+_DIRECT_TOKENS = {"direct", "none", "off", "vps"}
+
+
+def _proxy_arg(spec: Optional[str] = None, advance: bool = True):
     """Proxy config: an explicit saved value wins over ``META_ADS_PROXY`` env.
 
-    Accepts one ``host:port:user:pass`` or a comma-separated list (rotating
-    pool). Returns ``None`` when nothing is configured.
+    Accepts one ``host:port:user:pass`` or a comma-separated list. For a list,
+    each call returns the NEXT entry (rotating across collectors, not per
+    request); ``direct`` means "no proxy" (the server's own IP). Returns
+    ``None`` when nothing is configured.
     """
     raw = (spec or "").strip() or (os.environ.get("META_ADS_PROXY") or "").strip()
     if not raw:
         return None
     parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return parts if len(parts) > 1 else parts[0]
+    if len(parts) == 1:
+        return None if parts[0].lower() in _DIRECT_TOKENS else parts[0]
+    if advance:
+        idx = _PROXY_CYCLE["i"] % len(parts)
+        _PROXY_CYCLE["i"] += 1
+    else:
+        idx = (_PROXY_CYCLE["i"] - 1) % len(parts)
+    choice = parts[idx]
+    return None if choice.lower() in _DIRECT_TOKENS else choice
 
 
 def _env_float(name: str, default: float) -> float:
@@ -153,7 +171,7 @@ PACE = Pace(REQUEST_DELAY)
 
 def meta_blocked(proxy: Optional[str] = None) -> bool:
     """One request for any ad running in Algeria: none at all = blocked."""
-    collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=0, jitter=0)
+    collector = MetaAdsCollector(proxy=_proxy_arg(proxy, advance=False), rate_limit_delay=0, jitter=0)
     try:
         for _ in collector.search(query='" "', country="DZ", status=STATUS_ACTIVE, search_type=SEARCH_EXACT,
                                   sort_by=SORT_RELEVANCY_MONTHLY_GROUPED, max_results=1):
