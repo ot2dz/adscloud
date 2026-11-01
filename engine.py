@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+
+import ip_rotator
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Callable, Optional
@@ -415,6 +417,10 @@ def scrape(
     def _on_block() -> bool:
         """Slow down and pause; False = out of pauses (run is interrupted)."""
         nonlocal block_pauses
+        _rot = ip_rotator.rotate()
+        if _rot and _rot.get("ok"):
+            progress("IP rotated: %s -> %s (%ss)" % (
+                _rot.get("old_ip"), _rot.get("new_ip"), _rot.get("seconds")))
         delay = PACE.slow_down()
         if block_pauses >= len(BLOCK_PAUSES_MIN):
             res.interrupted = True
