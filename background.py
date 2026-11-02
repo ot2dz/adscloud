@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 import os
 import threading
@@ -11,6 +11,7 @@ from pages import resolve_target_url
 from scrape_manager import (
     manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, _proxy_setting,
 )
+from telegram_bot import telegram_bot_loop
 
 logger = logging.getLogger("web_app")
 
@@ -23,25 +24,25 @@ def _queue_month_scrape(source: str, start: Optional[str] = None, end: Optional[
     start = start or today.replace(day=1).isoformat()
     end = end or today.isoformat()
     busy = bool(manager.state.get("running")) or db.has_pending_jobs()
-    label = "كل إعلانات السوق (متاجر فقط)" if source == "manual" else "إعادة فحص اليوم والأمس"
+    label = "ظƒظ„ ط¥ط¹ظ„ط§ظ†ط§طھ ط§ظ„ط³ظˆظ‚ (ظ…طھط§ط¬ط± ظپظ‚ط·)" if source == "manual" else "ط¥ط¹ط§ط¯ط© ظپط­طµ ط§ظ„ظٹظˆظ… ظˆط§ظ„ط£ظ…ط³"
     job_id = db.create_job(
-        query=f"{label} {start} ← {end}", country=DEFAULT_COUNTRY, exact_phrase=True,
+        query=f"{label} {start} â†گ {end}", country=DEFAULT_COUNTRY, exact_phrase=True,
         stores_only=True, sort_mode="relevancy_monthly_grouped", source=source,
         start_date_min=start, start_date_max=end, date_scope="launch",
         mode=MONTH_MODE, languages=",".join(MONTH_LANGS))
     job_wakeup.set()
-    manager._emit("log", {"text": f"🗓️ أُضيف سحب السوق يوماً بيوم ({start} ← {end})"
-                                  + (" إلى قائمة الانتظار." if busy else ".")})
+    manager._emit("log", {"text": f"ًں—“ï¸ڈ ط£ظڈط¶ظٹظپ ط³ط­ط¨ ط§ظ„ط³ظˆظ‚ ظٹظˆظ…ط§ظ‹ ط¨ظٹظˆظ… ({start} â†گ {end})"
+                                  + (" ط¥ظ„ظ‰ ظ‚ط§ط¦ظ…ط© ط§ظ„ط§ظ†طھط¸ط§ط±." if busy else ".")})
     return job_id, busy
 
 
 def _queue_status_check(source: str):
     """Queue the "is it still running?" check. Returns (job_id, queued_behind)."""
     busy = bool(manager.state.get("running")) or db.has_pending_jobs()
-    job_id = db.create_job(query="فحص حالة الإعلانات (نشط / متوقف)", country=DEFAULT_COUNTRY,
+    job_id = db.create_job(query="ظپط­طµ ط­ط§ظ„ط© ط§ظ„ط¥ط¹ظ„ط§ظ†ط§طھ (ظ†ط´ط· / ظ…طھظˆظ‚ظپ)", country=DEFAULT_COUNTRY,
                            stores_only=True, source=source, mode=STATUS_MODE)
     job_wakeup.set()
-    manager._emit("log", {"text": "🔎 أُضيف فحص حالة الإعلانات" + (" إلى قائمة الانتظار." if busy else ".")})
+    manager._emit("log", {"text": "ًں”ژ ط£ظڈط¶ظٹظپ ظپط­طµ ط­ط§ظ„ط© ط§ظ„ط¥ط¹ظ„ط§ظ†ط§طھ" + (" ط¥ظ„ظ‰ ظ‚ط§ط¦ظ…ط© ط§ظ„ط§ظ†طھط¸ط§ط±." if busy else ".")})
     return job_id, busy
 
 
@@ -98,7 +99,7 @@ def scheduler_loop() -> None:
 
             n = db.requeue_stale_jobs(minutes=20)
             if n:
-                manager.events.put({"type": "log", "data": {"text": f"♻️ أُعيد {n} أمر عالق إلى قائمة الانتظار."}})
+                manager.events.put({"type": "log", "data": {"text": f"â™»ï¸ڈ ط£ظڈط¹ظٹط¯ {n} ط£ظ…ط± ط¹ط§ظ„ظ‚ ط¥ظ„ظ‰ ظ‚ط§ط¦ظ…ط© ط§ظ„ط§ظ†طھط¸ط§ط±."}})
 
             s = db.get_settings()
             if _month_rescan_due(s):
@@ -150,7 +151,7 @@ def scheduler_loop() -> None:
                     db.set_setting("last_scheduled_at", now_utc.isoformat())
                     manager.events.put({
                         "type": "log",
-                        "data": {"text": f"⏰ جدولة ذكية: أُضيفت {enqueued} مهمة سحب تزايدي للأهداف المستحقة."}
+                        "data": {"text": f"âڈ° ط¬ط¯ظˆظ„ط© ط°ظƒظٹط©: ط£ظڈط¶ظٹظپطھ {enqueued} ظ…ظ‡ظ…ط© ط³ط­ط¨ طھط²ط§ظٹط¯ظٹ ظ„ظ„ط£ظ‡ط¯ط§ظپ ط§ظ„ظ…ط³طھط­ظ‚ط©."}
                     })
         except Exception:
             logger.exception("scheduler error")
@@ -194,7 +195,7 @@ def job_worker_loop() -> None:
             jid = job.get("id")
             if job.get("stop_requested"):
                 db.finish_job(jid, status="stopped", result_count=int(job.get("result_count") or 0))
-                manager._emit("log", {"text": f"⏹ المهمة #{jid} أُلغيت قبل البدء."})
+                manager._emit("log", {"text": f"âڈ¹ ط§ظ„ظ…ظ‡ظ…ط© #{jid} ط£ظڈظ„ط؛ظٹطھ ظ‚ط¨ظ„ ط§ظ„ط¨ط¯ط،."})
                 continue
             try:
                 resume = json.loads(job.get("checkpoint") or "null")
@@ -205,10 +206,10 @@ def job_worker_loop() -> None:
             base_count = int(job.get("result_count") or 0) if resume else 0
             d_min, d_max = job.get("start_date_min") or "", job.get("start_date_max") or ""
             logger.info("job %s: in-process scrape start (attempt %s, resume=%s)", jid, attempts + 1, resume)
-            db.update_job_progress(jid, 1, "استئناف من آخر نقطة" if resume else "بدء السحب عبر HTTP")
+            db.update_job_progress(jid, 1, "ط§ط³طھط¦ظ†ط§ظپ ظ…ظ† ط¢ط®ط± ظ†ظ‚ط·ط©" if resume else "ط¨ط¯ط، ط§ظ„ط³ط­ط¨ ط¹ط¨ط± HTTP")
             manager._emit("log", {
-                "text": f"▶ بدء المهمة #{jid}: {job.get('query') or job.get('url') or ''} "
-                        f"(محاولة {attempts + 1})"})
+                "text": f"â–¶ ط¨ط¯ط، ط§ظ„ظ…ظ‡ظ…ط© #{jid}: {job.get('query') or job.get('url') or ''} "
+                        f"(ظ…ط­ط§ظˆظ„ط© {attempts + 1})"})
 
             last_write = [0.0]
 
@@ -232,7 +233,7 @@ def job_worker_loop() -> None:
                 url=job.get("url") or "",
                 start_date_min=job.get("start_date_min") or "",
                 start_date_max=job.get("start_date_max") or "",
-                date_label=(f"{d_min or 'البداية'} ← {d_max or 'اليوم'}" if (d_min or d_max) else ""),
+                date_label=(f"{d_min or 'ط§ظ„ط¨ط¯ط§ظٹط©'} â†گ {d_max or 'ط§ظ„ظٹظˆظ…'}" if (d_min or d_max) else ""),
                 date_scope=job.get("date_scope") or "impressions",
                 resume=resume,
                 on_checkpoint=persist,
@@ -280,26 +281,26 @@ def job_worker_loop() -> None:
                         "attempt": attempts + 1, "max_attempts": len(JOB_RETRY_DELAYS_MIN),
                         "error": outcome.get("error", "")})
                     manager._emit("log", {
-                        "text": f"⏸ انقطع السحب بعد {count} إعلان وسيُستأنف تلقائياً من نفس النقطة بعد {delay} دقيقة "
-                                f"(محاولة {attempts + 1}/{len(JOB_RETRY_DELAYS_MIN)})."})
+                        "text": f"âڈ¸ ط§ظ†ظ‚ط·ط¹ ط§ظ„ط³ط­ط¨ ط¨ط¹ط¯ {count} ط¥ط¹ظ„ط§ظ† ظˆط³ظٹظڈط³طھط£ظ†ظپ طھظ„ظ‚ط§ط¦ظٹط§ظ‹ ظ…ظ† ظ†ظپط³ ط§ظ„ظ†ظ‚ط·ط© ط¨ط¹ط¯ {delay} ط¯ظ‚ظٹظ‚ط© "
+                                f"(ظ…ط­ط§ظˆظ„ط© {attempts + 1}/{len(JOB_RETRY_DELAYS_MIN)})."})
                     logger.info("job %s: interrupted, retry in %s min from %s", jid, delay, cp)
                 else:
                     db.finish_job(jid, status="failed", result_count=count,
                                   error=outcome.get("error", ""), checkpoint=cp_json)
-                    manager._emit("log", {"text": f"⛔ توقف السحب نهائياً بعد {attempts + 1} محاولات: {outcome.get('error', '')}"})
+                    manager._emit("log", {"text": f"â›” طھظˆظ‚ظپ ط§ظ„ط³ط­ط¨ ظ†ظ‡ط§ط¦ظٹط§ظ‹ ط¨ط¹ط¯ {attempts + 1} ظ…ط­ط§ظˆظ„ط§طھ: {outcome.get('error', '')}"})
                     logger.warning("job %s: failed after %s attempts", jid, attempts + 1)
             elif status == "failed":
                 db.finish_job(jid, status="failed", result_count=count,
                               error=outcome.get("error", ""), checkpoint=cp_json)
-                manager._emit("log", {"text": f"⛔ فشلت المهمة #{jid}: {outcome.get('error', '')}"})
+                manager._emit("log", {"text": f"â›” ظپط´ظ„طھ ط§ظ„ظ…ظ‡ظ…ط© #{jid}: {outcome.get('error', '')}"})
             elif status == "stopped":
                 db.finish_job(jid, status="stopped", result_count=count)
                 manager.state["error"] = ""
-                manager._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان."})
+                manager._emit("log", {"text": f"âڈ¹ ط£ظڈظˆظ‚ظپطھ ط§ظ„ظ…ظ‡ظ…ط© #{jid}: {count} ط¥ط¹ظ„ط§ظ†."})
             else:
                 db.finish_job(jid, status="done", result_count=count)
                 logger.info("job %s: done (%s ads)", jid, count)
-                manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان."})
+                manager._emit("log", {"text": f"âœ… ط§ظ†طھظ‡طھ ط§ظ„ظ…ظ‡ظ…ط© #{jid}: {count} ط¥ط¹ظ„ط§ظ†."})
                 if not resume:  # a resumed run only saw part of the page's ads
                     _snapshot_page_target(job, outcome)
         except Exception:
@@ -448,4 +449,7 @@ def start_background_threads() -> None:
     threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
     threading.Thread(target=niches_loop, daemon=True).start()
+    if os.environ.get("TELEGRAM_BOT", "on").strip().lower() not in ("0", "off", "false", "no"):
+        threading.Thread(target=telegram_bot_loop, daemon=True).start()
+
 
