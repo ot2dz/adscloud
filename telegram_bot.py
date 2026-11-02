@@ -242,6 +242,77 @@ def _queue(plan: dict) -> int:
     return int(job_id)
 
 
+PREVIEW_MAX = 5
+
+
+def _ads_for_job(job: dict) -> list[dict]:
+    """The best active ads of the finished job's target (for the bot cards)."""
+    url = str(job.get("url") or "")
+    query = str(job.get("query") or "").strip()
+    p = db._ph()
+    cols = ("ad_id, page_name, page_id, start_date, days_active, body, cta_text, "
+            "preview_image_url, link_url, store_domain")
+    sql = f"SELECT {cols} FROM meta_ads WHERE is_active=1"
+    params: list = []
+    m = re.search(r"(?:view_all_page_id|page_id)=(\d{6,})", url)
+    if m:
+        sql += f" AND page_id={p}"
+        params.append(m.group(1))
+    elif query and "." in query and " " not in query:
+        sql += f" AND (store_domain={p} OR link_url LIKE {p})"
+        params.extend([query, f"%{query}%"])
+    elif query:
+        sql += f" AND ad_id IN (SELECT ad_id FROM ad_keywords WHERE keyword={p})"
+        params.append(query)
+    else:
+        return []
+    sql += f" ORDER BY days_active DESC LIMIT {p}"
+    params.append(PREVIEW_MAX)
+    try:
+        return [dict(row) for row in db._query(sql, tuple(params))]
+    except Exception:  # noqa: BLE001
+        logger.exception("bot preview ads query failed")
+        return []
+
+
+def _ad_card(ad: dict) -> tuple[str, dict | None]:
+    body = re.sub(r"\s+", " ", str(ad.get("body") or "")).strip()
+    if len(body) > 140:
+        body = body[:140] + "…"
+    caption = (f"🏪 <b>{html.escape(str(ad.get('page_name') or '-'))}</b>\n"
+               f"📅 {html.escape(str(ad.get('start_date') or '-'))} · "
+               f"⏱️ {ad.get('days_active') or 0} يوم\n{html.escape(body)}")
+    ad_id = str(ad.get("ad_id") or "")
+    store = str(ad.get("link_url") or "")
+    if not store and ad.get("store_domain"):
+        store = "https://" + str(ad["store_domain"])
+    buttons = []
+    if ad_id:
+        buttons.append({"text": "↗ الإعلان",
+                        "url": f"https://www.facebook.com/ads/library/?id={ad_id}"})
+    if store.startswith("http"):
+        buttons.append({"text": "🛒 المتجر", "url": store})
+    keyboard = {"inline_keyboard": [buttons]} if buttons else None
+    return caption, keyboard
+
+
+def _send_ad_card(token: str, chat_id: str, ad: dict) -> None:
+    """Send one ad: thumbnail on top, details below, link buttons under it."""
+    caption, keyboard = _ad_card(ad)
+    params = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
+    if keyboard:
+        params["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
+    photo = str(ad.get("preview_image_url") or "")
+    if photo.startswith("http"):
+        try:
+            _api(token, "sendPhoto", {**params, "photo": photo}, timeout=30)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sendPhoto failed (%s); sending text", exc)
+    params.pop("caption", None)
+    params["text"] = caption
+    params["disable_web_page_preview"] = "false"
+    _api(token, "sendMessage", params, timeout=20)
 def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
     """Follow a queued job: periodic progress, then a rich final summary."""
     started = time.time()
@@ -297,6 +368,14 @@ def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
             _send(token, chat_id,
                   f"✅ {head}\n📥 الإعلانات: <b>{count}</b>\n🏪 المتاجر: <b>{stores}</b>\n"
                   f"⏱️ {minutes}:{seconds:02d}")
+            ads = _ads_for_job(job)
+            if ads:
+                _send(token, chat_id, f"🖼️ أهم {len(ads)} إعلانات لهذا الهدف:")
+                for ad in ads:
+                    try:
+                        _send_ad_card(token, chat_id, ad)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("bot ad card failed")
         return
 
 
