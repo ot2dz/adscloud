@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Telegram share bot: forward an ad link and queue a scrape.
 
 Long polling, owner-only. The bot reuses the alert bot token and chat id
@@ -11,6 +11,7 @@ import html
 import json
 import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -27,12 +28,12 @@ DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:
 FB_HOSTS = ("facebook.com", "fb.com", "fb.me", "fb.watch")
 HELP_TEXT = (
     "<b>AdsCloud Bot</b>\n"
-    "أرسل لي رابط إعلان أو دومين متجر أو كلمة مفتاحية، وأضيف سحبًا فوريًا.\n\n"
+    "أرسل رابط إعلان أو رقم صفحة أو دومين متجر أو كلمة مفتاحية، وأضيف سحبًا فوريًا.\n\n"
     "• رابط مكتبة إعلانات ← سحب الرابط كما هو\n"
-    "• رابط منشور/مشاركة ← سحب كل إعلانات الصفحة\n"
+    "• رابط منشور/مشاركة أو رقم صفحة ← سحب كل إعلانات الصفحة\n"
     "• دومين مثل <code>shop.com</code> ← سحب إعلانات المتجر\n"
     "• نص مثل <code>مكنسة بخار</code> ← سحب بالكلمة\n\n"
-    "/status لعرض حالة المحرك · /stop لإيقاف السحب · /id لمعرفة رقم المحادثة"
+    "/status لحالة المحرك · /stop لإيقاف السحب · /id لمعرفة رقم المحادثة"
 )
 
 
@@ -101,7 +102,8 @@ def plan_for_text(text: str) -> dict:
                 "page_id": raw, "label": f"صفحة {raw}"}
 
     if DOMAIN_RE.match(raw) and "." in raw:
-        return {"kind": "domain", "query": clean_domain(raw), "label": clean_domain(raw)}
+        domain = clean_domain(raw)
+        return {"kind": "domain", "query": domain, "label": domain}
 
     return {"kind": "keyword", "query": raw[:200], "label": raw[:60]}
 
@@ -120,6 +122,32 @@ def _queue(plan: dict) -> int:
     )
     job_wakeup.set()
     return int(job_id)
+
+
+def _watch_job(token: str, chat_id: str, job_id: int) -> None:
+    """Report the final result of a queued job (0 ads vs N ads vs failure)."""
+    deadline = time.time() + 1800
+    while time.time() < deadline:
+        time.sleep(5)
+        try:
+            job = db.get_job(int(job_id))
+        except Exception:  # noqa: BLE001
+            return
+        if not job:
+            return
+        status = str(job.get("status") or "")
+        if status in ("pending", "running", "stopping"):
+            continue
+        count = int(job.get("result_count") or 0)
+        if status == "failed":
+            error = html.escape(str(job.get("error") or "خطأ"))
+            _send(token, chat_id, f"⚠️ المهمة #{job_id} فشلت: {error}")
+        elif count == 0:
+            _send(token, chat_id,
+                  f"ℹ️ المهمة #{job_id} انتهت: 0 إعلان — الصفحة/الكلمة بلا إعلانات نشطة.")
+        else:
+            _send(token, chat_id, f"✅ المهمة #{job_id} انتهت: <b>{count}</b> إعلانًا.")
+        return
 
 
 def _handle_update(token: str, owner: str, update: dict) -> None:
@@ -165,6 +193,7 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
         _send(token, chat_id, f"⚠️ تعذّر إنشاء المهمة: {html.escape(str(exc))}")
         return
     busy = bool(manager.state.get("running")) or db.has_pending_jobs()
+    threading.Thread(target=_watch_job, args=(token, chat_id, job_id), daemon=True).start()
     _send(token, chat_id,
           f"✅ أُضيفت المهمة <b>#{job_id}</b>\nالنوع: {html.escape(plan['label'])}"
           + ("\n🕒 ستنتظر انتهاء السحب الحالي." if busy else "")
