@@ -336,7 +336,11 @@ def entity_stats_loop() -> None:
             if not batch:
                 time.sleep(600)
                 continue
-            client = new_count_client(proxy=_proxy_setting() or None)
+            _px = (_proxy_setting() or os.environ.get("META_ADS_PROXY") or "").strip()
+            if not _px:
+                time.sleep(600)
+                continue
+            client = new_count_client(proxy=_px)
             errors = 0
             try:
                 for kind, key in batch:

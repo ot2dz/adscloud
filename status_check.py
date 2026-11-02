@@ -78,6 +78,12 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
     stats = stats if stats is not None else {}
     for k in ("pages", "batches", "requests", "confirmed", "stopped", "new", "skipped_batches"):
         stats.setdefault(k, 0)
+    if not (proxy or "").strip():
+        msg = "\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0631\u0648\u0643\u0633\u064a \u0645\u0636\u0628\u0648\u0637 \u2014 \u0627\u0644\u0633\u062d\u0628 \u0645\u0646 IP \u0627\u0644\u0633\u064a\u0631\u0641\u0631 \u0645\u0639\u0637\u0651\u0644. \u0623\u0636\u0641 \u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u0641\u064a \u0627\u0644\u0625\u0639\u062f\u0627\u062f\u0627\u062a."
+        progress(msg)
+        stats["error"] = msg
+        return "interrupted"
+
     pages = db.status_check_pages()
     batches = [pages[i:i + BATCH_PAGES] for i in range(0, len(pages), BATCH_PAGES)]
     stats["total_batches"] = len(batches)

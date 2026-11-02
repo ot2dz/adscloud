@@ -78,35 +78,16 @@ class ScrapeResult:
     scanned: int = 0
 
 
-# Which entry of a multi-proxy list the next collector gets. Advancing one
-# step per collector creation (not per request) means: when Meta blocks the
-# current IP, the next retry starts on a *different* IP immediately, with no
-# PPPoE re-dial and no long pause.
-_PROXY_CYCLE = {"i": 0}
-_DIRECT_TOKENS = {"direct", "none", "off", "vps"}
-
-
 def _proxy_arg(spec: Optional[str] = None, advance: bool = True):
     """Proxy config: an explicit saved value wins over ``META_ADS_PROXY`` env.
 
-    Accepts one ``host:port:user:pass`` or a comma-separated list. For a list,
-    each call returns the NEXT entry (rotating across collectors, not per
-    request); ``direct`` means "no proxy" (the server's own IP). Returns
-    ``None`` when nothing is configured.
+    Only a configured proxy is ever used: the scrapers never fall back to the
+    server own IP. A comma-separated list is passed through as-is (the
+    collector ProxyPool rotates it per request). Returns ``None`` when nothing
+    is configured; callers must refuse to scrape in that case.
     """
     raw = (spec or "").strip() or (os.environ.get("META_ADS_PROXY") or "").strip()
-    if not raw:
-        return None
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if len(parts) == 1:
-        return None if parts[0].lower() in _DIRECT_TOKENS else parts[0]
-    if advance:
-        idx = _PROXY_CYCLE["i"] % len(parts)
-        _PROXY_CYCLE["i"] += 1
-    else:
-        idx = (_PROXY_CYCLE["i"] - 1) % len(parts)
-    choice = parts[idx]
-    return None if choice.lower() in _DIRECT_TOKENS else choice
+    return raw or None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -171,7 +152,7 @@ PACE = Pace(REQUEST_DELAY)
 
 def meta_blocked(proxy: Optional[str] = None) -> bool:
     """One request for any ad running in Algeria: none at all = blocked."""
-    collector = MetaAdsCollector(proxy=_proxy_arg(proxy, advance=False), rate_limit_delay=0, jitter=0)
+    collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=0, jitter=0)
     try:
         for _ in collector.search(query='" "', country="DZ", status=STATUS_ACTIVE, search_type=SEARCH_EXACT,
                                   sort_by=SORT_RELEVANCY_MONTHLY_GROUPED, max_results=1):
@@ -409,6 +390,11 @@ def scrape(
         f"date={inc_min or '-'}..{inc_max or '-'} | scope={date_scope}"
         f"{' | lang=' + ','.join(langs) if langs else ''}"
     )
+
+    if not _proxy_arg(proxy):
+        _msg = "\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0631\u0648\u0643\u0633\u064a \u0645\u0636\u0628\u0648\u0637 \u2014 \u0627\u0644\u0633\u062d\u0628 \u0645\u0646 IP \u0627\u0644\u0633\u064a\u0631\u0641\u0631 \u0645\u0639\u0637\u0651\u0644. \u0623\u0636\u0641 \u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u0641\u064a \u0627\u0644\u0625\u0639\u062f\u0627\u062f\u0627\u062a."
+        progress(_msg)
+        return ScrapeResult(query=q, url=url or "", failed=True, error=_msg)
 
     res = ScrapeResult(query=q, url=url or "", cursor=resume_cursor or None)
     total = 0
