@@ -43,6 +43,14 @@ def ensure_tables() -> None:
                 last_seen_ad_id TEXT,
                 PRIMARY KEY (chat_id, page_id)
             )""")
+        try:
+            cur.execute("ALTER TABLE followed_pages ADD COLUMN last_scan_at TEXT")
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
         conn.commit()
     finally:
         conn.close()
@@ -108,15 +116,15 @@ def follow(chat_id: str, page_id: str, page_name: str = "") -> None:
         cur = conn.cursor()
         if db.is_postgres:
             cur.execute(
-                f"INSERT INTO followed_pages (chat_id, page_id, page_name, created_at, active)"
-                f" VALUES ({p},{p},{p},{p},1) ON CONFLICT (chat_id, page_id) DO UPDATE"
+                f"INSERT INTO followed_pages (chat_id, page_id, page_name, created_at, active, last_notified_at)"
+                f" VALUES ({p},{p},{p},{p},1,{p}) ON CONFLICT (chat_id, page_id) DO UPDATE"
                 f" SET active=1, page_name=EXCLUDED.page_name",
-                (str(chat_id), str(page_id), page_name, _now()))
+                (str(chat_id), str(page_id), page_name, _now(), _now()))
         else:
             cur.execute(
-                f"INSERT OR REPLACE INTO followed_pages (chat_id, page_id, page_name, created_at, active)"
-                f" VALUES ({p},{p},{p},{p},1)",
-                (str(chat_id), str(page_id), page_name, _now()))
+                f"INSERT OR REPLACE INTO followed_pages (chat_id, page_id, page_name, created_at, active, last_notified_at)"
+                f" VALUES ({p},{p},{p},{p},1,{p})",
+                (str(chat_id), str(page_id), page_name, _now(), _now()))
         conn.commit()
     finally:
         conn.close()
@@ -164,6 +172,21 @@ def mark_notified(chat_id: str, page_id: str, last_seen_ad_id: str = "") -> None
             f"UPDATE followed_pages SET last_notified_at={p}, last_seen_ad_id={p}"
             f" WHERE chat_id={p} AND page_id={p}",
             (_now(), last_seen_ad_id, str(chat_id), str(page_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_scanned(chat_id: str, page_id: str, when: str = "") -> None:
+    ensure_tables()
+    p = db._ph()
+    conn = db._connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE followed_pages SET last_scan_at={p}"
+            f" WHERE chat_id={p} AND page_id={p}",
+            (when or _now(), str(chat_id), str(page_id)))
         conn.commit()
     finally:
         conn.close()

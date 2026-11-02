@@ -646,6 +646,24 @@ def follow_watch_loop() -> None:
                     last = str(row.get("last_notified_at") or "")
                     if not chat_id or not page_id:
                         continue
+                    hours = float(os.environ.get("TELEGRAM_FOLLOW_SCAN_HOURS", "6") or 6)
+                    last_scan = str(row.get("last_scan_at") or "")
+                    due = True
+                    if last_scan:
+                        try:
+                            from datetime import datetime
+                            age = time.time() - datetime.fromisoformat(last_scan).timestamp()
+                            due = age >= hours * 3600
+                        except Exception:  # noqa: BLE001
+                            due = True
+                    if due:
+                        try:
+                            _queue({"url": page_url(page_id, DEFAULT_COUNTRY),
+                                    "label": f"صفحة {page_id}"})
+                        except Exception:  # noqa: BLE001
+                            logger.exception("follow scan queue failed")
+                        link_stats.mark_scanned(chat_id, page_id)
+                        continue
                     if not last:
                         link_stats.mark_notified(chat_id, page_id, "")
                         continue
