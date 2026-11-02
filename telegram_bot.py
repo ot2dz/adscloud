@@ -36,6 +36,8 @@ HELP_TEXT = (
     "/status لحالة المحرك · /stop لإيقاف السحب · /id لمعرفة رقم المحادثة"
 )
 
+_PAGE_CACHE: dict[str, str] = {}
+
 
 def _api(token: str, method: str, params: dict | None = None, timeout: int = 30) -> dict:
     url = f"https://api.telegram.org/bot{token}/{method}"
@@ -59,30 +61,51 @@ def _send(token: str, chat_id: str, text: str) -> None:
 
 MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+CRAWLER_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+LOGIN_MARKERS = ("connectez", "inscrivez", "log in", "log into", "sign up",
+                 "تسجيل الدخول", "voir le contenu")
+
+
+def _og_title(page_html: str) -> str:
+    m = re.search(r'og:title" content="([^"]+)"', page_html)
+    if m:
+        return html.unescape(m.group(1)).strip()
+    m = re.search(r"<title>(.*?)</title>", page_html, re.S)
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+def _is_login_wall(title: str) -> bool:
+    low = (title or "").lower()
+    return any(marker in low for marker in LOGIN_MARKERS)
 
 
 def _share_html(url: str):
-    """Fetch a Facebook share page: (final_url, html_text)."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": MOBILE_UA,
-                                                   "Accept-Language": "ar,en;q=0.8"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.geturl() or url, resp.read(400000).decode("utf-8", "ignore")
-    except Exception:  # noqa: BLE001
-        return url, ""
+    """Fetch a Facebook share page, preferring a UA that gets the ad preview."""
+    last = (url, "")
+    for ua in (CRAWLER_UA, MOBILE_UA):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": ua,
+                                                       "Accept-Language": "ar,en;q=0.8",
+                                                       "Accept": "text/html"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                final = resp.geturl() or url
+                body = resp.read(400000).decode("utf-8", "ignore")
+            last = (final, body)
+            title = _og_title(body)
+            if title and not _is_login_wall(title):
+                return last
+        except Exception:  # noqa: BLE001
+            continue
+    return last
 
 
 def _ad_snippet(page_html: str) -> str:
-    """Pull the shared ad copy out of the page metadata."""
-    title = ""
-    m = re.search(r'og:title" content="([^"]+)"', page_html)
-    if m:
-        title = html.unescape(m.group(1))
-    else:
-        m = re.search(r"<title>(.*?)</title>", page_html, re.S)
-        if m:
-            title = html.unescape(m.group(1))
-    text = re.sub(r"[^\w\s\u0600-\u06FF]", " ", title)
+    """Pull the shared ad copy out of the page metadata (reject login walls)."""
+    title = _og_title(page_html)
+    if not title or _is_login_wall(title):
+        return ""
+    text = re.sub(r"facebook$", "", title, flags=re.I).strip(" |")
+    text = re.sub(r"[^\w\s\u0600-\u06FF]", " ", text)
     words = [w for w in text.split() if w]
     snippet = " ".join(words[:8]).strip()
     return snippet if len(snippet) >= 12 else ""
@@ -93,7 +116,9 @@ def _page_for_snippet(snippet: str) -> str | None:
     try:
         from engine import scrape
         ads = []
-        scrape(query=snippet, country=DEFAULT_COUNTRY, max_results=12, estimate=False,
+        deadline = time.monotonic() + 20
+        scrape(query=snippet, country=DEFAULT_COUNTRY, max_results=8, estimate=False,
+               should_stop=lambda: time.monotonic() > deadline,
                on_ad=lambda a: ads.append(a))
         counts: dict[str, int] = {}
         for ad in ads:
@@ -101,8 +126,17 @@ def _page_for_snippet(snippet: str) -> str | None:
             pid = str(d.get("page_id") or "")
             if pid:
                 counts[pid] = counts.get(pid, 0) + 1
-        if counts:
-            return max(counts, key=counts.get)
+        found = max(counts, key=counts.get) if counts else None
+        if not found:
+            try:
+                from engine import meta_blocked
+                if meta_blocked(None):
+                    logger.warning("share snippet lookup: Meta soft-block")
+                    return "__blocked__"
+            except Exception:  # noqa: BLE001
+                pass
+        logger.info("share snippet=%r ads=%s page=%s", snippet[:40], len(ads), found)
+        return found
     except Exception as exc:  # noqa: BLE001
         logger.warning("share snippet lookup failed: %s", exc)
     return None
@@ -134,8 +168,12 @@ def plan_for_text(text: str) -> dict:
                 return {"kind": "page", "url": page_url(page_id, DEFAULT_COUNTRY),
                         "page_id": page_id, "label": f"صفحة {page_id}"}
             snippet = _ad_snippet(page_html)
-            found = _page_for_snippet(snippet) if snippet else None
+            found = _PAGE_CACHE.get(url) or (_page_for_snippet(snippet) if snippet else None)
+            if found == "__blocked__":
+                return {"error": "Meta يحظر مؤقتًا هذا الاتصال (حظر خفيف). "
+                                 "انتظر 10–30 دقيقة أو غيّر الشبكة ثم أعد الإرسال."}
             if found:
+                _PAGE_CACHE[url] = found
                 return {"kind": "page", "url": page_url(found, DEFAULT_COUNTRY),
                         "page_id": found, "label": f"صفحة {found} (من نص الإعلان)"}
             return {"error": "رابط مشاركة/ريل بلا معرّف صفحة، ولم أجد الإعلان في المكتبة. "
