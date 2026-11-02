@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import link_stats
 from db import db
 from pages import clean_domain, extract_page_id, page_url
 from scrape_manager import DEFAULT_COUNTRY, job_wakeup, manager
@@ -29,11 +30,12 @@ DOMAIN_RE = re.compile(r"^(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:
 FB_HOSTS = ("facebook.com", "fb.com", "fb.me", "fb.watch")
 HELP_TEXT = (
     "<b>AdsCloud Bot</b>\n"
-    "أرسل رابط إعلان أو رقم صفحة أو دومين متجر أو كلمة مفتاحية، وأضيف سحبًا فوريًا.\n\n"
+    "أرسل رابط إعلان أو عدة روابط في رسالة واحدة، أو رقم صفحة أو دومين متجر أو كلمة مفتاحية.\n\n"
     "• رابط مكتبة إعلانات ← سحب الرابط كما هو\n"
-    "• رابط منشور/مشاركة أو رقم صفحة ← سحب كل إعلانات الصفحة\n"
+    "• رابط منشور/ريل أو رقم صفحة ← سحب كل إعلانات الصفحة\n"
     "• دومين مثل <code>shop.com</code> ← سحب إعلانات المتجر\n"
     "• نص مثل <code>مكنسة بخار</code> ← سحب بالكلمة\n\n"
+    "التحكم من أزرار التقرير: افحص النتائج · متابعة/إيقاف المنافس · إلغاء آخر مهمة.\n"
     "/status حالة المحرك · /jobs آخر المهام · /stop إيقاف · /id رقم المحادثة"
 )
 
@@ -48,16 +50,30 @@ def _api(token: str, method: str, params: dict | None = None, timeout: int = 30)
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _send(token: str, chat_id: str, text: str) -> None:
+def _send(token: str, chat_id: str, text: str, reply_markup: dict | None = None) -> None:
     try:
-        _api(token, "sendMessage", {
+        params = {
             "chat_id": chat_id,
             "text": text[:4000],
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
-        }, timeout=20)
+        }
+        if reply_markup:
+            params["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        _api(token, "sendMessage", params, timeout=20)
     except Exception as exc:  # noqa: BLE001
         logger.warning("telegram bot reply failed: %s", exc)
+
+
+def _edit_markup(token: str, chat_id: str, message_id: int, keyboard: dict) -> None:
+    try:
+        _api(token, "editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": json.dumps(keyboard, ensure_ascii=False),
+        }, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("telegram bot markup edit failed: %s", exc)
 
 
 MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -148,14 +164,6 @@ def _reel_stats(page_html: str) -> dict:
     return stats
 
 
-def _fmt_num(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n/1_000:.1f}K"
-    return str(n)
-
-
 def _page_from_html(page_html: str) -> str | None:
     """Read the advertiser page id from the reel/post JSON (owner_as_page / page_id)."""
     m = re.search(r'"owner_as_page":\{[^}]*?"id":"(\d{6,})"', page_html)
@@ -199,6 +207,169 @@ def _page_for_snippet(snippet: str) -> str | None:
     return None
 
 
+def _is_post_url(url: str) -> bool:
+    return bool(re.search(r"/(?:reel|reels|share|watch|videos?|posts|permalink|photo)", url or "", re.I))
+
+
+def _post_id_from_url(url: str) -> str:
+    """Numeric post/reel/video id when the shared URL exposes one."""
+    u = url or ""
+    m = re.search(r"/(?:reel|reels|videos?)/(\d{6,})", u, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"[?&]v=(\d{6,})", u)
+    if m:
+        return m.group(1)
+    m = re.search(r"/(?:posts|permalink)/(\d{6,})", u, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"[?&](?:story_fbid|fbid)=(\d{6,})", u)
+    return m.group(1) if m else ""
+
+
+def _media_type(*urls: str, stats: dict | None = None) -> str:
+    joined = " ".join(u.lower() for u in urls if u)
+    if "/reel" in joined:
+        return "reel"
+    if "/watch" in joined or "/videos/" in joined or (stats and stats.get("video_id")):
+        return "video"
+    if "/share" in joined:
+        return "share"
+    if "/photo" in joined:
+        return "photo"
+    if "/posts/" in joined or "/permalink/" in joined:
+        return "post"
+    return ""
+
+
+def _snapshot_for(source_url: str, final_url: str, stats: dict, page_id: str) -> dict | None:
+    """Public metrics of a shared reel/post, ready for link_stats.save_snapshot."""
+    if not (_is_post_url(source_url) or _is_post_url(final_url)):
+        return None
+    post_id = _post_id_from_url(final_url) or _post_id_from_url(source_url) \
+        or str(stats.get("video_id") or "")
+    return {
+        "source_url": source_url,
+        "final_url": final_url,
+        "page_id": str(page_id or stats.get("page_id") or ""),
+        "page_name": str(stats.get("page_name") or ""),
+        "post_id": post_id,
+        "media_type": _media_type(source_url, final_url, stats=stats),
+        "views": stats.get("views"),
+        "reactions": stats.get("reactions"),
+    }
+
+
+def _match_ad(page_id: str, post_id: str) -> tuple[str, str]:
+    """Link a post snapshot to a library ad only on page_id + post_id match."""
+    if not page_id or not post_id:
+        return "", "none"
+    p = db._ph()
+    try:
+        rows = db._query(
+            f"SELECT ad_id, link_url, video_url, video_sd_url FROM meta_ads"
+            f" WHERE page_id={p} AND (ad_id={p} OR link_url LIKE {p}"
+            f" OR video_url LIKE {p} OR video_sd_url LIKE {p}) LIMIT 10",
+            (str(page_id), str(post_id), f"%{post_id}%", f"%{post_id}%", f"%{post_id}%"))
+    except Exception:  # noqa: BLE001
+        logger.exception("ad match lookup failed")
+        return "", "none"
+    boundary = re.compile(rf"(?<!\d){re.escape(str(post_id))}(?!\d)")
+    for row in rows:
+        if str(row.get("ad_id") or "") == str(post_id):
+            return str(row["ad_id"]), "post_id"
+        for field in ("link_url", "video_url", "video_sd_url"):
+            if boundary.search(str(row.get(field) or "")):
+                return str(row["ad_id"]), "post_id"
+    return "", "none"
+
+
+def _save_link_snapshot(plan: dict) -> None:
+    snapshots = []
+    if plan.get("snapshot"):
+        snapshots.append(plan["snapshot"])
+    snapshots.extend(plan.get("extra_snapshots") or [])
+    for snap in snapshots:
+        page_id = str(snap.get("page_id") or plan.get("page_id") or "")
+        post_id = str(snap.get("post_id") or "")
+        ad_id, match_type = _match_ad(page_id, post_id)
+        try:
+            link_stats.save_snapshot(
+                source_url=str(snap.get("source_url") or plan.get("url") or ""),
+                page_id=page_id,
+                page_name=str(snap.get("page_name") or ""),
+                post_id=post_id,
+                media_type=str(snap.get("media_type") or ""),
+                views=snap.get("views"),
+                reactions=snap.get("reactions"),
+                ad_id=ad_id,
+                match_type=match_type,
+                raw={"final_url": snap.get("final_url", "")},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("link snapshot save failed")
+
+
+def _plan_for_url(url: str) -> dict:
+    """Turn one URL into a scrape plan (no side effects)."""
+    low = url.lower()
+    if "facebook.com/ads/library" in low:
+        plan = {"kind": "link", "url": url, "label": "رابط مكتبة إعلانات"}
+        m = re.search(r"(?:view_all_page_id|page_id)=(\d{6,})", url)
+        if m:
+            plan["page_id"] = m.group(1)
+        return plan
+    if any(h in low for h in FB_HOSTS):
+        final, page_html = _share_html(url)
+        stats = _reel_stats(page_html)
+        if "facebook.com/ads/library" in final.lower():
+            plan = {"kind": "link", "url": final, "label": "رابط مكتبة إعلانات"}
+            m = re.search(r"(?:view_all_page_id|page_id)=(\d{6,})", final)
+            if m:
+                plan["page_id"] = m.group(1)
+            return plan
+        page_id = None
+        if not re.search(r"/(reel|share|watch|videos?|posts|permalink|photo)", final, re.I):
+            page_id = extract_page_id(final)
+            if not page_id:
+                m = re.search(r"[?&]id=(\d{6,})", final)
+                page_id = m.group(1) if m else None
+        if page_id:
+            plan = {"kind": "page", "url": page_url(page_id, DEFAULT_COUNTRY),
+                    "page_id": page_id, "label": f"صفحة {page_id}"}
+            snap = _snapshot_for(url, final, stats, page_id)
+            if snap:
+                plan["snapshot"] = snap
+            return plan
+        direct = _page_from_html(page_html)
+        if direct:
+            plan = {"kind": "page", "url": page_url(direct, DEFAULT_COUNTRY),
+                    "page_id": direct, "label": f"صفحة {direct} (من بيانات الريل)"}
+            snap = _snapshot_for(url, final, stats, direct)
+            if snap:
+                plan["snapshot"] = snap
+            return plan
+        snippet = _ad_snippet(page_html)
+        found = _PAGE_CACHE.get(url) or (_page_for_snippet(snippet) if snippet else None)
+        if found == "__blocked__":
+            return {"error": "Meta يحظر مؤقتًا هذا الاتصال (حظر خفيف). "
+                             "انتظر 10–30 دقيقة أو غيّر الشبكة ثم أعد الإرسال."}
+        if found:
+            _PAGE_CACHE[url] = found
+            plan = {"kind": "page", "url": page_url(found, DEFAULT_COUNTRY),
+                    "page_id": found, "label": f"صفحة {found} (من نص الإعلان)"}
+            snap = _snapshot_for(url, final, stats, found)
+            if snap:
+                plan["snapshot"] = snap
+            return plan
+        return {"error": "رابط مشاركة/ريل بلا معرّف صفحة، ولم أجد الإعلان في المكتبة. "
+                         "افتح «تفاصيل الإعلان» في فيسبوك وانسخ رابط مكتبة الإعلانات."}
+    domain = clean_domain(url)
+    if domain:
+        return {"kind": "domain", "query": domain, "label": domain}
+    return {"error": "رابط غير مدعوم."}
+
+
 def plan_for_text(text: str) -> dict:
     """Turn a shared message into a scrape job plan (no side effects)."""
     raw = (text or "").strip()
@@ -207,45 +378,7 @@ def plan_for_text(text: str) -> dict:
 
     match = URL_RE.search(raw)
     if match:
-        url = match.group(0).rstrip(").,،؛")
-        low = url.lower()
-        if "facebook.com/ads/library" in low:
-            return {"kind": "link", "url": url, "label": "رابط مكتبة إعلانات"}
-        if any(h in low for h in FB_HOSTS):
-            final, page_html = _share_html(url)
-            stats = _reel_stats(page_html)
-            if "facebook.com/ads/library" in final.lower():
-                return {"kind": "link", "url": final, "label": "رابط مكتبة إعلانات"}
-            page_id = None
-            if not re.search(r"/(reel|share|watch)", final, re.I):
-                page_id = extract_page_id(final)
-                if not page_id:
-                    m = re.search(r"[?&]id=(\d{6,})", final)
-                    page_id = m.group(1) if m else None
-            if page_id:
-                return {"kind": "page", "url": page_url(page_id, DEFAULT_COUNTRY),
-                        "page_id": page_id, "label": f"صفحة {page_id}"}
-            direct = _page_from_html(page_html)
-            if direct:
-                return {"kind": "page", "url": page_url(direct, DEFAULT_COUNTRY),
-                        "page_id": direct, "label": f"صفحة {direct} (من بيانات الريل)",
-                        "stats": stats}
-            snippet = _ad_snippet(page_html)
-            found = _PAGE_CACHE.get(url) or (_page_for_snippet(snippet) if snippet else None)
-            if found == "__blocked__":
-                return {"error": "Meta يحظر مؤقتًا هذا الاتصال (حظر خفيف). "
-                                 "انتظر 10–30 دقيقة أو غيّر الشبكة ثم أعد الإرسال."}
-            if found:
-                _PAGE_CACHE[url] = found
-                return {"kind": "page", "url": page_url(found, DEFAULT_COUNTRY),
-                        "page_id": found, "label": f"صفحة {found} (من نص الإعلان)",
-                        "stats": stats}
-            return {"error": "رابط مشاركة/ريل بلا معرّف صفحة، ولم أجد الإعلان في المكتبة. "
-                             "افتح «تفاصيل الإعلان» في فيسبوك وانسخ رابط مكتبة الإعلانات."}
-        domain = clean_domain(url)
-        if domain:
-            return {"kind": "domain", "query": domain, "label": domain}
-        return {"error": "رابط غير مدعوم."}
+        return _plan_for_url(match.group(0).rstrip(").,،؛"))
 
     if re.fullmatch(r"\d{6,20}", raw):
         return {"kind": "page", "url": page_url(raw, DEFAULT_COUNTRY),
@@ -256,6 +389,35 @@ def plan_for_text(text: str) -> dict:
         return {"kind": "domain", "query": domain, "label": domain}
 
     return {"kind": "keyword", "query": raw[:200], "label": raw[:60]}
+
+
+def plans_for_text(text: str) -> list[dict]:
+    """Plans for every link in the message, dropping repeated URLs and pages."""
+    raw = (text or "").strip()
+    if not raw:
+        return [{"error": "أرسل رابطًا أو كلمة."}]
+    urls: list[str] = []
+    for match in URL_RE.finditer(raw):
+        url = match.group(0).rstrip(").,،؛")
+        if url and url not in urls:
+            urls.append(url)
+    if not urls:
+        return [plan_for_text(raw)]
+    plans: list[dict] = []
+    seen_pages: dict[str, dict] = {}
+    for url in urls:
+        plan = _plan_for_url(url)
+        page_id = str(plan.get("page_id") or "")
+        if page_id and page_id in seen_pages:
+            existing = seen_pages[page_id]
+            snap = plan.get("snapshot")
+            if snap:
+                existing.setdefault("extra_snapshots", []).append(snap)
+            continue
+        if page_id:
+            seen_pages[page_id] = plan
+        plans.append(plan)
+    return plans or [{"error": "لا روابط صالحة."}]
 
 
 def _queue(plan: dict) -> int:
@@ -274,104 +436,82 @@ def _queue(plan: dict) -> int:
     return int(job_id)
 
 
-PREVIEW_MAX = 3
-DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://ads.botdz.com")
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://ads.botdz.com").rstrip("/")
 
 
-def _ads_for_job(job: dict, mode: str = "best", offset: int = 0, limit: int = 3) -> list[dict]:
-    """Active ads of the job's target, ordered for the chosen view."""
-    url = str(job.get("url") or "")
-    query = str(job.get("query") or "").strip()
-    p = db._ph()
-    cols = ("ad_id, page_name, page_id, start_date, days_active, body, cta_text, "
-            "preview_image_url, link_url, store_domain")
-    sql = f"SELECT {cols} FROM meta_ads WHERE is_active=1"
-    params: list = []
-    m = re.search(r"(?:view_all_page_id|page_id)=(\d{6,})", url)
-    if m:
-        sql += f" AND page_id={p}"
-        params.append(m.group(1))
-    elif query and "." in query and " " not in query:
-        sql += f" AND (store_domain={p} OR link_url LIKE {p})"
-        params.extend([query, f"%{query}%"])
-    elif query:
-        sql += f" AND ad_id IN (SELECT ad_id FROM ad_keywords WHERE keyword={p})"
-        params.append(query)
-    else:
-        return []
-    order = "days_active DESC" if mode == "best" else "start_date DESC, days_active DESC"
-    sql += f" ORDER BY {order} LIMIT {p} OFFSET {p}"
-    params.extend([max(1, int(limit)), max(0, int(offset))])
-    try:
-        return [dict(row) for row in db._query(sql, tuple(params))]
-    except Exception:  # noqa: BLE001
-        logger.exception("bot preview ads query failed")
-        return []
-
-
-def _ad_card(ad: dict) -> tuple[str, dict | None]:
-    body = re.sub(r"\s+", " ", str(ad.get("body") or "")).strip()
-    if len(body) > 140:
-        body = body[:140] + "…"
-    caption = (f"🏪 <b>{html.escape(str(ad.get('page_name') or '-'))}</b>\n"
-               f"📅 {html.escape(str(ad.get('start_date') or '-'))} · "
-               f"⏱️ {ad.get('days_active') or 0} يوم\n{html.escape(body)}")
-    ad_id = str(ad.get("ad_id") or "")
-    store = str(ad.get("link_url") or "")
-    if not store and ad.get("store_domain"):
-        store = "https://" + str(ad["store_domain"])
-    buttons = []
-    if ad_id:
-        buttons.append({"text": "↗ الإعلان",
-                        "url": f"https://www.facebook.com/ads/library/?id={ad_id}"})
-    if store.startswith("http"):
-        buttons.append({"text": "🛒 المتجر", "url": store})
-    keyboard = {"inline_keyboard": [buttons]} if buttons else None
-    return caption, keyboard
-
-
-def _send_ad_card(token: str, chat_id: str, ad: dict) -> None:
-    """Send one ad: thumbnail on top, details below, link buttons under it."""
-    caption, keyboard = _ad_card(ad)
-    params = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
-    if keyboard:
-        params["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
-    photo = str(ad.get("preview_image_url") or "")
-    if photo.startswith("http"):
+def _page_name_for(page_id: str, plan: dict) -> str:
+    pid = str(page_id or "")
+    if pid:
         try:
-            _api(token, "sendPhoto", {**params, "photo": photo}, timeout=30)
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("sendPhoto failed (%s); sending text", exc)
-    params.pop("caption", None)
-    params["text"] = caption
-    params["disable_web_page_preview"] = "false"
-    _api(token, "sendMessage", params, timeout=20)
-def _digest_keyboard(job_id: int) -> dict:
-    return {"inline_keyboard": [
-        [{"text": "🔥 أفضل 3", "callback_data": f"best:{job_id}:0"},
-         {"text": "🆕 الأحدث 3", "callback_data": f"new:{job_id}:0"}],
-        [{"text": "🌐 فتح اللوحة", "url": DASHBOARD_URL}],
-    ]}
+            row = db._query_one(
+                f"SELECT page_name FROM meta_ads WHERE page_id={db._ph()} AND page_name<>'' LIMIT 1",
+                (pid,))
+            if row and row.get("page_name"):
+                return str(row["page_name"])
+        except Exception:  # noqa: BLE001
+            logger.exception("page name lookup failed")
+    snap = plan.get("snapshot") or {}
+    return str(snap.get("page_name") or plan.get("page_name") or plan.get("label") or "-")
 
 
-def _send_digest(token: str, chat_id: str, job_id: int, label: str,
-                 count: int, stores: int, elapsed: float) -> None:
-    minutes, seconds = divmod(int(elapsed), 60)
-    text = (f"📦 <b>{html.escape(str(label)[:60])}</b>\n"
-            f"📥 الإعلانات: <b>{count}</b> · 🏪 المتاجر: <b>{stores}</b>\n"
-            f"⏱️ {minutes}:{seconds:02d}\n\nاختر طريقة العرض:")
-    _api(token, "sendMessage", {
-        "chat_id": chat_id, "text": text, "parse_mode": "HTML",
-        "reply_markup": json.dumps(_digest_keyboard(job_id), ensure_ascii=False),
-    }, timeout=20)
+def _active_ads_count(page_id: str, job: dict) -> int:
+    pid = str(page_id or "")
+    if pid:
+        try:
+            row = db._query_one(
+                f"SELECT COUNT(*) AS n FROM meta_ads WHERE page_id={db._ph()} AND is_active=1",
+                (pid,))
+            if row is not None:
+                return int(row.get("n") or 0)
+        except Exception:  # noqa: BLE001
+            logger.exception("page ad count failed")
+    return int(job.get("result_count") or 0)
 
 
-def _send_more_button(token: str, chat_id: str, job_id: int, mode: str, offset: int) -> None:
-    kb = {"inline_keyboard": [[
-        {"text": "المزيد ▸", "callback_data": f"{mode}:{job_id}:{offset}"}]]}
-    _api(token, "sendMessage", {"chat_id": chat_id, "text": "—",
-                                "reply_markup": json.dumps(kb)}, timeout=20)
+def _report_keyboard(chat_id: str, page_id: str) -> dict:
+    target = f"{DASHBOARD_URL}/?page_id={page_id}" if page_id else DASHBOARD_URL
+    rows = [[{"text": "افحص النتائج", "url": target}]]
+    if page_id:
+        if link_stats.is_followed(chat_id, page_id):
+            rows.append([{"text": "إيقاف المتابعة", "callback_data": f"unf:{page_id}"}])
+        else:
+            rows.append([{"text": "متابعة المنافس", "callback_data": f"fol:{page_id}"}])
+    rows.append([{"text": "إلغاء آخر مهمة", "callback_data": "can"}])
+    return {"inline_keyboard": rows}
+
+
+def _send_report(token: str, chat_id: str, job: dict, plan: dict) -> None:
+    page_id = str(plan.get("page_id") or "")
+    name = _page_name_for(page_id, plan)
+    count = _active_ads_count(page_id, job)
+    status = str(job.get("status") or "")
+    error = str(job.get("error") or "").strip()
+    head = "⏹" if status == "stopped" else ("⚠️" if status == "failed" else "🏪")
+    text = f"{head} <b>{html.escape(name[:80])}</b>\n📥 الإعلانات: <b>{count}</b>"
+    if status == "failed" and error:
+        text += f"\n{html.escape(error[:160])}"
+    _send(token, chat_id, text, reply_markup=_report_keyboard(chat_id, page_id))
+
+
+def _cancel_last_job(token: str, chat_id: str) -> None:
+    try:
+        row = db._query_one(
+            "SELECT id, status, result_count FROM jobs "
+            "WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1")
+    except Exception:  # noqa: BLE001
+        logger.exception("cancel last job lookup failed")
+        row = None
+    if not row:
+        _send(token, chat_id, "لا توجد مهمة معلّقة أو جارية.")
+        return
+    jid = int(row["id"])
+    if str(row.get("status")) == "pending":
+        db.finish_job(jid, status="stopped", result_count=int(row.get("result_count") or 0))
+    else:
+        db.request_stop(jid)
+        if str((manager.state or {}).get("job_id") or "") == str(jid):
+            manager.stop()
+    _send(token, chat_id, f"⏹ أُلغيت المهمة <b>#{jid}</b>.")
 
 
 def _handle_callback(token: str, owner: str, callback: dict) -> None:
@@ -381,33 +521,31 @@ def _handle_callback(token: str, owner: str, callback: dict) -> None:
              {"callback_query_id": callback.get("id", "")}, timeout=10)
         if not chat_id or chat_id != owner:
             return
-        parts = str(callback.get("data") or "").split(":")
-        if len(parts) != 3 or parts[0] not in ("best", "new"):
+        data = str(callback.get("data") or "")
+        message_id = (callback.get("message") or {}).get("message_id")
+        if data == "can":
+            _cancel_last_job(token, chat_id)
             return
-        mode, job_id, offset = parts[0], int(parts[1]), int(parts[2])
-        job = db.get_job(job_id)
-        if not job:
-            _send(token, chat_id, "المهمة غير موجودة.")
-            return
-        ads = _ads_for_job(job, mode=mode, offset=offset, limit=3)
-        if not ads:
-            _send(token, chat_id, "لا مزيد من الإعلانات.")
-            return
-        for ad in ads:
-            _send_ad_card(token, chat_id, ad)
-        if len(ads) == 3:
-            _send_more_button(token, chat_id, job_id, mode, offset + len(ads))
+        if data.startswith(("fol:", "unf:")):
+            action, page_id = data.split(":", 1)
+            if not page_id.isdigit():
+                return
+            if action == "fol":
+                name = _page_name_for(page_id, {})
+                link_stats.follow(chat_id, page_id, "" if name == "-" else name)
+            else:
+                link_stats.unfollow(chat_id, page_id)
+            if message_id:
+                _edit_markup(token, chat_id, int(message_id),
+                             _report_keyboard(chat_id, page_id))
     except Exception:  # noqa: BLE001
         logger.exception("bot callback failed")
 
 
-def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
-    """Follow a queued job: periodic progress, then a rich final summary."""
+def _watch_job(token: str, chat_id: str, job_id: int, plan: dict) -> None:
+    """Wait for the job, then send exactly one concise report."""
     started = time.time()
-    last_ping = 0.0
-    stores = 0
-    deadline = started + 3600
-    while time.time() < deadline:
+    while time.time() - started < 3600:
         time.sleep(5)
         try:
             job = db.get_job(int(job_id))
@@ -415,48 +553,15 @@ def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
             return
         if not job:
             return
-        status = str(job.get("status") or "")
-        state = manager.state or {}
-        same_job = str(state.get("job_id") or "") == str(job_id)
-        if status in ("pending", "running", "stopping"):
-            if same_job:
-                stores = state.get("stores") or stores
-                now = time.time()
-                if now - last_ping >= 30:
-                    last_ping = now
-                    reported = state.get("reported")
-                    pct = ""
-                    if reported:
-                        pct = f" ({min(100, round((state.get('scanned') or 0) * 100 / reported))}%)"
-                    _send(token, chat_id,
-                          f"⏳ <b>#{job_id}</b>{pct}\n"
-                          f"📥 سُحب: {state.get('scraped', 0)} · 🔎 فُحص: {state.get('scanned', 0)}\n"
-                          f"🏪 متاجر: {state.get('stores', 0)}")
+        if str(job.get("status") or "") in ("pending", "running", "stopping"):
             continue
-
-        count = int(job.get("result_count") or 0)
-        minutes, seconds = divmod(int(time.time() - started), 60)
-        target = html.escape(label or str(job.get("query") or job.get("url") or "-")[:60])
-        error = str(job.get("error") or "").strip()
-        if not error and same_job:
-            error = str(state.get("error") or "").strip()
-        head = f"المهمة <b>#{job_id}</b> — {target}"
-        if status == "failed" or (count == 0 and error):
-            _send(token, chat_id,
-                  f"⚠️ {head}\nالسبب: {html.escape(error or 'خطأ غير معروف')}\n"
-                  f"⏱️ {minutes}:{seconds:02d}")
-        elif status == "stopped":
-            _send(token, chat_id,
-                  f"⏹ {head}\nأُوقفت بعد {count} إعلانًا.\n⏱️ {minutes}:{seconds:02d}")
-        elif count == 0:
-            _send(token, chat_id,
-                  f"ℹ️ {head}\nانتهت: <b>0</b> إعلان — لا توجد إعلانات نشطة لهذا الهدف.\n"
-                  f"⏱️ {minutes}:{seconds:02d}")
-        else:
-            _send_digest(token, chat_id, job_id,
-                         label or str(job.get("query") or job.get("url") or "المهمة"),
-                         count, stores, time.time() - started)
+        _send_report(token, chat_id, job, plan)
         return
+    try:
+        job = db.get_job(int(job_id)) or {"id": job_id}
+    except Exception:  # noqa: BLE001
+        return
+    _send_report(token, chat_id, job, plan)
 
 
 def _handle_update(token: str, owner: str, update: dict) -> None:
@@ -506,35 +611,25 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
         _send(token, chat_id, "⏹ أُرسل أمر الإيقاف.")
         return
 
-    plan = plan_for_text(text)
-    if plan.get("error"):
-        _send(token, chat_id, "⚠️ " + html.escape(plan["error"]))
+    plans = plans_for_text(text)
+    valid = [p for p in plans if not p.get("error")]
+    for plan in plans:
+        if plan.get("error"):
+            _send(token, chat_id, "⚠️ " + html.escape(plan["error"]))
+    if not valid:
         return
-    try:
-        job_id = _queue(plan)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("telegram bot queue failed")
-        _send(token, chat_id, f"⚠️ تعذّر إنشاء المهمة: {html.escape(str(exc))}")
-        return
-    busy = bool(manager.state.get("running")) or db.has_pending_jobs()
-    threading.Thread(target=_watch_job,
-                     args=(token, chat_id, job_id, plan.get("label", "")), daemon=True).start()
-    _send(token, chat_id,
-          f"✅ أُضيفت المهمة <b>#{job_id}</b>\nالنوع: {html.escape(plan['label'])}"
-          + ("\n🕒 ستنتظر انتهاء السحب الحالي." if busy else "")
-          + "\n\nستجد النتائج في بنك الإعلانات.")
-
-    stats = plan.get("stats") or {}
-    if stats:
-        lines = ["📊 <b>إحصائيات المنشور</b>"]
-        if stats.get("page_name"):
-            lines.append(f"🏪 {html.escape(str(stats['page_name']))}")
-        if stats.get("views") is not None:
-            lines.append(f"👁️ المشاهدات: <b>{_fmt_num(int(stats['views']))}</b>")
-        if stats.get("reactions") is not None:
-            lines.append(f"👍 التفاعلات: <b>{_fmt_num(int(stats['reactions']))}</b>")
-        lines.append("ℹ️ التعليقات والمشاركات غير متاحة للزوار (تتطلب تسجيل دخول).")
-        _send(token, chat_id, "\n".join(lines))
+    if len(valid) > 1:
+        _send(token, chat_id, f"⏳ سحب {len(valid)} صفحة/هدف...")
+    for plan in valid:
+        _save_link_snapshot(plan)
+        try:
+            job_id = _queue(plan)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("telegram bot queue failed")
+            _send(token, chat_id, f"⚠️ تعذّر إنشاء المهمة: {html.escape(str(exc))}")
+            continue
+        threading.Thread(target=_watch_job,
+                         args=(token, chat_id, job_id, plan), daemon=True).start()
 
 
 def telegram_bot_loop() -> None:
