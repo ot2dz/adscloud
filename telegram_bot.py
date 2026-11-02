@@ -632,6 +632,46 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
                          args=(token, chat_id, job_id, plan), daemon=True).start()
 
 
+def follow_watch_loop() -> None:
+    """Notify once per batch of genuinely new ads for followed pages."""
+    interval = int(os.environ.get("TELEGRAM_FOLLOW_INTERVAL_MIN", "10") or 10) * 60
+    time.sleep(60)
+    while True:
+        try:
+            token = (db.get_settings().get("telegram_token") or "").strip()
+            if token:
+                for row in link_stats.followed():
+                    chat_id = str(row.get("chat_id") or "")
+                    page_id = str(row.get("page_id") or "")
+                    last = str(row.get("last_notified_at") or "")
+                    if not chat_id or not page_id:
+                        continue
+                    if not last:
+                        link_stats.mark_notified(chat_id, page_id, "")
+                        continue
+                    p = db._ph()
+                    found = db._query_one(
+                        f"SELECT COUNT(*) AS n FROM meta_ads WHERE page_id={p} AND first_seen>{p}",
+                        (page_id, last))
+                    count = int((found or {}).get("n") or 0)
+                    if count <= 0:
+                        continue
+                    name = row.get("page_name") or page_id
+                    keyboard = {"inline_keyboard": [[{
+                        "text": "افحص النتائج",
+                        "url": f"{DASHBOARD_URL}/?page_id={page_id}"}]]}
+                    _api(token, "sendMessage", {
+                        "chat_id": chat_id,
+                        "text": f"🆕 <b>{html.escape(str(name))}</b>: <b>{count}</b> إعلان جديد",
+                        "parse_mode": "HTML",
+                        "reply_markup": json.dumps(keyboard, ensure_ascii=False),
+                    }, timeout=20)
+                    link_stats.mark_notified(chat_id, page_id, "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("follow watch loop: %s", exc)
+        time.sleep(interval)
+
+
 def telegram_bot_loop() -> None:
     """Long-poll Telegram and queue scrapes from the owner's share messages."""
     offset = 0
