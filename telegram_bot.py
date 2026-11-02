@@ -57,16 +57,55 @@ def _send(token: str, chat_id: str, text: str) -> None:
         logger.warning("telegram bot reply failed: %s", exc)
 
 
-def _resolve_share_link(url: str) -> str:
-    """Follow a Facebook share/post redirect and return the final URL."""
-    if not any(h in url.lower() for h in FB_HOSTS):
-        return url
+MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+
+
+def _share_html(url: str):
+    """Fetch a Facebook share page: (final_url, html_text)."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.geturl() or url
+        req = urllib.request.Request(url, headers={"User-Agent": MOBILE_UA,
+                                                   "Accept-Language": "ar,en;q=0.8"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.geturl() or url, resp.read(400000).decode("utf-8", "ignore")
     except Exception:  # noqa: BLE001
-        return url
+        return url, ""
+
+
+def _ad_snippet(page_html: str) -> str:
+    """Pull the shared ad copy out of the page metadata."""
+    title = ""
+    m = re.search(r'og:title" content="([^"]+)"', page_html)
+    if m:
+        title = html.unescape(m.group(1))
+    else:
+        m = re.search(r"<title>(.*?)</title>", page_html, re.S)
+        if m:
+            title = html.unescape(m.group(1))
+    text = re.sub(r"[^\w\s\u0600-\u06FF]", " ", title)
+    words = [w for w in text.split() if w]
+    snippet = " ".join(words[:8]).strip()
+    return snippet if len(snippet) >= 12 else ""
+
+
+def _page_for_snippet(snippet: str) -> str | None:
+    """Find the advertiser page id by searching the ad copy in the library."""
+    try:
+        from engine import scrape
+        ads = []
+        scrape(query=snippet, country=DEFAULT_COUNTRY, max_results=12, estimate=False,
+               on_ad=lambda a: ads.append(a))
+        counts: dict[str, int] = {}
+        for ad in ads:
+            d = ad.__dict__ if hasattr(ad, "__dict__") else ad
+            pid = str(d.get("page_id") or "")
+            if pid:
+                counts[pid] = counts.get(pid, 0) + 1
+        if counts:
+            return max(counts, key=counts.get)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("share snippet lookup failed: %s", exc)
+    return None
 
 
 def plan_for_text(text: str) -> dict:
@@ -82,16 +121,25 @@ def plan_for_text(text: str) -> dict:
         if "facebook.com/ads/library" in low:
             return {"kind": "link", "url": url, "label": "رابط مكتبة إعلانات"}
         if any(h in low for h in FB_HOSTS):
-            final = _resolve_share_link(url)
-            page_id = extract_page_id(final)
-            if not page_id:
-                m = re.search(r"[?&]id=(\d{6,})", final)
-                page_id = m.group(1) if m else None
+            final, page_html = _share_html(url)
+            if "facebook.com/ads/library" in final.lower():
+                return {"kind": "link", "url": final, "label": "رابط مكتبة إعلانات"}
+            page_id = None
+            if not re.search(r"/(reel|share|watch)", final, re.I):
+                page_id = extract_page_id(final)
+                if not page_id:
+                    m = re.search(r"[?&]id=(\d{6,})", final)
+                    page_id = m.group(1) if m else None
             if page_id:
                 return {"kind": "page", "url": page_url(page_id, DEFAULT_COUNTRY),
                         "page_id": page_id, "label": f"صفحة {page_id}"}
-            return {"error": "لم أستخرج رقم الصفحة من هذا الرابط. افتح «تفاصيل الإعلان» "
-                             "في فيسبوك وانسخ رابط مكتبة الإعلانات ثم أرسله."}
+            snippet = _ad_snippet(page_html)
+            found = _page_for_snippet(snippet) if snippet else None
+            if found:
+                return {"kind": "page", "url": page_url(found, DEFAULT_COUNTRY),
+                        "page_id": found, "label": f"صفحة {found} (من نص الإعلان)"}
+            return {"error": "رابط مشاركة/ريل بلا معرّف صفحة، ولم أجد الإعلان في المكتبة. "
+                             "افتح «تفاصيل الإعلان» في فيسبوك وانسخ رابط مكتبة الإعلانات."}
         domain = clean_domain(url)
         if domain:
             return {"kind": "domain", "query": domain, "label": domain}
