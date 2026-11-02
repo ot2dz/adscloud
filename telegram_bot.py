@@ -127,6 +127,34 @@ def _ad_snippet(page_html: str) -> str:
     return ""
 
 
+def _reel_stats(page_html: str) -> dict:
+    """Public reel counters available to a logged-out visitor."""
+    views = re.search(r'"play_count"\s*:\s*(\d+)', page_html)
+    reactions = re.search(r'"reaction_count"\s*:\s*\{\s*"count"\s*:\s*(\d+)', page_html)
+    video = re.search(r'"video_id"\s*:\s*"(\d+)"', page_html)
+    page = re.search(r'"owner_as_page"\s*:\s*\{[^}]*?"name"\s*:\s*"([^"]+)"[^}]*?"id"\s*:\s*"(\d+)"',
+                     page_html)
+    stats = {}
+    if views:
+        stats["views"] = int(views.group(1))
+    if reactions:
+        stats["reactions"] = int(reactions.group(1))
+    if video:
+        stats["video_id"] = video.group(1)
+    if page:
+        stats["page_name"] = html.unescape(page.group(1))
+        stats["page_id"] = page.group(2)
+    return stats
+
+
+def _fmt_num(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    return str(n)
+
+
 def _page_from_html(page_html: str) -> str | None:
     """Read the advertiser page id from the reel/post JSON (owner_as_page / page_id)."""
     m = re.search(r'"owner_as_page":\{[^}]*?"id":"(\d{6,})"', page_html)
@@ -184,6 +212,7 @@ def plan_for_text(text: str) -> dict:
             return {"kind": "link", "url": url, "label": "رابط مكتبة إعلانات"}
         if any(h in low for h in FB_HOSTS):
             final, page_html = _share_html(url)
+            stats = _reel_stats(page_html)
             if "facebook.com/ads/library" in final.lower():
                 return {"kind": "link", "url": final, "label": "رابط مكتبة إعلانات"}
             page_id = None
@@ -198,7 +227,8 @@ def plan_for_text(text: str) -> dict:
             direct = _page_from_html(page_html)
             if direct:
                 return {"kind": "page", "url": page_url(direct, DEFAULT_COUNTRY),
-                        "page_id": direct, "label": f"صفحة {direct} (من بيانات الريل)"}
+                        "page_id": direct, "label": f"صفحة {direct} (من بيانات الريل)",
+                        "stats": stats}
             snippet = _ad_snippet(page_html)
             found = _PAGE_CACHE.get(url) or (_page_for_snippet(snippet) if snippet else None)
             if found == "__blocked__":
@@ -207,7 +237,8 @@ def plan_for_text(text: str) -> dict:
             if found:
                 _PAGE_CACHE[url] = found
                 return {"kind": "page", "url": page_url(found, DEFAULT_COUNTRY),
-                        "page_id": found, "label": f"صفحة {found} (من نص الإعلان)"}
+                        "page_id": found, "label": f"صفحة {found} (من نص الإعلان)",
+                        "stats": stats}
             return {"error": "رابط مشاركة/ريل بلا معرّف صفحة، ولم أجد الإعلان في المكتبة. "
                              "افتح «تفاصيل الإعلان» في فيسبوك وانسخ رابط مكتبة الإعلانات."}
         domain = clean_domain(url)
@@ -443,6 +474,18 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
           f"✅ أُضيفت المهمة <b>#{job_id}</b>\nالنوع: {html.escape(plan['label'])}"
           + ("\n🕒 ستنتظر انتهاء السحب الحالي." if busy else "")
           + "\n\nستجد النتائج في بنك الإعلانات.")
+
+    stats = plan.get("stats") or {}
+    if stats:
+        lines = ["📊 <b>إحصائيات المنشور</b>"]
+        if stats.get("page_name"):
+            lines.append(f"🏪 {html.escape(str(stats['page_name']))}")
+        if stats.get("views") is not None:
+            lines.append(f"👁️ المشاهدات: <b>{_fmt_num(int(stats['views']))}</b>")
+        if stats.get("reactions") is not None:
+            lines.append(f"👍 التفاعلات: <b>{_fmt_num(int(stats['reactions']))}</b>")
+        lines.append("ℹ️ التعليقات والمشاركات غير متاحة للزوار (تتطلب تسجيل دخول).")
+        _send(token, chat_id, "\n".join(lines))
 
 
 def telegram_bot_loop() -> None:
