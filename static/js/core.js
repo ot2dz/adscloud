@@ -393,23 +393,59 @@ function showTab(t) {
 }
 
 
-// ---- egress IP badge (public IP the scraper goes out from) ----
+// ---- egress IP badge + manual rotate button ----
 (function egressIpBadge() {
   const badge = document.getElementById('egress-ip-badge');
   const value = document.getElementById('egress-ip');
+  const btn = document.getElementById('egress-rotate');
   if (!badge || !value) return;
+
+  function paint(j) {
+    if (!j || !j.ok || !j.ip) { badge.classList.add('hidden'); return; }
+    value.textContent = j.ip;
+    badge.title = 'source: ' + (j.source || '?') + (j.proxy ? ' | proxy: ' + j.proxy : '')
+      + (j.rotator && j.rotator.ip ? ' | rotator: ' + j.rotator.ip : '');
+    badge.classList.remove('hidden');
+  }
+
   async function load() {
     try {
       const r = await fetch('/api/egress-ip', { credentials: 'same-origin' });
       if (!r.ok) { badge.classList.add('hidden'); return; }
-      const j = await r.json();
-      if (!j || !j.ok || !j.ip) { badge.classList.add('hidden'); return; }
-      value.textContent = j.ip;
-      badge.title = 'source: ' + (j.source || '?') + (j.proxy ? ' | proxy: ' + j.proxy : '')
-        + (j.rotator && j.rotator.ip ? ' | rotator: ' + j.rotator.ip : '');
-      badge.classList.remove('hidden');
+      paint(await r.json());
     } catch (_e) { badge.classList.add('hidden'); }
   }
+
+  async function rotate() {
+    if (!btn || btn.disabled) return;
+    const before = value.textContent;
+    btn.disabled = true;
+    btn.classList.add('animate-spin');
+    try {
+      const r = await fetch('/api/egress-ip/rotate', { method: 'POST', credentials: 'same-origin' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        const rr = (j && (j.error || (j.result && j.result.error))) || 'rotate failed';
+        btn.title = String(rr);
+      }
+      for (let i = 0; i < 20; i++) {
+        await new Promise((res) => setTimeout(res, 2000));
+        try {
+          const q = await fetch('/api/egress-ip', { credentials: 'same-origin' });
+          if (!q.ok) continue;
+          const jj = await q.json();
+          paint(jj);
+          if (jj && jj.ip && jj.ip !== before) break;
+        } catch (_e) { }
+      }
+    } catch (_e) {
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('animate-spin');
+    }
+  }
+
+  if (btn) btn.addEventListener('click', rotate);
   load();
   setInterval(load, 60000);
 })();

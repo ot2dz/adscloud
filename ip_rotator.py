@@ -22,6 +22,7 @@ import logging
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -40,14 +41,17 @@ def enabled() -> bool:
 
 
 def rotate(timeout: float = 30.0, min_interval: float = 120.0) -> "dict | None":
-    """Ask the rotator to change the public IP. Returns the agent's JSON or None."""
+    """Ask the rotator to change the public IP. Returns the agent's JSON or None.
+
+    ``min_interval=0`` forces a manual rotation (still bounded by the agent).
+    """
     url = _url()
     if not url:
         return None
 
     global _last_ok
     with _lock:
-        if _last_ok and (time.time() - _last_ok) < min_interval:
+        if min_interval and _last_ok and (time.time() - _last_ok) < min_interval:
             logger.info("IP rotate skipped (debounce %ss)", min_interval)
             return None
         try:
@@ -71,6 +75,14 @@ def rotate(timeout: float = 30.0, min_interval: float = 120.0) -> "dict | None":
                 )
             else:
                 logger.warning("IP rotate did not change the IP: %s", data)
+            return data
+        except urllib.error.HTTPError as exc:
+            # 429 (too soon) / 409 (busy) carry a JSON body worth returning.
+            try:
+                data = json.loads(exc.read().decode("utf-8", "replace") or "{}")
+            except Exception:  # noqa: BLE001
+                data = {"ok": False, "error": "HTTP %s" % exc.code}
+            logger.warning("IP rotate HTTP %s: %s", exc.code, data)
             return data
         except Exception as exc:  # noqa: BLE001
             logger.warning("IP rotate failed: %s", exc)

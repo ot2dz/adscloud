@@ -50,6 +50,21 @@ def _probe(proxy_url: str | None) -> str:
         return (r.text or "").strip()
 
 
+@bp.route("/api/egress-ip/rotate", methods=["POST"])
+@login_required
+def api_egress_rotate():
+    """Manual rotation from the header button."""
+    _CACHE["data"] = None
+    _CACHE["ts"] = 0.0
+    if not ip_rotator.enabled():
+        return jsonify({"ok": False, "error": "rotator not configured"}), 400
+    res = ip_rotator.rotate(min_interval=0, timeout=40)
+    if res is None:
+        return jsonify({"ok": False, "error": "rotator unreachable"}), 502
+    ok = bool(res.get("ok") or res.get("accepted"))
+    return jsonify({"ok": ok, "result": res}), (200 if ok else 429)
+
+
 @bp.route("/api/egress-ip", methods=["GET"])
 @login_required
 def api_egress_ip():
