@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -273,11 +274,12 @@ def _queue(plan: dict) -> int:
     return int(job_id)
 
 
-PREVIEW_MAX = 5
+PREVIEW_MAX = 3
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://ads.botdz.com")
 
 
-def _ads_for_job(job: dict) -> list[dict]:
-    """The best active ads of the finished job's target (for the bot cards)."""
+def _ads_for_job(job: dict, mode: str = "best", offset: int = 0, limit: int = 3) -> list[dict]:
+    """Active ads of the job's target, ordered for the chosen view."""
     url = str(job.get("url") or "")
     query = str(job.get("query") or "").strip()
     p = db._ph()
@@ -297,8 +299,9 @@ def _ads_for_job(job: dict) -> list[dict]:
         params.append(query)
     else:
         return []
-    sql += f" ORDER BY days_active DESC LIMIT {p}"
-    params.append(PREVIEW_MAX)
+    order = "days_active DESC" if mode == "best" else "start_date DESC, days_active DESC"
+    sql += f" ORDER BY {order} LIMIT {p} OFFSET {p}"
+    params.extend([max(1, int(limit)), max(0, int(offset))])
     try:
         return [dict(row) for row in db._query(sql, tuple(params))]
     except Exception:  # noqa: BLE001
@@ -344,6 +347,60 @@ def _send_ad_card(token: str, chat_id: str, ad: dict) -> None:
     params["text"] = caption
     params["disable_web_page_preview"] = "false"
     _api(token, "sendMessage", params, timeout=20)
+def _digest_keyboard(job_id: int) -> dict:
+    return {"inline_keyboard": [
+        [{"text": "🔥 أفضل 3", "callback_data": f"best:{job_id}:0"},
+         {"text": "🆕 الأحدث 3", "callback_data": f"new:{job_id}:0"}],
+        [{"text": "🌐 فتح اللوحة", "url": DASHBOARD_URL}],
+    ]}
+
+
+def _send_digest(token: str, chat_id: str, job_id: int, label: str,
+                 count: int, stores: int, elapsed: float) -> None:
+    minutes, seconds = divmod(int(elapsed), 60)
+    text = (f"📦 <b>{html.escape(str(label)[:60])}</b>\n"
+            f"📥 الإعلانات: <b>{count}</b> · 🏪 المتاجر: <b>{stores}</b>\n"
+            f"⏱️ {minutes}:{seconds:02d}\n\nاختر طريقة العرض:")
+    _api(token, "sendMessage", {
+        "chat_id": chat_id, "text": text, "parse_mode": "HTML",
+        "reply_markup": json.dumps(_digest_keyboard(job_id), ensure_ascii=False),
+    }, timeout=20)
+
+
+def _send_more_button(token: str, chat_id: str, job_id: int, mode: str, offset: int) -> None:
+    kb = {"inline_keyboard": [[
+        {"text": "المزيد ▸", "callback_data": f"{mode}:{job_id}:{offset}"}]]}
+    _api(token, "sendMessage", {"chat_id": chat_id, "text": "—",
+                                "reply_markup": json.dumps(kb)}, timeout=20)
+
+
+def _handle_callback(token: str, owner: str, callback: dict) -> None:
+    try:
+        chat_id = str((callback.get("message") or {}).get("chat", {}).get("id", ""))
+        _api(token, "answerCallbackQuery",
+             {"callback_query_id": callback.get("id", "")}, timeout=10)
+        if not chat_id or chat_id != owner:
+            return
+        parts = str(callback.get("data") or "").split(":")
+        if len(parts) != 3 or parts[0] not in ("best", "new"):
+            return
+        mode, job_id, offset = parts[0], int(parts[1]), int(parts[2])
+        job = db.get_job(job_id)
+        if not job:
+            _send(token, chat_id, "المهمة غير موجودة.")
+            return
+        ads = _ads_for_job(job, mode=mode, offset=offset, limit=3)
+        if not ads:
+            _send(token, chat_id, "لا مزيد من الإعلانات.")
+            return
+        for ad in ads:
+            _send_ad_card(token, chat_id, ad)
+        if len(ads) == 3:
+            _send_more_button(token, chat_id, job_id, mode, offset + len(ads))
+    except Exception:  # noqa: BLE001
+        logger.exception("bot callback failed")
+
+
 def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
     """Follow a queued job: periodic progress, then a rich final summary."""
     started = time.time()
@@ -396,17 +453,9 @@ def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
                   f"ℹ️ {head}\nانتهت: <b>0</b> إعلان — لا توجد إعلانات نشطة لهذا الهدف.\n"
                   f"⏱️ {minutes}:{seconds:02d}")
         else:
-            _send(token, chat_id,
-                  f"✅ {head}\n📥 الإعلانات: <b>{count}</b>\n🏪 المتاجر: <b>{stores}</b>\n"
-                  f"⏱️ {minutes}:{seconds:02d}")
-            ads = _ads_for_job(job)
-            if ads:
-                _send(token, chat_id, f"🖼️ أهم {len(ads)} إعلانات لهذا الهدف:")
-                for ad in ads:
-                    try:
-                        _send_ad_card(token, chat_id, ad)
-                    except Exception:  # noqa: BLE001
-                        logger.exception("bot ad card failed")
+            _send_digest(token, chat_id, job_id,
+                         label or str(job.get("query") or job.get("url") or "المهمة"),
+                         count, stores, time.time() - started)
         return
 
 
@@ -510,7 +559,10 @@ def telegram_bot_loop() -> None:
             for update in data.get("result") or []:
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
                 try:
-                    _handle_update(token, owner, update)
+                    if update.get("callback_query"):
+                        _handle_callback(token, owner, update["callback_query"])
+                    else:
+                        _handle_update(token, owner, update)
                 except Exception:  # noqa: BLE001
                     logger.exception("telegram bot: update failed")
         except urllib.error.HTTPError as exc:
