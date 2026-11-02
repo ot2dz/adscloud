@@ -91,6 +91,17 @@ def api_ads():
     return jsonify({"ads": ads, "total": total_ads, "total_ads": total_ads, "grouped": False})
 
 
+@bp.route("/api/link-stats")
+@login_required
+def api_link_stats():
+    page_id = (request.args.get("page_id") or "").strip()
+    if not page_id:
+        return jsonify({"error": "page_id required"}), 400
+    from link_stats import for_page
+    rows = for_page(page_id, limit=20)
+    return jsonify({"page_id": page_id, "latest": rows[0] if rows else None, "history": rows})
+
+
 @bp.route("/api/ads/group")
 @login_required
 def api_ads_group():
