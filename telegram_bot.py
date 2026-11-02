@@ -33,7 +33,7 @@ HELP_TEXT = (
     "• رابط منشور/مشاركة أو رقم صفحة ← سحب كل إعلانات الصفحة\n"
     "• دومين مثل <code>shop.com</code> ← سحب إعلانات المتجر\n"
     "• نص مثل <code>مكنسة بخار</code> ← سحب بالكلمة\n\n"
-    "/status لحالة المحرك · /stop لإيقاف السحب · /id لمعرفة رقم المحادثة"
+    "/status حالة المحرك · /jobs آخر المهام · /stop إيقاف · /id رقم المحادثة"
 )
 
 _PAGE_CACHE: dict[str, str] = {}
@@ -242,9 +242,12 @@ def _queue(plan: dict) -> int:
     return int(job_id)
 
 
-def _watch_job(token: str, chat_id: str, job_id: int) -> None:
-    """Report the final result of a queued job (0 ads vs N ads vs failure)."""
-    deadline = time.time() + 1800
+def _watch_job(token: str, chat_id: str, job_id: int, label: str = "") -> None:
+    """Follow a queued job: periodic progress, then a rich final summary."""
+    started = time.time()
+    last_ping = 0.0
+    stores = 0
+    deadline = started + 3600
     while time.time() < deadline:
         time.sleep(5)
         try:
@@ -254,17 +257,46 @@ def _watch_job(token: str, chat_id: str, job_id: int) -> None:
         if not job:
             return
         status = str(job.get("status") or "")
+        state = manager.state or {}
+        same_job = str(state.get("job_id") or "") == str(job_id)
         if status in ("pending", "running", "stopping"):
+            if same_job:
+                stores = state.get("stores") or stores
+                now = time.time()
+                if now - last_ping >= 30:
+                    last_ping = now
+                    reported = state.get("reported")
+                    pct = ""
+                    if reported:
+                        pct = f" ({min(100, round((state.get('scanned') or 0) * 100 / reported))}%)"
+                    _send(token, chat_id,
+                          f"⏳ <b>#{job_id}</b>{pct}\n"
+                          f"📥 سُحب: {state.get('scraped', 0)} · 🔎 فُحص: {state.get('scanned', 0)}\n"
+                          f"🏪 متاجر: {state.get('stores', 0)}")
             continue
+
         count = int(job.get("result_count") or 0)
-        if status == "failed":
-            error = html.escape(str(job.get("error") or "خطأ"))
-            _send(token, chat_id, f"⚠️ المهمة #{job_id} فشلت: {error}")
+        minutes, seconds = divmod(int(time.time() - started), 60)
+        target = html.escape(label or str(job.get("query") or job.get("url") or "-")[:60])
+        error = str(job.get("error") or "").strip()
+        if not error and same_job:
+            error = str(state.get("error") or "").strip()
+        head = f"المهمة <b>#{job_id}</b> — {target}"
+        if status == "failed" or (count == 0 and error):
+            _send(token, chat_id,
+                  f"⚠️ {head}\nالسبب: {html.escape(error or 'خطأ غير معروف')}\n"
+                  f"⏱️ {minutes}:{seconds:02d}")
+        elif status == "stopped":
+            _send(token, chat_id,
+                  f"⏹ {head}\nأُوقفت بعد {count} إعلانًا.\n⏱️ {minutes}:{seconds:02d}")
         elif count == 0:
             _send(token, chat_id,
-                  f"ℹ️ المهمة #{job_id} انتهت: 0 إعلان — الصفحة/الكلمة بلا إعلانات نشطة.")
+                  f"ℹ️ {head}\nانتهت: <b>0</b> إعلان — لا توجد إعلانات نشطة لهذا الهدف.\n"
+                  f"⏱️ {minutes}:{seconds:02d}")
         else:
-            _send(token, chat_id, f"✅ المهمة #{job_id} انتهت: <b>{count}</b> إعلانًا.")
+            _send(token, chat_id,
+                  f"✅ {head}\n📥 الإعلانات: <b>{count}</b>\n🏪 المتاجر: <b>{stores}</b>\n"
+                  f"⏱️ {minutes}:{seconds:02d}")
         return
 
 
@@ -295,6 +327,21 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
               f"المحرك: <b>{state}</b>\nسُحب: {st.get('scraped', 0)} · فُحص: {st.get('scanned', 0)}"
               f"\nالهدف: {html.escape(str(st.get('query') or '-'))}")
         return
+    if cmd == "/jobs":
+        try:
+            jobs = db.list_jobs(limit=5)
+        except Exception:  # noqa: BLE001
+            jobs = []
+        if not jobs:
+            _send(token, chat_id, "لا توجد مهام بعد.")
+            return
+        lines = []
+        for job in jobs:
+            target = str(job.get("query") or job.get("url") or "-")[:50]
+            lines.append(f"#{job.get('id')} · {job.get('status')} · "
+                         f"{job.get('result_count') or 0} إعلان\n   {html.escape(target)}")
+        _send(token, chat_id, "<b>آخر المهام</b>\n" + "\n".join(lines))
+        return
     if cmd == "/stop":
         manager.stop()
         _send(token, chat_id, "⏹ أُرسل أمر الإيقاف.")
@@ -311,7 +358,8 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
         _send(token, chat_id, f"⚠️ تعذّر إنشاء المهمة: {html.escape(str(exc))}")
         return
     busy = bool(manager.state.get("running")) or db.has_pending_jobs()
-    threading.Thread(target=_watch_job, args=(token, chat_id, job_id), daemon=True).start()
+    threading.Thread(target=_watch_job,
+                     args=(token, chat_id, job_id, plan.get("label", "")), daemon=True).start()
     _send(token, chat_id,
           f"✅ أُضيفت المهمة <b>#{job_id}</b>\nالنوع: {html.escape(plan['label'])}"
           + ("\n🕒 ستنتظر انتهاء السحب الحالي." if busy else "")
