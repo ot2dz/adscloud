@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 HTTP scraping engine (no Playwright / no browser).
 
@@ -88,6 +88,11 @@ def _proxy_arg(spec: Optional[str] = None, advance: bool = True):
     """
     raw = (spec or "").strip() or (os.environ.get("META_ADS_PROXY") or "").strip()
     return raw or None
+
+
+def _allow_direct() -> bool:
+    """Opt-in escape hatch for local runs on a clean home IP (never on the server)."""
+    return os.environ.get("META_ADS_ALLOW_DIRECT", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -434,12 +439,12 @@ def scrape(
     # An Ad Library URL may legitimately carry an empty q (browse / all ads):
     # allow it and let Meta decide; only reject when there is nothing at all.
     if not q and not page_id and not url:
-        msg = "لا توجد كلمة أو صفحة أو رابط للسحب."
-        progress("⚠️ " + msg)
+        msg = "ظ„ط§ طھظˆط¬ط¯ ظƒظ„ظ…ط© ط£ظˆ طµظپط­ط© ط£ظˆ ط±ط§ط¨ط· ظ„ظ„ط³ط­ط¨."
+        progress("âڑ ï¸ڈ " + msg)
         return ScrapeResult(query=q, url=url or "", failed=True, error=msg)
 
     progress(
-        f"🚀 بدء السحب عبر HTTP (بدون متصفح): "
+        f"ًںڑ€ ط¨ط¯ط، ط§ظ„ط³ط­ط¨ ط¹ط¨ط± HTTP (ط¨ط¯ظˆظ† ظ…طھطµظپط­): "
         f"{'page ' + page_id if page_id else 'q=' + repr(q)} | country={ctry} | "
         f"date={inc_min or '-'}..{inc_max or '-'} | scope={date_scope}"
         f"{' | lang=' + ','.join(langs) if langs else ''}"
@@ -451,7 +456,7 @@ def scrape(
         return ScrapeResult(query=q, url=url or "", interrupted=True, error=_FAIL_PROXY)
 
 
-    if not _proxy_arg(proxy):
+    if not _proxy_arg(proxy) and not _allow_direct():
         _msg = "\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0631\u0648\u0643\u0633\u064a \u0645\u0636\u0628\u0648\u0637 \u2014 \u0627\u0644\u0633\u062d\u0628 \u0645\u0646 IP \u0627\u0644\u0633\u064a\u0631\u0641\u0631 \u0645\u0639\u0637\u0651\u0644. \u0623\u0636\u0641 \u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u0641\u064a \u0627\u0644\u0625\u0639\u062f\u0627\u062f\u0627\u062a."
         progress(_msg)
         return ScrapeResult(query=q, url=url or "", failed=True, error=_msg)
@@ -488,17 +493,17 @@ def scrape(
         delay = PACE.slow_down()
         if block_pauses >= len(BLOCK_PAUSES_MIN):
             res.interrupted = True
-            res.error = "حظر مؤقت من Meta (نتائج فارغة) — سيُستأنف لاحقاً من نفس النقطة"
-            progress(f"⏸ {res.error}.")
+            res.error = "ط­ط¸ط± ظ…ط¤ظ‚طھ ظ…ظ† Meta (ظ†طھط§ط¦ط¬ ظپط§ط±ط؛ط©) â€” ط³ظٹظڈط³طھط£ظ†ظپ ظ„ط§ط­ظ‚ط§ظ‹ ظ…ظ† ظ†ظپط³ ط§ظ„ظ†ظ‚ط·ط©"
+            progress(f"âڈ¸ {res.error}.")
             return False
         wait_min = BLOCK_PAUSES_MIN[block_pauses]
         block_pauses += 1
-        progress(f"🐢 Meta بدأت تُرجع نتائج فارغة (حظر مؤقت) — إبطاء السحب إلى {delay:.1f} ث بين الطلبات، "
-                 f"استراحة {wait_min} دقيقة ثم استئناف من آخر صفحة ({block_pauses}/{len(BLOCK_PAUSES_MIN)}).")
+        progress(f"ًںگ¢ Meta ط¨ط¯ط£طھ طھظڈط±ط¬ط¹ ظ†طھط§ط¦ط¬ ظپط§ط±ط؛ط© (ط­ط¸ط± ظ…ط¤ظ‚طھ) â€” ط¥ط¨ط·ط§ط، ط§ظ„ط³ط­ط¨ ط¥ظ„ظ‰ {delay:.1f} ط« ط¨ظٹظ† ط§ظ„ط·ظ„ط¨ط§طھطŒ "
+                 f"ط§ط³طھط±ط§ط­ط© {wait_min} ط¯ظ‚ظٹظ‚ط© ط«ظ… ط§ط³طھط¦ظ†ط§ظپ ظ…ظ† ط¢ط®ط± طµظپط­ط© ({block_pauses}/{len(BLOCK_PAUSES_MIN)}).")
         return True
 
     if resume_cursor:
-        progress("↩️ استئناف السحب من آخر نقطة محفوظة (بدون إعادة الصفحات السابقة).")
+        progress("â†©ï¸ڈ ط§ط³طھط¦ظ†ط§ظپ ط§ظ„ط³ط­ط¨ ظ…ظ† ط¢ط®ط± ظ†ظ‚ط·ط© ظ…ط­ظپظˆط¸ط© (ط¨ط¯ظˆظ† ط¥ط¹ط§ط¯ط© ط§ظ„طµظپط­ط§طھ ط§ظ„ط³ط§ط¨ظ‚ط©).")
 
     attempt = 0
     while True:
@@ -515,7 +520,7 @@ def scrape(
                         content_languages=langs or None,
                     )
                     if res.reported_count is not None:
-                        progress(f"📊 العدد التقديري من Meta: {res.reported_count}")
+                        progress(f"ًں“ٹ ط§ظ„ط¹ط¯ط¯ ط§ظ„طھظ‚ط¯ظٹط±ظٹ ظ…ظ† Meta: {res.reported_count}")
                         if on_reported:
                             on_reported(res.reported_count)
                 except Exception as exc:  # noqa: BLE001
@@ -537,7 +542,7 @@ def scrape(
             ):
                 if should_stop and should_stop():
                     res.stopped = True
-                    progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
+                    progress("âڈ¹ طھظ… ط¥ظٹظ‚ط§ظپ ط§ظ„ط³ط­ط¨ ط¨ط·ظ„ط¨ ظ…ظ† ط§ظ„ظ…ط³طھط®ط¯ظ….")
                     break
                 scanned += 1
                 if on_scanned and (scanned == 1 or scanned % 5 == 0):
@@ -552,8 +557,8 @@ def scrape(
                         older_streak += 1
                         if early_stop_after and older_streak >= early_stop_after:
                             early_stopped = True
-                            progress(f"🧠 توقف ذكي: آخر {older_streak} إعلان كلها انطلقت قبل {inc_min} — "
-                                     f"انتهت إعلانات الفترة المطلوبة (فُحص {scanned} إعلان).")
+                            progress(f"ًں§  طھظˆظ‚ظپ ط°ظƒظٹ: ط¢ط®ط± {older_streak} ط¥ط¹ظ„ط§ظ† ظƒظ„ظ‡ط§ ط§ظ†ط·ظ„ظ‚طھ ظ‚ط¨ظ„ {inc_min} â€” "
+                                     f"ط§ظ†طھظ‡طھ ط¥ط¹ظ„ط§ظ†ط§طھ ط§ظ„ظپطھط±ط© ط§ظ„ظ…ط·ظ„ظˆط¨ط© (ظپظڈط­طµ {scanned} ط¥ط¹ظ„ط§ظ†).")
                             break
                         continue
                     older_streak = 0
@@ -567,7 +572,7 @@ def scrape(
                 if on_ad:
                     on_ad(ad)
                 if total % 25 == 0:
-                    progress(f"… تم جمع {total} إعلان")
+                    progress(f"â€¦ طھظ… ط¬ظ…ط¹ {total} ط¥ط¹ظ„ط§ظ†")
             # Generator ended normally: exhausted, max_results reached, smart
             # stop, user stop - or an empty page that may be a soft block.
             ended_on_empty_page = (not exhausted and not early_stopped and not res.stopped
@@ -600,14 +605,14 @@ def scrape(
                 continue
             if _is_permanent(exc):
                 logger.error("HTTP scrape failed permanently: %s", exc)
-                progress(f"⛔ خطأ دائم، لن تتم إعادة المحاولة: {exc}")
+                progress(f"â›” ط®ط·ط£ ط¯ط§ط¦ظ…طŒ ظ„ظ† طھطھظ… ط¥ط¹ط§ط¯ط© ط§ظ„ظ…ط­ط§ظˆظ„ط©: {exc}")
                 res.failed = True
                 break
             if attempt >= len(IN_RUN_RETRY_WAITS):
                 if _is_meta_block(exc):
                     ip_rotator.rotate()  # leave a fresh IP for the queued retry
                 logger.warning("HTTP scrape interrupted after %s retries: %s", attempt, exc)
-                progress(f"⏸ انقطع السحب بعد {attempt} محاولات: {exc} — سيُستأنف لاحقاً من نفس النقطة.")
+                progress(f"âڈ¸ ط§ظ†ظ‚ط·ط¹ ط§ظ„ط³ط­ط¨ ط¨ط¹ط¯ {attempt} ظ…ط­ط§ظˆظ„ط§طھ: {exc} â€” ط³ظٹظڈط³طھط£ظ†ظپ ظ„ط§ط­ظ‚ط§ظ‹ ظ…ظ† ظ†ظپط³ ط§ظ„ظ†ظ‚ط·ط©.")
                 res.interrupted = True
                 break
             if _is_meta_block(exc):
@@ -615,8 +620,8 @@ def scrape(
             # network/proxy failures just wait: rotating would drop the tunnel
             wait = IN_RUN_RETRY_WAITS[attempt]
             attempt += 1
-            progress(f"⚠️ {exc} — انتظار {wait} ثانية ثم استئناف من آخر صفحة "
-                     f"(محاولة {attempt}/{len(IN_RUN_RETRY_WAITS)}).")
+            progress(f"âڑ ï¸ڈ {exc} â€” ط§ظ†طھط¸ط§ط± {wait} ط«ط§ظ†ظٹط© ط«ظ… ط§ط³طھط¦ظ†ط§ظپ ظ…ظ† ط¢ط®ط± طµظپط­ط© "
+                     f"(ظ…ط­ط§ظˆظ„ط© {attempt}/{len(IN_RUN_RETRY_WAITS)}).")
             if _sleep_unless_stopped(wait, should_stop):
                 res.stopped = True
                 break
@@ -629,7 +634,8 @@ def scrape(
     res.total_ads = total
     res.scanned = scanned
     if res.completed:
-        progress(f"✅ انتهى السحب: {total} إعلان (بدون متصفح).")
+        progress(f"âœ… ط§ظ†طھظ‡ظ‰ ط§ظ„ط³ط­ط¨: {total} ط¥ط¹ظ„ط§ظ† (ط¨ط¯ظˆظ† ظ…طھطµظپط­).")
     elif not (res.interrupted or res.failed):
-        progress(f"✅ توقف السحب: {total} إعلان.")
+        progress(f"âœ… طھظˆظ‚ظپ ط§ظ„ط³ط­ط¨: {total} ط¥ط¹ظ„ط§ظ†.")
     return res
+
