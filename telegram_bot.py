@@ -96,6 +96,10 @@ def plan_for_text(text: str) -> dict:
             return {"kind": "domain", "query": domain, "label": domain}
         return {"error": "رابط غير مدعوم."}
 
+    if re.fullmatch(r"\d{6,20}", raw):
+        return {"kind": "page", "url": page_url(raw, DEFAULT_COUNTRY),
+                "page_id": raw, "label": f"صفحة {raw}"}
+
     if DOMAIN_RE.match(raw) and "." in raw:
         return {"kind": "domain", "query": clean_domain(raw), "label": clean_domain(raw)}
 
