@@ -7,3 +7,11 @@ meta_ads.sqlite
 .env
 .env.local
 *.log
+
+# local backups & dev-only helpers (never committed)
+*.bak
+*.bak*
+*.orig
+.dev-secret
+dev.py
+run.cmd
