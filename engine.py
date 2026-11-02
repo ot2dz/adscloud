@@ -150,6 +150,60 @@ class Pace:
 PACE = Pace(REQUEST_DELAY)
 
 
+_WAIT_PROXY = "\u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u063a\u064a\u0631 \u0645\u062a\u0627\u062d \u2014 \u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0641\u062d\u0635 \u0628\u0639\u062f 10 \u062b\u0648\u0627\u0646\u064d"
+_FAIL_PROXY = "\u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u063a\u064a\u0631 \u0645\u062a\u0627\u062d (\u0627\u0644\u0646\u0641\u0642 \u0645\u0641\u0635\u0648\u0644\u061f) \u2014 \u062a\u0623\u062c\u064a\u0644 \u0627\u0644\u0633\u062d\u0628 \u0648\u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0645\u062d\u0627\u0648\u0644\u0629 \u0644\u0627\u062d\u0642\u0627\u064b"
+
+# Errors that mean "the proxy/tunnel is down", not "Meta blocked us".
+# Rotating on those only extends the outage, so they are retried as-is.
+_NETWORK_ERROR_MARKERS = (
+    "could not connect to server", "failed to connect", "connection reset",
+    "recv failure", "curl: (7)", "curl: (28)", "curl: (35)", "curl: (56)",
+    "operation timed out", "connection timed out", "timed out",
+    "ssl", "tls", "proxy",
+)
+
+
+def _is_network_error(exc: object) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _NETWORK_ERROR_MARKERS)
+
+
+def _is_meta_block(exc: object) -> bool:
+    text = str(exc).lower()
+    return ("429" in text or "rate limit" in text or "ratelimit" in text
+            or "consecutive empty pages" in text)
+
+
+def _proxy_ready(proxy_spec: str, timeout: float = 8.0) -> bool:
+    """One cheap request through the proxy (not Meta) to see it is alive."""
+    try:
+        from curl_cffi import requests as creq
+        from meta_ads_collector.proxy_pool import parse_proxy
+
+        purl = parse_proxy(proxy_spec)
+        r = creq.get("https://api.ipify.org?format=json",
+                     proxies={"http": purl, "https": purl},
+                     impersonate="chrome", timeout=timeout)
+        return r.status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _wait_proxy_ready(proxy_spec: str, progress, should_stop, wait_s: int = 40) -> bool:
+    """Wait for the tunnel/proxy to come back before burning a scrape attempt."""
+    if _proxy_ready(proxy_spec):
+        return True
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        if should_stop and should_stop():
+            return False
+        progress(_WAIT_PROXY)
+        time.sleep(10)
+        if _proxy_ready(proxy_spec):
+            return True
+    return False
+
+
 def meta_blocked(proxy: Optional[str] = None) -> bool:
     """One request for any ad running in Algeria: none at all = blocked."""
     collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=0, jitter=0)
@@ -391,6 +445,12 @@ def scrape(
         f"{' | lang=' + ','.join(langs) if langs else ''}"
     )
 
+    _spec = _proxy_arg(proxy)
+    if _spec and not _wait_proxy_ready(_spec, progress, should_stop):
+        progress(_FAIL_PROXY)
+        return ScrapeResult(query=q, url=url or "", interrupted=True, error=_FAIL_PROXY)
+
+
     if not _proxy_arg(proxy):
         _msg = "\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0631\u0648\u0643\u0633\u064a \u0645\u0636\u0628\u0648\u0637 \u2014 \u0627\u0644\u0633\u062d\u0628 \u0645\u0646 IP \u0627\u0644\u0633\u064a\u0631\u0641\u0631 \u0645\u0639\u0637\u0651\u0644. \u0623\u0636\u0641 \u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u0641\u064a \u0627\u0644\u0625\u0639\u062f\u0627\u062f\u0627\u062a."
         progress(_msg)
@@ -544,12 +604,15 @@ def scrape(
                 res.failed = True
                 break
             if attempt >= len(IN_RUN_RETRY_WAITS):
-                ip_rotator.rotate()  # leave a fresh IP for the queued retry
+                if _is_meta_block(exc):
+                    ip_rotator.rotate()  # leave a fresh IP for the queued retry
                 logger.warning("HTTP scrape interrupted after %s retries: %s", attempt, exc)
                 progress(f"⏸ انقطع السحب بعد {attempt} محاولات: {exc} — سيُستأنف لاحقاً من نفس النقطة.")
                 res.interrupted = True
                 break
-            ip_rotator.rotate()  # a 429/connection block also gets a fresh IP
+            if _is_meta_block(exc):
+                ip_rotator.rotate()  # real Meta block: fresh IP helps
+            # network/proxy failures just wait: rotating would drop the tunnel
             wait = IN_RUN_RETRY_WAITS[attempt]
             attempt += 1
             progress(f"⚠️ {exc} — انتظار {wait} ثانية ثم استئناف من آخر صفحة "
