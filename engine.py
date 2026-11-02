@@ -544,10 +544,12 @@ def scrape(
                 res.failed = True
                 break
             if attempt >= len(IN_RUN_RETRY_WAITS):
+                ip_rotator.rotate()  # leave a fresh IP for the queued retry
                 logger.warning("HTTP scrape interrupted after %s retries: %s", attempt, exc)
                 progress(f"⏸ انقطع السحب بعد {attempt} محاولات: {exc} — سيُستأنف لاحقاً من نفس النقطة.")
                 res.interrupted = True
                 break
+            ip_rotator.rotate()  # a 429/connection block also gets a fresh IP
             wait = IN_RUN_RETRY_WAITS[attempt]
             attempt += 1
             progress(f"⚠️ {exc} — انتظار {wait} ثانية ثم استئناف من آخر صفحة "
