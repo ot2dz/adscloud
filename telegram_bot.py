@@ -74,6 +74,11 @@ def _og_title(page_html: str) -> str:
     return html.unescape(m.group(1)).strip() if m else ""
 
 
+def _og_meta(page_html: str, prop: str) -> str:
+    m = re.search(rf'{prop}" content="([^"]+)"', page_html)
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
 def _is_login_wall(title: str) -> bool:
     low = (title or "").lower()
     return any(marker in low for marker in LOGIN_MARKERS)
@@ -89,7 +94,7 @@ def _share_html(url: str):
                                                        "Accept": "text/html"})
             with urllib.request.urlopen(req, timeout=20) as resp:
                 final = resp.geturl() or url
-                body = resp.read(400000).decode("utf-8", "ignore")
+                body = resp.read(1200000).decode("utf-8", "ignore")
             last = (final, body)
             title = _og_title(body)
             if title and not _is_login_wall(title):
@@ -100,15 +105,38 @@ def _share_html(url: str):
 
 
 def _ad_snippet(page_html: str) -> str:
-    """Pull the shared ad copy out of the page metadata (reject login walls)."""
-    title = _og_title(page_html)
-    if not title or _is_login_wall(title):
-        return ""
-    text = re.sub(r"facebook$", "", title, flags=re.I).strip(" |")
-    text = re.sub(r"[^\w\s\u0600-\u06FF]", " ", text)
-    words = [w for w in text.split() if w]
-    snippet = " ".join(words[:8]).strip()
-    return snippet if len(snippet) >= 12 else ""
+    """Pull the shared ad copy out of the page metadata.
+
+    The crawler variant prefixes the title with view/reaction counts, so the
+    description is preferred and stats segments are dropped.
+    """
+    candidates = [_og_meta(page_html, "og:description"), _og_title(page_html)]
+    for raw in candidates:
+        if not raw or _is_login_wall(raw):
+            continue
+        parts = [p.strip() for p in re.split(r"[|·]", raw) if p.strip()]
+        parts = [p for p in parts
+                 if not re.search(r"(مشاهدة|تفاعل|ألف|views|reactions|likes)", p, re.I)]
+        text = max(parts, key=len) if parts else raw
+        text = re.sub(r"\bfacebook\b", " ", text, flags=re.I)
+        text = re.sub(r"[^\w\s\u0600-\u06FF]", " ", text)
+        words = [w for w in text.split() if w]
+        snippet = " ".join(words[:10]).strip()
+        if len(snippet) >= 12 and len(words) >= 3:
+            return snippet
+    return ""
+
+
+def _page_from_html(page_html: str) -> str | None:
+    """Read the advertiser page id from the reel/post JSON (owner_as_page / page_id)."""
+    m = re.search(r'"owner_as_page":\{[^}]*?"id":"(\d{6,})"', page_html)
+    if m:
+        return m.group(1)
+    m = re.search(r'\\"page_id\\":\\?"?(\d{6,})', page_html)
+    if m:
+        return m.group(1)
+    m = re.search(r'"page_id":"(\d{6,})"', page_html)
+    return m.group(1) if m else None
 
 
 def _page_for_snippet(snippet: str) -> str | None:
@@ -167,6 +195,10 @@ def plan_for_text(text: str) -> dict:
             if page_id:
                 return {"kind": "page", "url": page_url(page_id, DEFAULT_COUNTRY),
                         "page_id": page_id, "label": f"صفحة {page_id}"}
+            direct = _page_from_html(page_html)
+            if direct:
+                return {"kind": "page", "url": page_url(direct, DEFAULT_COUNTRY),
+                        "page_id": direct, "label": f"صفحة {direct} (من بيانات الريل)"}
             snippet = _ad_snippet(page_html)
             found = _PAGE_CACHE.get(url) or (_page_for_snippet(snippet) if snippet else None)
             if found == "__blocked__":
