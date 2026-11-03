@@ -18,6 +18,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+# A product is "winning" when its persisted Hunter Score reaches this bar.
+# Stored in ``meta_ads.hunter_score`` so SQL presets can filter on it.
+WINNING_THRESHOLD = 70
+
 
 def _parse_date(value) -> "datetime | None":
     if not value:
@@ -48,9 +52,9 @@ def _days_since(value, now: datetime) -> "int | None":
 
 
 def _label(score: int) -> str:
-    if score >= 75:
+    if score >= WINNING_THRESHOLD:
         return "strong"
-    if score >= 50:
+    if score >= 40:
         return "medium"
     return "weak"
 
@@ -142,11 +146,20 @@ def hunter(ad: dict, now: "datetime | None" = None) -> dict:
 
 
 def attach(items: "list[dict]", now: "datetime | None" = None) -> "list[dict]":
-    """Attach ``item['hunter']`` to every ad / group row."""
+    """Attach ``item['hunter']`` to every ad / group row.
+
+    Rows persisted with a ``hunter_score`` keep that value (it is what the
+    winning preset filters on, so the badge and the preset always agree)."""
     now = now or datetime.now(timezone.utc)
     for item in items:
         try:
-            item["hunter"] = hunter(item, now)
+            result = hunter(item, now)
+            stored = item.get("hunter_score")
+            if stored is not None:
+                score = max(0, min(100, int(stored)))
+                result["score"] = score
+                result["label"] = _label(score)
+            item["hunter"] = result
         except Exception:  # noqa: BLE001
             item["hunter"] = {"score": 0, "label": "weak", "confirmed": False, "parts": []}
     return items

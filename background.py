@@ -418,6 +418,16 @@ def niches_loop() -> None:
             time.sleep(30)
 
 
+def hunter_backfill_once() -> None:
+    """Fill hunter_score for ads saved before the column existed (one-shot)."""
+    try:
+        n = db.backfill_hunter_scores()
+        if n:
+            logger.info("hunter_score backfilled for %s ads", n)
+    except Exception:
+        logger.exception("hunter_score backfill failed")
+
+
 def start_background_threads() -> None:
     global _bg_started
     if _bg_started:
@@ -449,6 +459,7 @@ def start_background_threads() -> None:
     threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
     threading.Thread(target=niches_loop, daemon=True).start()
+    threading.Thread(target=hunter_backfill_once, daemon=True).start()
     if os.environ.get("TELEGRAM_BOT", "on").strip().lower() not in ("0", "off", "false", "no"):
         threading.Thread(target=telegram_bot_loop, daemon=True).start()
         threading.Thread(target=follow_watch_loop, daemon=True).start()

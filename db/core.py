@@ -15,13 +15,16 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import niches as niche_defs
+import scoring
 from store_filter import BIG_MARKETPLACES, JUNK_LIKE_PATTERNS, is_big_marketplace, is_non_arabic, junk_reason
 
 logger = logging.getLogger("meta_ads_db")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
-_SQLITE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "meta_ads.sqlite")
+# Path override keeps tests (and side-by-side runs) off the production file.
+_SQLITE_PATH = (os.environ.get("META_ADS_SQLITE")
+                or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "meta_ads.sqlite"))
 
 
 def _now() -> str:
@@ -364,6 +367,8 @@ class Database:
             ("meta_ads", "product_key", "TEXT"),
             ("meta_ads", "primary_niche", "TEXT"),
             ("meta_ads", "niche_checked_at", "TEXT"),
+            # Persisted product strength (see scoring.py). NULL until computed.
+            ("meta_ads", "hunter_score", "INTEGER"),
             ("keywords", "type", "TEXT DEFAULT 'keyword'"),
             ("keywords", "label", "TEXT DEFAULT ''"),
             ("targets", "country", "TEXT DEFAULT 'DZ'"),
@@ -707,8 +712,9 @@ class Database:
         if not ad_id:
             return False
 
-        existing = self._query_one(f"SELECT first_seen, start_date FROM meta_ads WHERE ad_id={p}", (ad_id,))
+        existing = self._query_one(f"SELECT first_seen, start_date, product_key FROM meta_ads WHERE ad_id={p}", (ad_id,))
         is_new = existing is None
+        old_pkey = str((existing or {}).get("product_key") or "")
         now = _now()
         first_seen = existing["first_seen"] if existing and existing.get("first_seen") else now
         start_date = str(ad.get("start_date") or (existing.get("start_date") if existing else "") or "")
@@ -807,6 +813,18 @@ class Database:
                 self._save_niche_rows(cur, ad_id, self._classify_results(ad), now)
             except Exception as niche_err:  # noqa: BLE001
                 logger.debug("niche classify failed: %s", niche_err)
+            # Product strength for every ad of this product (and the old group
+            # if the ad moved). Persisted so the winning preset can filter SQL.
+            try:
+                score, _ = self._group_hunter_score(cur, pkey)
+                cur.execute(f"UPDATE meta_ads SET hunter_score={p} WHERE product_key={p}",
+                            (score, pkey))
+                if old_pkey and old_pkey != pkey:
+                    old_score, _ = self._group_hunter_score(cur, old_pkey)
+                    cur.execute(f"UPDATE meta_ads SET hunter_score={p} WHERE product_key={p}",
+                                (old_score, old_pkey))
+            except Exception as score_err:  # noqa: BLE001
+                logger.debug("hunter score failed: %s", score_err)
             conn.commit()
             return is_new
         except Exception as exc:
@@ -817,6 +835,95 @@ class Database:
 
     def ad_exists(self, ad_id: str) -> bool:
         return self._query_one(f"SELECT 1 AS x FROM meta_ads WHERE ad_id={self._ph()}", (str(ad_id),)) is not None
+
+    # ── persisted Hunter Score (product strength) ─────────────────────────
+    def _group_hunter_score(self, cur, product_key: str) -> tuple[int, int]:
+        """Score one product group using the same rules as ``scoring.hunter``.
+
+        Returns ``(score, ads_count)``; ``(0, 0)`` when the group is empty."""
+        if not product_key:
+            return 0, 0
+        p = self._ph()
+        cur.execute(
+            f"SELECT COUNT(*) AS c, SUM(is_active) AS active, COUNT(DISTINCT body) AS texts, "
+            f"MIN(start_date) AS first_launch, MAX(collected_at) AS last_collected "
+            f"FROM meta_ads WHERE product_key={p}", (product_key,))
+        row = cur.fetchone()
+        if not row:
+            return 0, 0
+        count = int(row[0] or 0)
+        if count <= 0:
+            return 0, 0
+        cur.execute(
+            f"SELECT DISTINCT ak.keyword FROM ad_keywords ak "
+            f"JOIN meta_ads m ON m.ad_id = ak.ad_id WHERE m.product_key={p}", (product_key,))
+        keywords = [str(r[0]) for r in cur.fetchall() if r and r[0]]
+        result = scoring.hunter({
+            "group": {
+                "count": count,
+                "active": int(row[1] or 0),
+                "texts": int(row[2] or 0),
+                "first_launch": row[3] or "",
+                "last_collected": row[4] or "",
+            },
+            "keywords": keywords,
+        })
+        return int(result["score"]), count
+
+    def backfill_hunter_scores(self, force: bool = False, batch: int = 500) -> int:
+        """(Re)compute ``meta_ads.hunter_score`` for every product group.
+
+        Ads scored before the column existed are picked up automatically; with
+        ``force=True`` every score is recomputed. Returns the number of ads
+        written."""
+        if force:
+            self._execute("UPDATE meta_ads SET hunter_score = NULL")
+        p = self._ph()
+        total = 0
+        while True:
+            rows = self._query(
+                f"SELECT DISTINCT product_key FROM meta_ads "
+                f"WHERE hunter_score IS NULL AND product_key IS NOT NULL AND product_key <> '' "
+                f"LIMIT {int(batch)}")
+            if not rows:
+                break
+            keys = [str(r["product_key"]) for r in rows]
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                for key in keys:
+                    score, count = self._group_hunter_score(cur, key)
+                    cur.execute(f"UPDATE meta_ads SET hunter_score={p} WHERE product_key={p}",
+                                (score, key))
+                    total += count
+                conn.commit()
+            finally:
+                conn.close()
+            if len(keys) < batch:
+                break
+        # Ads with no product key cannot be grouped; score them on their own.
+        while True:
+            rows = self._query(
+                "SELECT * FROM meta_ads WHERE hunter_score IS NULL "
+                "AND (product_key IS NULL OR product_key = '') LIMIT 500")
+            if not rows:
+                break
+            rows = self.attach_keywords(rows)
+            updates = []
+            for r in rows:
+                try:
+                    updates.append((int(scoring.hunter(r).get("score", 0)), r["ad_id"]))
+                except Exception:  # noqa: BLE001
+                    updates.append((0, r["ad_id"]))
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.executemany(f"UPDATE meta_ads SET hunter_score={p} WHERE ad_id={p}", updates)
+                conn.commit()
+            finally:
+                conn.close()
+            total += len(updates)
+        return total
 
     # ── CTA allow-list (which call-to-action buttons are shown) ───────────
     DEFAULT_CTA_ALLOWLIST = ("SHOP_NOW", "BUY_NOW", "ORDER_NOW", "GET_OFFER", "MESSAGE_PAGE",
@@ -907,7 +1014,8 @@ class Database:
         elif preset == "stopped":
             where.append("is_active = 0")
         elif preset == "winning":
-            where.append("(days_active >= 5 OR collation_count >= 3) AND is_active = 1")
+            # Persisted product strength, computed on save and backfilled.
+            where.append(f"COALESCE(hunter_score, 0) >= {scoring.WINNING_THRESHOLD}")
         elif preset == "new_launches":
             where.append("days_active <= 3 AND is_active = 1")
 
@@ -963,6 +1071,7 @@ class Database:
             "most_collated": "collation_count DESC",
             "collected_at": "collected_at DESC",
             "biggest_page": "COALESCE(es.ent_ads, -1) DESC, collected_at DESC",
+            "hunter": "COALESCE(hunter_score, 0) DESC, collected_at DESC",
         }
         order_clause = order_map.get(sort_by, "collected_at DESC")
         join = self._PAGE_STATS_JOIN if sort_by == "biggest_page" else ""

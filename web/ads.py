@@ -338,6 +338,16 @@ def api_export(fmt: str):
     return jsonify({"error": "unsupported format"}), 400
 
 
+@bp.route("/api/maintenance/hunter-score", methods=["POST"])
+@admin_required
+def api_backfill_hunter_score():
+    """Compute hunter_score for ads that predate the column (or recompute all)."""
+    force = request.args.get("force", "0") == "1"
+    n = db.backfill_hunter_scores(force=force)
+    logger.info("hunter-score backfill: force=%s ads=%s", force, n)
+    return jsonify({"ok": True, "scored": n, "force": force})
+
+
 @bp.route("/api/maintenance/reclassify-stores", methods=["POST"])
 @admin_required
 def api_reclassify_stores():
