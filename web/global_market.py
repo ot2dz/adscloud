@@ -104,6 +104,15 @@ def api_scan_global_target(target_id):
     return jsonify({"ok": True, "job_id": job_id})
 
 
+@bp.route("/api/global/targets/<int:target_id>/activity", methods=["GET"])
+@login_required
+def api_global_target_activity(target_id):
+    t, _uid = _access(target_id)
+    if not t:
+        return jsonify({"error": "target not found"}), 404
+    return jsonify(db.target_activity(t, limit=200))
+
+
 @bp.route("/api/global/scan-all", methods=["POST"])
 @login_required
 def api_scan_all_global():

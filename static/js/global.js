@@ -25,6 +25,7 @@ async function loadGlobalTargets() {
       <td class="px-5 text-xs font-bold num">${t.ads_count || 0}</td>
       <td class="px-5 text-xs text-slate-500 font-mono">${t.last_scraped_at ? escT(String(t.last_scraped_at).slice(0, 16).replace('T', ' ')) : 'لم يُفحص بعد'}</td>
       <td class="px-5 text-center whitespace-nowrap">
+        <button data-id="${Number(t.id)}" data-label="${escT(t.label || t.target_value)}" onclick="openGlobalActivityEl(this)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] font-bold transition">سجل النشاط</button>
         <button onclick="scanGlobalTarget(${Number(t.id)}, this)" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition">فحص الآن</button>
         <button onclick="delGlobalTarget(${Number(t.id)})" class="text-rose-600 hover:text-rose-700 text-xs px-2 font-bold" title="حذف">حذف</button>
       </td>

@@ -150,6 +150,17 @@ def api_scan_target(target_id):
     return jsonify({"ok": True, "job_id": job_id})
 
 
+@bp.route("/api/targets/<int:target_id>/activity", methods=["GET"])
+@login_required
+def api_target_activity(target_id):
+    """Timeline of ad launches / stops / resumes for one competitor."""
+    t, _uid = _competitor_access(target_id)
+    if not t:
+        return jsonify({"error": "target not found"}), 404
+    limit = max(1, min(_int_arg("limit", 200), 500))
+    return jsonify(db.target_activity(t, limit=limit))
+
+
 @bp.route("/api/targets/scan-all", methods=["POST"])
 @login_required
 def api_scan_all_targets():

@@ -1,0 +1,14 @@
+  <!-- MODAL: competitor activity timeline -->
+  <div id="activity-modal" class="hidden fixed inset-0 z-[60] bg-black/50 items-start justify-center p-3 sm:p-6 overflow-auto">
+    <div class="bg-white rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden">
+      <div class="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-slate-50/70">
+        <div class="min-w-0">
+          <h3 id="activity-modal-title" class="font-bold text-[#102a56] text-sm truncate">سجل النشاط</h3>
+          <p class="text-[11px] text-slate-500 mt-0.5">الإطلاقات، التوقفات، وإعادة التشغيل</p>
+        </div>
+        <button onclick="closeActivityModal()" class="shrink-0 w-8 h-8 rounded-lg text-slate-500 hover:bg-slate-200 font-bold">✕</button>
+      </div>
+      <div id="activity-summary" class="grid grid-cols-2 sm:grid-cols-5 gap-2 px-5 py-3 border-b border-slate-100"></div>
+      <div id="activity-timeline" class="max-h-[65vh] overflow-auto p-4 space-y-2"></div>
+    </div>
+  </div>

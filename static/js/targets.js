@@ -50,14 +50,13 @@ async function loadTargets() {
       <td class="px-5 text-center">
         <div class="flex items-center justify-center gap-2 flex-wrap">
           <button ${dataAttrs} onclick="filterByTargetEl(this)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">👁️ إعلاناته</button>
-          ${t.type === 'page' ? `<button data-val="${escT(t.target_value)}" onclick="toggleSnapshots(this.dataset.val)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] font-bold transition shadow-sm">📈 سجل النشاط</button>` : ''}
+          <button ${dataAttrs} onclick="openTargetActivityEl(this)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] font-bold transition shadow-sm">📈 سجل النشاط</button>
           <button onclick="scanTarget(${t.id})" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition shadow-sm">⚡ فحص الآن</button>
           <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleTarget(${t.id}, this.checked)" title="تفعيل/إيقاف الفحص الدوري" class="cursor-pointer rounded text-blue-600">
           <button onclick="delTarget(${t.id})" class="text-rose-600 hover:text-rose-700 text-xs px-1.5 font-bold" title="إلغاء التتبع">✕</button>
         </div>
       </td>
-    </tr>
-    ${t.type === 'page' ? `<tr><td colspan="6" class="px-5"><div id="snap-${escT(t.target_value)}" class="hidden pb-3"></div></td></tr>` : ''}`;
+    </tr>`;
   }).join('');
 }
 
@@ -152,4 +151,98 @@ async function toggleSnapshots(pid){
       : '<div class="text-xs text-slate-400 py-3 text-center">لا لقطات محفوظة بعد.</div>';
     box.classList.remove('hidden');
   } catch (e) { box.textContent = 'تعذر تحميل اللقطات'; box.classList.remove('hidden'); }
+}
+
+// ── competitor activity timeline ──────────────────────────────────────
+function openTargetActivityEl(el) {
+  openActivity('/api/targets/' + encodeURIComponent(el.dataset.id) + '/activity',
+    el.dataset.label || 'سجل النشاط');
+}
+function openGlobalActivityEl(el) {
+  openActivity('/api/global/targets/' + encodeURIComponent(el.dataset.id) + '/activity',
+    el.dataset.label || 'سجل النشاط');
+}
+function closeActivityModal() {
+  const m = document.getElementById('activity-modal');
+  if (m) { m.classList.add('hidden'); m.classList.remove('flex'); }
+}
+function _actFmt(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? escT(String(v).slice(0, 16).replace('T', ' ')) : d.toLocaleString('ar-DZ');
+}
+function _actChip(label, value, tone) {
+  return `<div class="rounded-xl border ${tone} px-3 py-2">
+    <div class="text-[10px] font-bold opacity-80">${label}</div>
+    <div class="text-lg font-black num">${value || 0}</div></div>`;
+}
+function _actEvent(e) {
+  const d = e.detail || {};
+  const isStop = e.event === 'stopped';
+  const isResume = e.event === 'resumed';
+  const tone = isStop
+    ? { box: 'border-rose-200 bg-rose-50', text: 'text-rose-800' }
+    : (isResume
+      ? { box: 'border-amber-200 bg-amber-50', text: 'text-amber-800' }
+      : { box: 'border-emerald-200 bg-emerald-50', text: 'text-emerald-800' });
+  const title = isStop ? 'توقف الإعلان' : (isResume ? 'عاد للعمل' : 'إطلاق إعلان جديد');
+  const notes = [];
+  if (d.start_date) notes.push('تاريخ إطلاق Meta: ' + d.start_date);
+  if (d.relaunch_of) notes.push('بديل لإعلان توقف سابقاً' + (d.previous_stopped_at ? ' (آخر ظهور: ' + String(d.previous_stopped_at).slice(0, 10) + ')' : ''));
+  if (d.downtime_days != null) notes.push('مدة التوقف قبل العودة: ' + d.downtime_days + ' يوم');
+  if (d.days_active != null) notes.push('مدة التشغيل عند التوقف: ' + d.days_active + ' يوم');
+  if (d.last_seen_active) notes.push('آخر ظهور نشط: ' + String(d.last_seen_active).slice(0, 10));
+  const body = String(e.body || '').slice(0, 150);
+  const adUrl = 'https://www.facebook.com/ads/library/?id=' + encodeURIComponent(e.ad_id || '');
+  return `<div class="border ${tone.box} rounded-xl p-3">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <span class="text-xs font-black ${tone.text}">${title}${d.relaunch_of ? ' · إعادة إطلاق' : ''}</span>
+      <span class="text-[10px] text-slate-500 font-mono">${_actFmt(e.event_at)}</span>
+    </div>
+    <div class="text-[11px] text-slate-600 mt-1">${escT(e.page_name || '')}${e.store_domain ? ' · ' + escT(e.store_domain) : ''}</div>
+    ${body ? `<div class="text-[11.5px] text-slate-700 mt-1 line-clamp-2">${escT(body)}</div>` : ''}
+    ${notes.length ? `<div class="text-[11px] text-slate-600 mt-1">${notes.map(escT).join(' · ')}</div>` : ''}
+    <div class="flex gap-3 mt-1.5 text-[11px] font-bold">
+      ${e.ad_id ? `<a href="${adUrl}" target="_blank" rel="noopener" class="text-blue-700 hover:underline">فتح الإعلان</a>` : ''}
+      ${e.link_url ? `<a href="${escT(e.link_url)}" target="_blank" rel="noopener" class="text-slate-600 hover:underline">رابط المنتج/المتجر</a>` : ''}
+    </div>
+  </div>`;
+}
+async function openActivity(url, title) {
+  const modal = document.getElementById('activity-modal');
+  document.getElementById('activity-modal-title').innerText = title;
+  document.getElementById('activity-summary').innerHTML = '';
+  document.getElementById('activity-timeline').innerHTML =
+    '<div class="py-10 text-center text-slate-500 font-bold text-sm">… جاري التحميل</div>';
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'تعذر التحميل');
+    const s = d.summary || {};
+    document.getElementById('activity-summary').innerHTML =
+      _actChip('نشط الآن', s.active_ads, 'border-emerald-200 bg-emerald-50 text-emerald-800') +
+      _actChip('متوقف', s.stopped_ads, 'border-rose-200 bg-rose-50 text-rose-800') +
+      _actChip('إطلاق 7 أيام', s.launched_7d, 'border-sky-200 bg-sky-50 text-sky-800') +
+      _actChip('توقف 7 أيام', s.stopped_7d, 'border-amber-200 bg-amber-50 text-amber-800') +
+      _actChip('عاد للعمل 7 أيام', s.resumed_7d, 'border-slate-200 bg-slate-50 text-slate-700');
+    const events = (d.events || []).map(e => ({ t: e.event_at, kind: 'event', e }));
+    const scans = (d.scans || []).map(x => ({ t: x.captured_at, kind: 'scan', s: x }));
+    const items = events.concat(scans).sort((a, b) => String(b.t || '').localeCompare(String(a.t || '')));
+    const box = document.getElementById('activity-timeline');
+    if (!items.length) {
+      box.innerHTML = '<div class="py-10 text-center text-slate-500 font-bold text-sm">لا يوجد سجل بعد. سيظهر هنا أول إطلاق/توقف بعد الفحص القادم.</div>';
+      return;
+    }
+    box.innerHTML = items.map(x => x.kind === 'event'
+      ? _actEvent(x.e)
+      : `<div class="flex items-center justify-between gap-2 text-[11px] text-slate-500 border border-slate-200 rounded-lg px-3 py-1.5 bg-white">
+           <span>فحص: <b class="num text-slate-700">${x.s.active_ads_count || 0}</b> نشط من <b class="num">${x.s.total_ads_count || 0}</b></span>
+           <span class="font-mono">${_actFmt(x.s.captured_at)}</span>
+         </div>`).join('');
+  } catch (e) {
+    document.getElementById('activity-timeline').innerHTML =
+      '<div class="py-10 text-center text-rose-600 font-bold text-sm">' + escT(e.message || 'تعذر تحميل السجل') + '</div>';
+  }
 }

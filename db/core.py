@@ -319,6 +319,29 @@ class Database:
             PRIMARY KEY (ent_kind, ent_key)
         )
         """)
+        # Ad lifecycle timeline: launched / stopped / resumed events. Kept apart
+        # from meta_ads so history survives repeated status flips.
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS ad_events (
+            id {idcol},
+            ad_id TEXT,
+            market TEXT DEFAULT 'dz',
+            page_id TEXT,
+            store_domain TEXT,
+            product_key TEXT,
+            query TEXT,
+            page_name TEXT,
+            body TEXT,
+            link_url TEXT,
+            event TEXT,
+            event_at TEXT,
+            detail TEXT,
+            created_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_events_ad ON ad_events (ad_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_events_time ON ad_events (event_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_events_market ON ad_events (market, event_at)")
         conn.commit()
 
         # Idempotent migrations for the jobs table (progress + stop control + incremental + date filters).
@@ -503,6 +526,11 @@ class Database:
         except Exception as admin_err:
             logger.warning("Admin auto-seed notice: %s", admin_err)
 
+        try:
+            self._backfill_ad_events(cur, conn)
+        except Exception as ev_err:  # noqa: BLE001
+            logger.warning("ad_events backfill notice: %s", ev_err)
+
         conn.commit()
         conn.close()
         try:
@@ -540,6 +568,136 @@ class Database:
             total += len(rows)
         if total:
             logger.info("product_key backfilled for %s ads", total)
+
+    # ── ad lifecycle events (launched / stopped / resumed) ────────────────
+    _EVENT_COLS = ("ad_id", "market", "page_id", "store_domain", "product_key", "query",
+                   "page_name", "body", "link_url", "event", "event_at", "detail", "created_at")
+
+    def _event_values(self, ad_id: str, event: str, event_at: str, detail: dict,
+                      row: dict) -> tuple:
+        market = "global" if str((row or {}).get("market") or "dz").lower() == "global" else "dz"
+        body = str((row or {}).get("body") or "")
+        return (
+            str(ad_id), market,
+            str((row or {}).get("page_id") or ""),
+            str((row or {}).get("store_domain") or ""),
+            str((row or {}).get("product_key") or ""),
+            str((row or {}).get("query") or ""),
+            str((row or {}).get("page_name") or ""),
+            body[:2000],
+            str((row or {}).get("link_url") or ""),
+            event, event_at or _now(),
+            json.dumps(detail or {}, ensure_ascii=False), _now(),
+        )
+
+    def _log_ad_events(self, events: list[tuple]) -> None:
+        if not events:
+            return
+        p = self._ph()
+        cols = ", ".join(self._EVENT_COLS)
+        ph = ", ".join([p] * len(self._EVENT_COLS))
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.executemany(f"INSERT INTO ad_events ({cols}) VALUES ({ph})", events)
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ad_events insert failed: %s", exc)
+        finally:
+            conn.close()
+
+    def _backfill_ad_events(self, cur, conn) -> None:
+        """One-time history seed from the current meta_ads columns."""
+        p = self._ph()
+        detail = json.dumps({"backfilled": True}, ensure_ascii=False)
+        now = _now()
+        cols = ", ".join(self._EVENT_COLS)
+        select_common = (
+            "m.ad_id, COALESCE(m.market, 'dz'), m.page_id, m.store_domain, m.product_key, "
+            "m.query, m.page_name, m.body, m.link_url")
+        cur.execute(
+            f"INSERT INTO ad_events ({cols}) "
+            f"SELECT {select_common}, 'launched', "
+            f"COALESCE(m.first_seen, m.start_date, m.collected_at), {p}, {p} "
+            f"FROM meta_ads m WHERE NOT EXISTS ("
+            f"SELECT 1 FROM ad_events e WHERE e.ad_id=m.ad_id AND e.event='launched')",
+            (detail, now))
+        launched = cur.rowcount or 0
+        cur.execute(
+            f"INSERT INTO ad_events ({cols}) "
+            f"SELECT {select_common}, 'stopped', "
+            f"COALESCE(m.stopped_at, m.last_seen_active), {p}, {p} "
+            f"FROM meta_ads m WHERE m.is_active = 0 "
+            f"AND (m.stopped_at IS NOT NULL OR m.last_seen_active IS NOT NULL) "
+            f"AND NOT EXISTS (SELECT 1 FROM ad_events e "
+            f"WHERE e.ad_id=m.ad_id AND e.event='stopped')",
+            (detail, now))
+        stopped = cur.rowcount or 0
+        conn.commit()
+        if launched or stopped:
+            logger.info("ad_events backfilled: %s launched, %s stopped", launched, stopped)
+
+    def _target_event_scope(self, target: dict) -> tuple[str, list]:
+        p = self._ph()
+        typ = str(target.get("type") or "keyword").strip().lower()
+        val = str(target.get("target_value") or "").strip()
+        mkt = str(target.get("market") or "dz").lower()
+        mcond = "e.market = 'global'" if mkt == "global" else "(e.market IS NULL OR e.market = 'dz')"
+        if typ == "domain":
+            dom = val.lower()
+            if dom.startswith("www."):
+                dom = dom[4:]
+            return f"({mcond}) AND (LOWER(e.store_domain) = {p} OR e.query = {p})", [dom, val]
+        if typ == "page":
+            return f"({mcond}) AND e.page_id = {p}", [val]
+        # keyword / custom_url events carry the scrape query.
+        return f"({mcond}) AND e.query = {p}", [val]
+
+    def target_activity(self, target: dict, limit: int = 200) -> dict:
+        """Rich timeline for one competitor: launches, stops, resumes + scans."""
+        p = self._ph()
+        ev_scope, ev_params = self._target_event_scope(target)
+        events = self._query(
+            f"SELECT e.*, m.is_active AS current_active, m.start_date AS meta_start_date, "
+            f"m.days_active AS current_days, m.preview_image_url "
+            f"FROM ad_events e LEFT JOIN meta_ads m ON m.ad_id = e.ad_id "
+            f"WHERE {ev_scope} ORDER BY e.event_at DESC, e.id DESC LIMIT {int(limit)}",
+            tuple(ev_params))
+        for r in events:
+            try:
+                r["detail"] = json.loads(r.get("detail") or "{}")
+            except Exception:
+                r["detail"] = {}
+        ad_scope, ad_params = self._target_ad_scope(target)
+        srow = self._query_one(
+            f"SELECT COUNT(*) AS total, "
+            f"SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active "
+            f"FROM meta_ads WHERE {ad_scope}", tuple(ad_params)) or {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        counts = {r["event"]: int(r["c"] or 0) for r in self._query(
+            f"SELECT e.event, COUNT(*) AS c FROM ad_events e WHERE {ev_scope} "
+            f"AND e.event_at >= {p} GROUP BY e.event", tuple(ev_params) + (cutoff,))}
+        scans = []
+        if str(target.get("type") or "") == "page":
+            scans = self._query(
+                f"SELECT captured_at, active_ads_count, total_ads_count FROM page_snapshots "
+                f"WHERE page_id={p} ORDER BY id DESC LIMIT 100",
+                (str(target.get("target_value") or ""),))
+        total = int(srow.get("total") or 0)
+        active = int(srow.get("active") or 0)
+        return {
+            "target": target,
+            "summary": {
+                "total_ads": total,
+                "active_ads": active,
+                "stopped_ads": max(0, total - active),
+                "launched_7d": counts.get("launched", 0),
+                "stopped_7d": counts.get("stopped", 0),
+                "resumed_7d": counts.get("resumed", 0),
+            },
+            "events": events,
+            "scans": scans,
+        }
 
     # ── low-level helpers ─────────────────────────────────────────────────
     def _execute(self, sql: str, params: tuple = ()) -> None:
@@ -685,12 +843,23 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+        events: list[tuple] = []
         for aid in stopped:
-            row = self._query_one(f"SELECT start_date, first_seen, last_seen_active FROM meta_ads WHERE ad_id = {p}", (aid,))
+            row = self._query_one(
+                f"SELECT ad_id, page_name, page_id, store_domain, product_key, query, body, "
+                f"link_url, market, start_date, first_seen, last_seen_active, stopped_at "
+                f"FROM meta_ads WHERE ad_id = {p}", (aid,))
             if row:
                 d = self._calc_days_active(row.get("start_date") or "", row.get("first_seen") or "",
                                            False, row.get("last_seen_active") or "")
                 self._execute(f"UPDATE meta_ads SET days_active = {p} WHERE ad_id = {p}", (d, aid))
+                events.append(self._event_values(
+                    aid, "stopped", row.get("stopped_at") or now,
+                    {"days_active": d,
+                     "last_seen_active": row.get("last_seen_active") or "",
+                     "start_date": row.get("start_date") or ""},
+                    dict(row)))
+        self._log_ad_events(events)
 
     # ── on-demand target re-scan reconciliation ───────────────────────────
     def _target_ad_scope(self, target: dict) -> tuple[str, list]:
@@ -771,7 +940,9 @@ class Database:
             return False
         market = "global" if str(market or "").strip().lower() == "global" else "dz"
 
-        existing = self._query_one(f"SELECT first_seen, start_date, product_key FROM meta_ads WHERE ad_id={p}", (ad_id,))
+        existing = self._query_one(
+            f"SELECT first_seen, start_date, product_key, is_active, stopped_at, last_seen_active, "
+            f"days_active FROM meta_ads WHERE ad_id={p}", (ad_id,))
         is_new = existing is None
         old_pkey = str((existing or {}).get("product_key") or "")
         now = _now()
@@ -874,6 +1045,63 @@ class Database:
                 self._save_niche_rows(cur, ad_id, self._classify_results(ad), now)
             except Exception as niche_err:  # noqa: BLE001
                 logger.debug("niche classify failed: %s", niche_err)
+            # Lifecycle timeline: log launches, stops and resumes only when
+            # the state actually changes (repeated scans stay quiet).
+            try:
+                ev_row = dict(ad)
+                ev_row["query"] = query
+                ev_row["product_key"] = pkey
+                ev_row["market"] = market
+                event, detail = None, {}
+                incoming_active = bool(ad.get("is_active", True))
+                was_active = bool(existing.get("is_active")) if existing else None
+
+                def _days_ago(value):
+                    d = _to_algeria_date(value or "")
+                    return max(0, (algeria_today() - d).days) if d else None
+
+                if is_new:
+                    event = "launched"
+                    detail = {"start_date": start_date, "detected_at": now}
+                    # A new ad for a product whose older ads are all stopped is
+                    # a relaunch, not just another creative.
+                    if pkey:
+                        prev = cur.execute(
+                            f"SELECT ad_id, COALESCE(stopped_at, last_seen_active) AS stopped "
+                            f"FROM meta_ads WHERE product_key={p} AND ad_id<>{p} AND is_active=0 "
+                            f"ORDER BY COALESCE(stopped_at, last_seen_active) DESC LIMIT 1",
+                            (pkey, ad_id)).fetchone()
+                        act = cur.execute(
+                            f"SELECT COUNT(*) AS c FROM meta_ads WHERE product_key={p} "
+                            f"AND ad_id<>{p} AND is_active=1", (pkey, ad_id)).fetchone()
+                        if prev and int(act[0] or 0) == 0:
+                            detail.update({
+                                "relaunch_of": str(prev[0]),
+                                "previous_stopped_at": prev[1] or "",
+                                "downtime_days": _days_ago(prev[1]),
+                            })
+                elif was_active is not None and was_active != incoming_active:
+                    if incoming_active:
+                        event = "resumed"
+                        detail = {
+                            "previous_stopped_at": existing.get("stopped_at") or "",
+                            "downtime_days": _days_ago(
+                                existing.get("stopped_at") or existing.get("last_seen_active")),
+                            "days_active_before": int(existing.get("days_active") or 0),
+                        }
+                    else:
+                        event = "stopped"
+                        detail = {
+                            "days_active": int(existing.get("days_active") or days_active),
+                            "last_seen_active": existing.get("last_seen_active") or "",
+                        }
+                if event:
+                    cur.execute(
+                        f"INSERT INTO ad_events ({', '.join(self._EVENT_COLS)}) "
+                        f"VALUES ({', '.join([p] * len(self._EVENT_COLS))})",
+                        self._event_values(ad_id, event, now, detail, ev_row))
+            except Exception as ev_err:  # noqa: BLE001
+                logger.debug("ad event log failed: %s", ev_err)
             # Product strength for every ad of this product (and the old group
             # if the ad moved). Persisted so the winning preset can filter SQL.
             try:
@@ -1272,7 +1500,7 @@ class Database:
         for i in range(0, len(ids), 400):
             chunk = ids[i:i + 400]
             in_list = ", ".join([p] * len(chunk))
-            for table in ("ad_keywords", "ad_niches", "user_ads"):
+            for table in ("ad_keywords", "ad_niches", "ad_events", "user_ads"):
                 try:
                     self._execute(f"DELETE FROM {table} WHERE ad_id IN ({in_list})", tuple(chunk))
                 except Exception:
@@ -1709,6 +1937,7 @@ class Database:
 
     def clear_ads(self) -> None:
         """Reset the Algerian bank only; the foreign side tab is separate."""
+        self._execute("DELETE FROM ad_events WHERE (market IS NULL OR market = 'dz')")
         self._execute("DELETE FROM meta_ads WHERE (market IS NULL OR market = 'dz')")
 
     # ── jobs (remote scrape queue) ────────────────────────────────────────
