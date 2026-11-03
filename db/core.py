@@ -683,6 +683,53 @@ class Database:
                                            False, row.get("last_seen_active") or "")
                 self._execute(f"UPDATE meta_ads SET days_active = {p} WHERE ad_id = {p}", (d, aid))
 
+    # ── on-demand target re-scan reconciliation ───────────────────────────
+    def _target_ad_scope(self, target: dict) -> tuple[str, list]:
+        """SQL condition matching the ads a competitor target owns."""
+        p = self._ph()
+        typ = str(target.get("type") or "keyword").strip().lower()
+        val = str(target.get("target_value") or "").strip()
+        if typ == "domain":
+            dom = val.lower()
+            if dom.startswith("www."):
+                dom = dom[4:]
+            return f"(LOWER(store_domain) = {p} OR query = {p})", [dom, val]
+        if typ == "page":
+            return f"(page_id = {p} OR query = {p})", [val, val]
+        if typ == "custom_url":
+            return f"query = {p}", [val]
+        return (f"(query = {p} OR ad_id IN (SELECT ad_id FROM ad_keywords WHERE keyword = {p}))",
+                [val, val])
+
+    def reconcile_target_ads(self, target: dict, seen_ids: list[str],
+                             seen_collations: Optional[list[str]] = None,
+                             seen_product_keys: Optional[list[str]] = None) -> dict:
+        """Mark this target's active ads that the fresh scan did not return as
+        stopped, exactly like the daily status check does.
+
+        A previously active ad is kept alive when the scan returned its id, a
+        copy of its collation group, or another ad of the same product."""
+        clause, params = self._target_ad_scope(target)
+        rows = self._query(
+            f"SELECT ad_id, collation_id, product_key FROM meta_ads "
+            f"WHERE is_active = 1 AND ({clause})", tuple(params))
+        ids = {str(x) for x in (seen_ids or [])}
+        colls = {str(x) for x in (seen_collations or []) if x}
+        pkeys = {str(x) for x in (seen_product_keys or []) if x}
+        confirmed: dict[str, str] = {}
+        stopped: list[str] = []
+        for r in rows:
+            aid = str(r["ad_id"])
+            cid = str(r.get("collation_id") or "")
+            pk = str(r.get("product_key") or "")
+            if aid in ids or (cid and cid in colls) or (pk and pk in pkeys):
+                confirmed[aid] = ""
+            else:
+                stopped.append(aid)
+        if confirmed or stopped:
+            self.apply_status_check(confirmed, stopped)
+        return {"checked": len(rows), "confirmed": len(confirmed), "stopped": len(stopped)}
+
     def refresh_days_active(self) -> int:
         """Recompute days_active for every ad (run once a day). Returns rows changed."""
         p = self._ph()

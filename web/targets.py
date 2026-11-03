@@ -66,7 +66,7 @@ def _queue_target_scan(t: dict, source: str) -> Optional[int]:
 def api_targets():
     s = db.get_settings()
     return jsonify({"targets": db.list_competitors(user_id=_scope_user_id()),
-                    "schedule_enabled": s.get("schedule_enabled", "false") == "true"})
+                    "schedule_enabled": s.get("schedule_enabled", "true") == "true"})
 
 
 @bp.route("/api/targets", methods=["POST"])

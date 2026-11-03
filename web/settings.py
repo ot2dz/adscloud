@@ -41,7 +41,7 @@ bp = Blueprint("settings", __name__)
 def api_get_settings():
     s = db.get_settings()
     return jsonify({
-        "schedule_enabled": s.get("schedule_enabled", "false"),
+        "schedule_enabled": s.get("schedule_enabled", "true"),
         "interval_hours": s.get("interval_hours", "12"),
         "last_scheduled_at": s.get("last_scheduled_at", ""),
         "notify_enabled": s.get("notify_enabled", "false"),

@@ -111,7 +111,7 @@ async function scanTarget(id) {
   const r = await fetch('/api/targets/' + id + '/scan' + adminUserParam('?'), { method: 'POST' });
   const d = await r.json();
   if (d.already_queued) alert('⏳ هذا المنافس في قائمة الانتظار بالفعل.');
-  else if (d.ok) alert('⚡ تمت إضافة الفحص إلى قائمة الانتظار.');
+  else if (d.ok) alert('⚡ تمت إضافة الفحص إلى قائمة الانتظار — سيقارن النتائج ويعلّم الإعلانات المتوقفة.');
 }
 
 function trackDomain(dom) {

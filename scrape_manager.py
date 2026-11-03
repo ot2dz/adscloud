@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from db import db
 from engine import scrape
+from store_filter import product_key
 
 logger = logging.getLogger("web_app")
 
@@ -99,6 +100,8 @@ class ScrapeManager:
         proxy_spec = _proxy_setting()
         seen_stores: set = set()
         seen_ad_ids: set = set()
+        seen_collations: set = set()
+        seen_product_keys: set = set()
         resume = resume if isinstance(resume, dict) else {}
         # Outcome read by the job runner: done | stopped | interrupted | failed.
         # Start from the incoming checkpoint so an immediate failure keeps it.
@@ -163,6 +166,14 @@ class ScrapeManager:
             # Drama apps / foreign sites / hidden CTAs: not collected or shown.
             if db.is_unwanted_ad(d):
                 return
+            # Identity of what Meta returned now: lets a re-scan tell which
+            # previously active ads are gone (see reconcile_target_ads).
+            if ad.collation_id:
+                seen_collations.add(str(ad.collation_id))
+            pk = product_key(str(ad.page_id or ""), ad.link_url or "",
+                             ad.body or "", ad.store_domain or "")
+            if pk:
+                seen_product_keys.add(pk)
             aid = d.get("ad_id")
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
@@ -362,6 +373,8 @@ class ScrapeManager:
             self._emit("error", {"message": str(exc)})
         finally:
             outcome["ad_ids"] = sorted(seen_ad_ids)
+            outcome["seen_collations"] = sorted(seen_collations)
+            outcome["seen_product_keys"] = sorted(seen_product_keys)
             self.state["outcome"] = outcome
             self.state["running"] = False
             self._emit("done", {})

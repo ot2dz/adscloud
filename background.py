@@ -109,7 +109,7 @@ def scheduler_loop() -> None:
             if _status_check_due(s):
                 _queue_status_check("daily")
                 db.set_setting("status_check_last", today_dz.isoformat())
-            if s.get("schedule_enabled", "false").lower() in ("1", "true", "yes", "on"):
+            if s.get("schedule_enabled", "true").lower() in ("1", "true", "yes", "on"):
                 targets = [t for t in db.list_targets() if t.get("enabled")]
                 now_utc = datetime.now(timezone.utc)
                 enqueued = 0
@@ -156,6 +156,40 @@ def scheduler_loop() -> None:
         except Exception:
             logger.exception("scheduler error")
         time.sleep(60)
+
+
+def _reconcile_target_scan(job: dict, outcome: dict, resumed: bool) -> None:
+    """After a complete competitor re-scan, mark the ads it no longer returns
+    as stopped (with their exact last-seen duration), like the daily check."""
+    try:
+        if resumed or job.get("mode") or job.get("sweep"):
+            return
+        # The first scan only builds the baseline: there is nothing to compare.
+        if job.get("source") == "new_competitor":
+            return
+        if outcome.get("status") != "done":
+            return
+        tid = job.get("target_id")
+        if not tid:
+            return
+        seen = outcome.get("ad_ids") or []
+        # An empty answer is a soft-block, not "everything stopped".
+        if not seen:
+            return
+        t = db.get_target(int(tid))
+        if not t:
+            return
+        res = db.reconcile_target_ads(
+            t, seen, outcome.get("seen_collations") or [],
+            outcome.get("seen_product_keys") or [])
+        if res.get("stopped"):
+            manager._emit("log", {
+                "text": f"⏸ فحص «{t.get('label') or t['target_value']}»: "
+                        f"{res['stopped']} إعلان توقف، {res['confirmed']} ما زال نشطاً."})
+        logger.info("target %s scan reconcile: checked=%s confirmed=%s stopped=%s",
+                    tid, res.get("checked"), res.get("confirmed"), res.get("stopped"))
+    except Exception:
+        logger.exception("target scan reconcile failed")
 
 
 def _snapshot_page_target(job: dict, outcome: dict) -> None:
@@ -303,6 +337,7 @@ def job_worker_loop() -> None:
                 manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان."})
                 if not resume:  # a resumed run only saw part of the page's ads
                     _snapshot_page_target(job, outcome)
+                    _reconcile_target_scan(job, outcome, resumed=False)
         except Exception:
             logger.exception("job worker loop error")
             time.sleep(5)
