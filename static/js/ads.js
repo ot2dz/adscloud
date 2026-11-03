@@ -452,7 +452,7 @@ function adCardHtml(raw, opts = {}) {
             class="absolute inset-0 flex items-center justify-center group">
             <span class="w-14 h-14 rounded-full bg-black/55 group-hover:bg-black/75 text-white flex items-center justify-center text-2xl shadow-lg transition">▶</span>
           </button>` : ''}
-        ${isWin ? '<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500 text-white font-bold shadow-sm pointer-events-none">🏆 رابح</span>'
+        ${h ? `<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full font-bold shadow-sm pointer-events-none ${h.score >= 70 ? 'bg-emerald-600 text-white' : (h.score >= 40 ? 'bg-amber-500 text-white' : 'bg-slate-500 text-white')}">${h.score >= 70 ? '🏆 رابح · ' + h.score : '🔥 ' + h.score}</span>`
           : (isNew ? '<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full bg-sky-500 text-white font-bold shadow-sm pointer-events-none">🚀 جديد</span>' : '')}
         ${g ? `
           <button type="button" data-key="${escT(g.key)}" data-title="${escT((raw.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
@@ -474,7 +474,6 @@ function adCardHtml(raw, opts = {}) {
         </div>
 
         <div class="flex items-center gap-3 text-[11.5px] text-slate-600 flex-wrap">
-          ${h ? `<span class="px-1.5 py-0.5 rounded font-bold (h.label === 'strong' ? 'bg-emerald-100 text-emerald-700' : (h.label === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600')) + "' title="قوة المنتج">\u25cf <b class="num">${h.score}</b></span>` : ''}
           ${a.start_date ? `<span title="تاريخ الإطلاق">📅 ${fmtDayAr(a.start_date)}</span>` : ''}
           <span title="الأيام النشطة">⏱️ <b class="num text-slate-800">${days}</b> ${days === 1 ? 'يوم' : 'أيام'}</span>
           ${a.domain_total_ads != null ? `<span title="إجمالي إعلانات المتجر">🏪 <b class="num text-slate-800">${a.domain_total_ads}</b> للمتجر</span>` : ''}
