@@ -109,7 +109,12 @@ def api_ads_group():
     key = (request.args.get("key") or "").strip()
     if not key:
         return jsonify({"error": "key required"}), 400
-    return jsonify({"ads": db.attach_entity_stats(db.get_group_ads(key, user_id=_scope_user_id()))})
+    market = (request.args.get("market") or "dz").strip().lower()
+    if market == "global":
+        ads = db.attach_entity_stats(db.get_group_ads(key, market="global"))
+    else:
+        ads = db.attach_entity_stats(db.get_group_ads(key, user_id=_scope_user_id()))
+    return jsonify({"ads": ads})
 
 
 @bp.route("/api/video")

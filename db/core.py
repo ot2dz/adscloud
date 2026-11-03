@@ -342,6 +342,8 @@ class Database:
             ("attempts", "INTEGER DEFAULT 0"),
             ("retry_at", "TEXT"),
             ("heartbeat_at", "TEXT"),
+            # 'dz' or 'global' (foreign market, manual scans only).
+            ("market", "TEXT DEFAULT 'dz'"),
         ]:
             try:
                 if self.is_postgres:
@@ -369,11 +371,14 @@ class Database:
             ("meta_ads", "niche_checked_at", "TEXT"),
             # Persisted product strength (see scoring.py). NULL until computed.
             ("meta_ads", "hunter_score", "INTEGER"),
+            # 'dz' (default Arabic bank) or 'global' (foreign market side tab).
+            ("meta_ads", "market", "TEXT DEFAULT 'dz'"),
             ("keywords", "type", "TEXT DEFAULT 'keyword'"),
             ("keywords", "label", "TEXT DEFAULT ''"),
             ("targets", "country", "TEXT DEFAULT 'DZ'"),
             ("targets", "interval_hours", "REAL DEFAULT 12.0"),
             ("targets", "last_scraped_at", "TEXT"),
+            ("targets", "market", "TEXT DEFAULT 'dz'"),
             ("users", "api_token", "TEXT"),
         ]:
             try:
@@ -388,6 +393,7 @@ class Database:
         # Product grouping: one key per "same advertiser + same product".
         try:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_product ON meta_ads (product_key)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_market ON meta_ads (market, store_domain)")
             conn.commit()
             self._backfill_product_keys(cur, conn)
         except Exception as exc:
@@ -637,11 +643,13 @@ class Database:
     def status_check_pages(self) -> list[str]:
         """Pages that still have ads marked active, in a stable order."""
         rows = self._query("SELECT DISTINCT page_id FROM meta_ads "
-                           "WHERE is_active = 1 AND page_id IS NOT NULL AND page_id != '' ORDER BY page_id")
+                           "WHERE is_active = 1 AND page_id IS NOT NULL AND page_id != '' "
+                           "AND (market IS NULL OR market = 'dz') ORDER BY page_id")
         return [str(r["page_id"]) for r in rows]
 
     def top_active_pages(self, n: int = 2) -> list[str]:
-        rows = self._query("SELECT page_id, COUNT(*) AS c FROM meta_ads WHERE is_active = 1 AND page_id IS NOT NULL "
+        rows = self._query("SELECT page_id, COUNT(*) AS c FROM meta_ads WHERE is_active = 1 "
+                           "AND page_id IS NOT NULL AND (market IS NULL OR market = 'dz') "
                            f"AND page_id != '' GROUP BY page_id ORDER BY c DESC LIMIT {int(n)}")
         return [str(r["page_id"]) for r in rows]
 
@@ -651,7 +659,8 @@ class Database:
         p = self._ph()
         return self._query(
             f"SELECT ad_id, page_id, collation_id, product_key, last_seen_active FROM meta_ads "
-            f"WHERE is_active = 1 AND page_id IN ({', '.join([p] * len(page_ids))})", tuple(page_ids))
+            f"WHERE is_active = 1 AND (market IS NULL OR market = 'dz') "
+            f"AND page_id IN ({', '.join([p] * len(page_ids))})", tuple(page_ids))
 
     def apply_status_check(self, confirmed: dict[str, str], stopped: list[str]) -> None:
         """confirmed = {ad_id: collation_id or ''} seen running now; stopped =
@@ -689,17 +698,19 @@ class Database:
         p = self._ph()
         typ = str(target.get("type") or "keyword").strip().lower()
         val = str(target.get("target_value") or "").strip()
+        mkt = str(target.get("market") or "dz").lower()
+        mcond = "market = 'global'" if mkt == "global" else "(market IS NULL OR market = 'dz')"
         if typ == "domain":
             dom = val.lower()
             if dom.startswith("www."):
                 dom = dom[4:]
-            return f"(LOWER(store_domain) = {p} OR query = {p})", [dom, val]
+            return f"({mcond}) AND (LOWER(store_domain) = {p} OR query = {p})", [dom, val]
         if typ == "page":
-            return f"(page_id = {p} OR query = {p})", [val, val]
+            return f"({mcond}) AND (page_id = {p} OR query = {p})", [val, val]
         if typ == "custom_url":
-            return f"query = {p}", [val]
-        return (f"(query = {p} OR ad_id IN (SELECT ad_id FROM ad_keywords WHERE keyword = {p}))",
-                [val, val])
+            return f"({mcond}) AND query = {p}", [val]
+        return (f"({mcond}) AND (query = {p} OR ad_id IN "
+                f"(SELECT ad_id FROM ad_keywords WHERE keyword = {p}))", [val, val])
 
     def reconcile_target_ads(self, target: dict, seen_ids: list[str],
                              seen_collations: Optional[list[str]] = None,
@@ -752,12 +763,13 @@ class Database:
         return len(updates)
 
     def save_ad(self, ad: dict[str, Any], query: str = "", country: str = "DZ",
-                target_id: Optional[int] = None) -> bool:
+                target_id: Optional[int] = None, market: str = "dz") -> bool:
         """Upsert an ad with lifecycle tracking. Returns True if the ad is NEW."""
         p = self._ph()
         ad_id = str(ad.get("ad_id") or "")
         if not ad_id:
             return False
+        market = "global" if str(market or "").strip().lower() == "global" else "dz"
 
         existing = self._query_one(f"SELECT first_seen, start_date, product_key FROM meta_ads WHERE ad_id={p}", (ad_id,))
         is_new = existing is None
@@ -774,6 +786,7 @@ class Database:
             return v if v.lower().startswith(("http://", "https://")) else ""
         ad = dict(ad)
         ad["link_url"] = _web_url(ad.get("link_url"))
+        ad["market"] = market
         preview_img = _web_url(ad.get("preview_image_url"))
         # Big marketplaces are never stored (they are also purged on startup).
         if self.is_blocked_domain(ad.get("store_domain") or "") or self.is_unwanted_ad(ad):
@@ -785,7 +798,7 @@ class Database:
                 "store_domain", "platform", "body", "cta_text", "collation_count",
                 "publisher_platforms", "query", "country", "collected_at", "first_seen",
                 "last_seen_active", "days_active", "target_id", "preview_image_url",
-                "video_url", "video_sd_url", "product_key", "collation_id")
+                "video_url", "video_sd_url", "product_key", "collation_id", "market")
         values = (
             ad_id,
             ad.get("page_name") or "",
@@ -811,6 +824,7 @@ class Database:
             _web_url(ad.get("video_sd_url")),
             pkey,
             str(ad.get("collation_id") or ""),
+            market,
         )
         placeholders = ", ".join([p] * len(cols))
         col_list = ", ".join(cols)
@@ -1009,13 +1023,23 @@ class Database:
                            user_id: Optional[int] = None,
                            min_product_ads: int = 0,
                            keywords: Optional[list[str]] = None,
-                           niches: Optional[list[str]] = None) -> tuple[str, list]:
+                           niches: Optional[list[str]] = None,
+                           market: str = "dz") -> tuple[str, list]:
         p = self._ph()
         where = []
         params: list = []
 
+        # 'dz' is the default Arabic bank; 'global' is the foreign side tab.
+        market = str(market or "dz").strip().lower()
+        if market == "dz":
+            where.append("(market IS NULL OR market = 'dz')")
+        elif market != "all":
+            where.append(f"market = {p}")
+            params.append(market)
+
         # Only ads whose CTA is on the allow-list are ever listed/counted.
-        cta_sql, cta_params = self._cta_clause()
+        # The foreign market keeps every CTA and language.
+        cta_sql, cta_params = ("", []) if market == "global" else self._cta_clause()
         if cta_sql:
             where.append(cta_sql)
             params.extend(cta_params)
@@ -1101,7 +1125,8 @@ class Database:
                 target_id: Optional[int] = None, user_id: Optional[int] = None,
                 min_product_ads: int = 0,
                 keywords: Optional[list[str]] = None,
-                niches: Optional[list[str]] = None) -> list[dict]:
+                niches: Optional[list[str]] = None,
+                market: str = "dz") -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
@@ -1109,7 +1134,7 @@ class Database:
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
-            keywords=keywords, niches=niches,
+            keywords=keywords, niches=niches, market=market,
         )
 
         order_map = {
@@ -1186,7 +1211,12 @@ class Database:
 
     def is_unwanted_ad(self, ad: dict) -> bool:
         """Drama apps, foreign sites, non-Arabic ads and ads whose CTA would
-        be hidden anyway are never stored."""
+        be hidden anyway are never stored.
+
+        The foreign-market side tab keeps every language/CTA/foreign TLD; only
+        the big-marketplace blocklist still applies (checked in save_ad)."""
+        if str(ad.get("market") or "dz").lower() == "global":
+            return False
         cta = (ad.get("cta_text") or "").strip().upper()
         if junk_reason(ad.get("store_domain") or "", cta, ad.get("body") or ""):
             return True
@@ -1222,7 +1252,8 @@ class Database:
         p = self._ph()
         conds = " OR ".join([f"LOWER(store_domain) LIKE {p}"] * len(JUNK_LIKE_PATTERNS))
         rows = self._query(
-            f"SELECT ad_id, store_domain, cta_text, body FROM meta_ads WHERE {conds}",
+            f"SELECT ad_id, store_domain, cta_text, body FROM meta_ads "
+            f"WHERE (market IS NULL OR market = 'dz') AND ({conds})",
             tuple(JUNK_LIKE_PATTERNS))
         return self._delete_ads([str(r["ad_id"]) for r in rows
                                  if junk_reason(r["store_domain"], r.get("cta_text") or "", r.get("body") or "")])
@@ -1231,7 +1262,7 @@ class Database:
         """Permanently delete ads written in Latin script (see is_non_arabic)."""
         if not self.arabic_only():
             return 0
-        rows = self._query("SELECT ad_id, body FROM meta_ads")
+        rows = self._query("SELECT ad_id, body FROM meta_ads WHERE (market IS NULL OR market = 'dz')")
         return self._delete_ads([str(r["ad_id"]) for r in rows if is_non_arabic(r.get("body") or "")])
 
     def _delete_ads(self, ids: list[str]) -> int:
@@ -1345,7 +1376,8 @@ class Database:
             return 0
         rows = self._query(
             "SELECT ad_id, body, page_name, store_domain FROM meta_ads "
-            f"WHERE niche_checked_at IS NULL LIMIT {int(limit)}")
+            "WHERE niche_checked_at IS NULL AND (market IS NULL OR market = 'dz') "
+            f"LIMIT {int(limit)}")
         if not rows:
             return 0
         conn = self._connect()
@@ -1547,10 +1579,10 @@ class Database:
         return int(row["c"]) if row else 0
 
     def get_group_ads(self, product_key: str, user_id: Optional[int] = None,
-                      limit: int = 500) -> list[dict]:
+                      limit: int = 500, market: str = "dz") -> list[dict]:
         """All ads of one product group (newest launch first)."""
         p = self._ph()
-        clause, params = self._build_ads_filter(user_id=user_id)
+        clause, params = self._build_ads_filter(user_id=user_id, market=market)
         joiner = " AND " if clause else "WHERE "
         rows = self._query(
             f"SELECT * FROM meta_ads {clause}{joiner}product_key = {p} "
@@ -1570,14 +1602,14 @@ class Database:
                   min_days_active: int = 0, target_id: Optional[int] = None,
                   user_id: Optional[int] = None, min_product_ads: int = 0,
                   keywords: Optional[list[str]] = None,
-                  niches: Optional[list[str]] = None) -> int:
+                  niches: Optional[list[str]] = None, market: str = "dz") -> int:
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
             active_only=active_only, start_date_min=start_date_min,
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
-            keywords=keywords, niches=niches,
+            keywords=keywords, niches=niches, market=market,
         )
         row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
         return int(row["c"]) if row else 0
@@ -1586,7 +1618,8 @@ class Database:
         sql = ("SELECT query, COUNT(*) AS total_ads, "
                "SUM(CASE WHEN store_domain != '' AND store_domain IS NOT NULL THEN 1 ELSE 0 END) AS store_ads, "
                "MAX(collected_at) AS last_run FROM meta_ads "
-               "WHERE query != '' GROUP BY query ORDER BY last_run DESC LIMIT 100")
+               "WHERE query != '' AND (market IS NULL OR market = 'dz') "
+               "GROUP BY query ORDER BY last_run DESC LIMIT 100")
         return self._query(sql)
 
     def get_keywords_overview(self, user_id: Optional[int] = None,
@@ -1594,7 +1627,7 @@ class Database:
         """Per-keyword counters for the keyword filter bar (ads, store ads,
         winning ads, recent launches, last run)."""
         p = self._ph()
-        where = ["ak.keyword <> ''"]
+        where = ["ak.keyword <> ''", "(m.market IS NULL OR m.market = 'dz')"]
         params: list = []
         if user_id is not None:
             where.append(self._user_scope_sql(prefix="m."))
@@ -1613,7 +1646,8 @@ class Database:
 
     def get_stores(self, search: str = "", user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
-        where = ["store_domain != '' AND store_domain IS NOT NULL"]
+        where = ["store_domain != '' AND store_domain IS NOT NULL",
+                 "(market IS NULL OR market = 'dz')"]
         params: list = []
         if search:
             where.append(f"store_domain LIKE {p}")
@@ -1631,6 +1665,20 @@ class Database:
                f"GROUP BY store_domain, platform ORDER BY total_ads DESC LIMIT 300")
         return self._query(sql, tuple(params))
 
+    # ── foreign market side tab ───────────────────────────────────────────
+    def global_stores(self, search: str = "", limit: int = 200) -> list[dict]:
+        """Store domains collected in the foreign market, with ad counters."""
+        p = self._ph()
+        where = ["market = 'global' AND store_domain != '' AND store_domain IS NOT NULL"]
+        params: list = []
+        if search:
+            where.append(f"store_domain LIKE {p}")
+            params.append("%" + search + "%")
+        return self._query(
+            f"SELECT store_domain, COUNT(*) AS total_ads, SUM(is_active) AS active_ads, "
+            f"MAX(collected_at) AS last_seen FROM meta_ads WHERE {' AND '.join(where)} "
+            f"GROUP BY store_domain ORDER BY total_ads DESC LIMIT {int(limit)}", tuple(params))
+
     def get_stats(self, user_id: Optional[int] = None) -> dict:
         p = self._ph()
         total = self.count_ads(user_id=user_id)
@@ -1638,6 +1686,7 @@ class Database:
         if user_id is not None:
             scope = " AND " + self._user_scope_sql()
             scope_params = tuple(self._user_scope_params(user_id))
+        scope = " AND (market IS NULL OR market = 'dz')" + scope
         cta_sql, cta_params = self._cta_clause()
         if cta_sql:
             scope += " AND " + cta_sql
@@ -1659,14 +1708,15 @@ class Database:
         }
 
     def clear_ads(self) -> None:
-        self._execute("DELETE FROM meta_ads")
+        """Reset the Algerian bank only; the foreign side tab is separate."""
+        self._execute("DELETE FROM meta_ads WHERE (market IS NULL OR market = 'dz')")
 
     # ── jobs (remote scrape queue) ────────────────────────────────────────
     def get_known_ad_ids(self, query: str = "", store_domain: str = "",
                          page_id: str = "", limit: int = 150) -> list[str]:
         """Fetch recently stored ad IDs for early stopping."""
         p = self._ph()
-        where = []
+        where = ["(market IS NULL OR market = 'dz')"]
         params = []
         if query:
             where.append(f"query = {p}")
@@ -1707,17 +1757,19 @@ class Database:
                    source: str = "manual", url: str = "", sweep: bool = False,
                    target_id: Optional[int] = None, incremental: bool = False,
                    start_date_min: str = "", start_date_max: str = "",
-                   date_scope: str = "impressions", mode: str = "", languages: str = "") -> int:
+                   date_scope: str = "impressions", mode: str = "", languages: str = "",
+                   market: str = "dz") -> int:
         p = self._ph()
         conn = self._connect()
         try:
             cur = conn.cursor()
             cols = ("query", "url", "country", "exact_phrase", "stores_only", "sweep",
                     "sort_mode", "status", "source", "created_at", "target_id", "incremental",
-                    "start_date_min", "start_date_max", "date_scope", "mode", "languages")
+                    "start_date_min", "start_date_max", "date_scope", "mode", "languages", "market")
             vals = (query, url, country, int(exact_phrase), int(stores_only), int(sweep),
                     sort_mode, "pending", source, _now(), target_id, int(incremental),
-                    start_date_min, start_date_max, date_scope or "impressions", mode or "", languages or "")
+                    start_date_min, start_date_max, date_scope or "impressions", mode or "", languages or "",
+                    "global" if str(market).lower() == "global" else "dz")
             placeholders = ", ".join([p] * len(cols))
             col_list = ", ".join(cols)
             if self.is_postgres:
@@ -1892,21 +1944,31 @@ class Database:
 
     # ── targets (Pages, Domains, Keywords, Custom URLs) ───────────────────
     def add_target(self, type: str, target_value: str, label: str = "",
-                   country: str = "DZ", interval_hours: float = 12.0) -> bool:
+                   country: str = "DZ", interval_hours: float = 12.0,
+                   market: str = "dz") -> bool:
         val = (target_value or "").strip()
         typ = (type or "keyword").strip().lower()
         if not val:
             return False
         p = self._ph()
-        if self._query_one(f"SELECT id FROM targets WHERE type={p} AND target_value={p}", (typ, val)):
+        mkt = "global" if str(market).lower() == "global" else "dz"
+        if mkt == "global":
+            dup = self._query_one(
+                f"SELECT id FROM targets WHERE type={p} AND target_value={p} AND market={p}",
+                (typ, val, mkt))
+        else:
+            dup = self._query_one(
+                f"SELECT id FROM targets WHERE type={p} AND target_value={p} "
+                f"AND (market IS NULL OR market = 'dz')", (typ, val))
+        if dup:
             return False
         self._execute(
-            f"INSERT INTO targets (type, target_value, label, country, enabled, interval_hours, created_at) "
-            f"VALUES ({p},{p},{p},{p},1,{p},{p})",
-            (typ, val, label or val, country or "DZ", float(interval_hours or 12.0), _now()))
+            f"INSERT INTO targets (type, target_value, label, country, enabled, interval_hours, created_at, market) "
+            f"VALUES ({p},{p},{p},{p},1,{p},{p},{p})",
+            (typ, val, label or val, country or "DZ", float(interval_hours or 12.0), _now(), mkt))
         return True
 
-    def list_targets(self) -> list[dict]:
+    def list_targets(self, market: Optional[str] = None) -> list[dict]:
         # Migrate any old keywords to targets if targets is empty
         if not self._query_one("SELECT 1 FROM targets LIMIT 1"):
             old_kws = self._query("SELECT * FROM keywords")
@@ -1914,18 +1976,34 @@ class Database:
                 t_type = k.get("type") or "keyword"
                 self.add_target(type=t_type, target_value=k.get("query", ""),
                                 label=k.get("label", ""), country="DZ")
-        targets = self._query("SELECT * FROM targets ORDER BY id DESC")
         p = self._ph()
+        if market:
+            if str(market).lower() == "dz":
+                targets = self._query(
+                    "SELECT * FROM targets WHERE (market IS NULL OR market = 'dz') ORDER BY id DESC")
+            else:
+                targets = self._query(
+                    f"SELECT * FROM targets WHERE market={p} ORDER BY id DESC", (market,))
+        else:
+            targets = self._query("SELECT * FROM targets ORDER BY id DESC")
         for t in targets:
             typ = t.get("type") or "keyword"
             val = t.get("target_value") or ""
             tid = t.get("id")
+            mkt = t.get("market") or "dz"
+            mcond = "market = 'global'" if mkt == "global" else "(market IS NULL OR market = 'dz')"
             if typ == "page":
-                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE page_id = {p} OR target_id = {p}", (val, tid))
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM meta_ads WHERE ({mcond}) "
+                    f"AND (page_id = {p} OR target_id = {p})", (val, tid))
             elif typ == "domain":
-                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE store_domain = {p} OR target_id = {p}", (val, tid))
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM meta_ads WHERE ({mcond}) "
+                    f"AND (store_domain = {p} OR target_id = {p})", (val, tid))
             else:
-                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE query = {p} OR target_id = {p}", (val, tid))
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM meta_ads WHERE ({mcond}) "
+                    f"AND (query = {p} OR target_id = {p})", (val, tid))
             t["ads_count"] = int(row["c"]) if row and row.get("c") else 0
         return targets
 
@@ -1944,10 +2022,22 @@ class Database:
     def get_target(self, target_id: int) -> Optional[dict]:
         return self._query_one(f"SELECT * FROM targets WHERE id={self._ph()}", (int(target_id),))
 
-    def find_target(self, type: str, target_value: str) -> Optional[dict]:
+    def find_target(self, type: str, target_value: str,
+                    market: Optional[str] = None) -> Optional[dict]:
         p = self._ph()
+        typ = (type or "").strip().lower()
+        val = (target_value or "").strip()
+        if market:
+            mkt = str(market).lower()
+            if mkt == "global":
+                return self._query_one(
+                    f"SELECT * FROM targets WHERE type={p} AND target_value={p} AND market={p}",
+                    (typ, val, mkt))
+            return self._query_one(
+                f"SELECT * FROM targets WHERE type={p} AND target_value={p} "
+                f"AND (market IS NULL OR market = 'dz')", (typ, val))
         return self._query_one(f"SELECT * FROM targets WHERE type={p} AND target_value={p}",
-                               ((type or "").strip().lower(), (target_value or "").strip()))
+                               (typ, val))
 
     def _sync_target_from_links(self, target_id: int) -> None:
         """Shared target settings follow its users: enabled if any user has it
@@ -1962,13 +2052,13 @@ class Database:
 
     def add_user_target(self, user_id: int, type: str, target_value: str, label: str = "",
                         country: str = "DZ", interval_hours: float = 12.0,
-                        source: str = "dashboard") -> tuple[int, bool]:
+                        source: str = "dashboard", market: str = "dz") -> tuple[int, bool]:
         """Track a competitor for one user. Returns (target_id, newly_linked)."""
         typ = (type or "keyword").strip().lower()
         val = (target_value or "").strip()
         self.add_target(type=typ, target_value=val, label=label or val, country=country,
-                        interval_hours=interval_hours)
-        t = self.find_target(typ, val)
+                        interval_hours=interval_hours, market=market)
+        t = self.find_target(typ, val, market=market)
         tid = int(t["id"])
         p = self._ph()
         existing = self._query_one(
@@ -2028,27 +2118,40 @@ class Database:
                       (1 if enabled else 0, int(user_id), int(target_id)))
         self._sync_target_from_links(target_id)
 
-    def list_competitors(self, user_id: Optional[int] = None) -> list[dict]:
+    def list_competitors(self, user_id: Optional[int] = None,
+                        market: str = "dz") -> list[dict]:
         """Competitors of one user (their label/enabled), or all of them for
         an admin overview (with the emails of the users following each)."""
         self.list_targets()  # keeps the legacy keywords -> targets migration
         p = self._ph()
+        mkt = "global" if str(market).lower() == "global" else "dz"
+        mfilter = f"t.market={p}" if mkt == "global" else "(t.market IS NULL OR t.market = 'dz')"
         if user_id is not None:
+            params = [int(user_id)] + ([mkt] if mkt == "global" else [])
             rows = self._query(
                 f"SELECT t.*, ut.label AS user_label, ut.enabled AS user_enabled, "
                 f"ut.interval_hours AS user_interval, ut.source AS source, ut.created_at AS tracked_at "
                 f"FROM targets t JOIN user_targets ut ON ut.target_id = t.id "
-                f"WHERE ut.user_id={p} ORDER BY ut.created_at DESC, t.id DESC", (int(user_id),))
+                f"WHERE ut.user_id={p} AND {mfilter} "
+                f"ORDER BY ut.created_at DESC, t.id DESC", tuple(params))
             for r in rows:
                 r["label"] = r.pop("user_label") or r.get("label")
                 r["enabled"] = r.pop("user_enabled")
                 r["interval_hours"] = r.pop("user_interval") or r.get("interval_hours")
         else:
-            rows = self._query("SELECT * FROM targets ORDER BY id DESC")
+            if mkt == "global":
+                rows = self._query(
+                    f"SELECT * FROM targets WHERE market={p} ORDER BY id DESC", (mkt,))
+            else:
+                rows = self._query(
+                    "SELECT * FROM targets WHERE (market IS NULL OR market = 'dz') ORDER BY id DESC")
         for t in rows:
             typ, val, tid = t.get("type") or "keyword", t.get("target_value") or "", t.get("id")
+            mkt = t.get("market") or "dz"
+            mcond = "market = 'global'" if mkt == "global" else "(market IS NULL OR market = 'dz')"
             if typ == "page":
-                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE page_id = {p}", (val,))
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM meta_ads WHERE ({mcond}) AND page_id = {p}", (val,))
                 pg = self._query_one(f"SELECT * FROM tracked_pages WHERE page_id={p}", (val,))
                 snaps = self._query(
                     f"SELECT captured_at, active_ads_count, total_ads_count FROM page_snapshots "
@@ -2061,9 +2164,12 @@ class Database:
                     "snapshots": list(reversed(snaps)),
                 }
             elif typ == "domain":
-                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE store_domain = {p} OR query = {p}", (val, val))
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM meta_ads WHERE ({mcond}) "
+                    f"AND (store_domain = {p} OR query = {p})", (val, val))
             else:
-                row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads WHERE query = {p}", (val,))
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM meta_ads WHERE ({mcond}) AND query = {p}", (val,))
             t["ads_count"] = int(row["c"]) if row and row.get("c") else 0
             owners = self._query(
                 f"SELECT u.email FROM user_targets ut JOIN users u ON u.id = ut.user_id "

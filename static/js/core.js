@@ -369,11 +369,11 @@ function escT(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&am
 // ── Tab switcher ──
 function showTab(t) {
   if (t === 'tracked') t = 'targets';  // old tab merged into competitors
-  ['ads','targets','stores','jobs','settings','users'].forEach(v => {
+  ['ads','targets','stores','global','jobs','settings','users'].forEach(v => {
     const el = document.getElementById('view-'+v);
     if (el) el.classList.toggle('hidden', t!==v);
   });
-  ['ads','targets','stores','jobs','settings','users'].forEach(v => {
+  ['ads','targets','stores','global','jobs','settings','users'].forEach(v => {
     const btn = document.getElementById('tab-'+v);
     if (btn) {
       if (t === v) {
@@ -387,6 +387,7 @@ function showTab(t) {
   if (t === 'ads') { loadKeywordChips(); loadNicheChips(); }
   if (t === 'targets') loadTargets();
   if (t === 'stores') loadStores();
+  if (t === 'global') loadGlobal();
   if (t === 'jobs') loadJobs();
   if (t === 'settings') loadSettings();
   if (t === 'users') { loadAdminUsers(); loadSecurityEvents(); }

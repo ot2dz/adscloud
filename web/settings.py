@@ -182,7 +182,7 @@ def api_telegram_test():
 @bp.route("/api/schedule/run-now", methods=["POST"])
 @admin_required
 def api_schedule_run_now():
-    targets = [t for t in db.list_targets() if t.get("enabled")]
+    targets = [t for t in db.list_targets(market="dz") if t.get("enabled")]
     count = 0
     for t in targets:
         if db.has_open_job(t.get("id")):
@@ -196,6 +196,7 @@ def api_schedule_run_now():
             source="schedule_manual",
             target_id=t.get("id"),
             incremental=True,
+            market="dz",
         )
         db.update_target_scraped(t["id"])
         count += 1

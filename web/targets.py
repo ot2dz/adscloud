@@ -55,6 +55,7 @@ def _queue_target_scan(t: dict, source: str) -> Optional[int]:
     job_id = db.create_job(
         query=t["target_value"], url=t_url, country=t.get("country", "DZ"),
         stores_only=True, source=source, target_id=t["id"], incremental=True,
+        market=t.get("market") or "dz",
     )
     db.update_target_scraped(t["id"])
     job_wakeup.set()

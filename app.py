@@ -211,8 +211,10 @@ from web.targets import bp as targets_bp
 from web.settings import bp as settings_bp
 from web.extension import bp as extension_bp
 from web.egress import bp as egress_bp
+from web.global_market import bp as global_market_bp
 
-for _bp in (auth_bp, scrape_bp, ads_bp, targets_bp, settings_bp, extension_bp, egress_bp):
+for _bp in (auth_bp, scrape_bp, ads_bp, targets_bp, settings_bp, extension_bp, egress_bp,
+            global_market_bp):
     app.register_blueprint(_bp)
 
 if __name__ == "__main__":

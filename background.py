@@ -110,7 +110,7 @@ def scheduler_loop() -> None:
                 _queue_status_check("daily")
                 db.set_setting("status_check_last", today_dz.isoformat())
             if s.get("schedule_enabled", "true").lower() in ("1", "true", "yes", "on"):
-                targets = [t for t in db.list_targets() if t.get("enabled")]
+                targets = [t for t in db.list_targets(market="dz") if t.get("enabled")]
                 now_utc = datetime.now(timezone.utc)
                 enqueued = 0
 
@@ -143,6 +143,7 @@ def scheduler_loop() -> None:
                             source="schedule",
                             target_id=t.get("id"),
                             incremental=True,
+                            market="dz",
                         )
                         db.update_target_scraped(t["id"])
                         enqueued += 1
@@ -275,6 +276,7 @@ def job_worker_loop() -> None:
                 base_count=base_count,
                 mode=job.get("mode") or "",
                 languages=[x for x in (job.get("languages") or "").split(",") if x],
+                market=job.get("market") or "dz",
             )
             if not started:
                 db.release_job(jid)

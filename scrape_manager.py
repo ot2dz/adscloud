@@ -63,7 +63,8 @@ class ScrapeManager:
               date_scope: str = "impressions", resume: Optional[dict] = None,
               on_checkpoint: Optional[Callable[[Optional[dict]], None]] = None,
               job_id: Optional[int] = None, base_count: int = 0,
-              mode: str = "", languages: Optional[list] = None) -> bool:
+              mode: str = "", languages: Optional[list] = None,
+              market: str = "dz") -> bool:
         """Start a scrape thread.
 
         ``resume`` is a checkpoint ``{"pass": n, "cursor": "..."}`` from an
@@ -84,7 +85,8 @@ class ScrapeManager:
             target=self._run,
             args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
             kwargs={"resume": resume, "on_checkpoint": on_checkpoint, "base_count": base_count,
-                    "mode": mode, "month_languages": languages},
+                    "mode": mode, "month_languages": languages,
+                    "market": "global" if str(market).lower() == "global" else "dz"},
             daemon=True)
         self.thread.start()
         return True
@@ -94,9 +96,12 @@ class ScrapeManager:
 
     def _run(self, query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope="impressions",
              resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0,
-             mode: str = "", month_languages: Optional[list] = None) -> None:
+             mode: str = "", month_languages: Optional[list] = None,
+             market: str = "dz") -> None:
         country = (country or DEFAULT_COUNTRY).strip().upper()
-        languages = FIXED_LANGS
+        market = "global" if str(market).lower() == "global" else "dz"
+        # The foreign side tab keeps every language; the Algerian bank is Arabic.
+        languages = [] if market == "global" else FIXED_LANGS
         proxy_spec = _proxy_setting()
         seen_stores: set = set()
         seen_ad_ids: set = set()
@@ -160,6 +165,7 @@ class ScrapeManager:
                 return
             d = ad.to_dict()
             d["keywords"] = [query] if query else []
+            d["market"] = market
             # Big marketplaces are purged from the bank — never ingest them.
             if ad.store_domain and db.is_blocked_domain(ad.store_domain):
                 return
@@ -177,7 +183,7 @@ class ScrapeManager:
             aid = d.get("ad_id")
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
-                stored = db.save_ad(d, query=query, country=country)
+                stored = db.save_ad(d, query=query, country=country, market=market)
                 now_iso = datetime.now(timezone.utc).isoformat()
                 d["collected_at"] = now_iso
                 if stored:
@@ -211,7 +217,8 @@ class ScrapeManager:
                         return False
                     d = a.to_dict()
                     d["keywords"] = []
-                    stored = db.save_ad(d, query="", country=country)
+                    d["market"] = market
+                    stored = db.save_ad(d, query="", country=country, market=market)
                     if stored:
                         seen_ad_ids.add(a.ad_id)
                         self.state["stored"] += 1

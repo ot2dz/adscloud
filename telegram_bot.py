@@ -268,7 +268,8 @@ def _match_ad(page_id: str, post_id: str) -> tuple[str, str]:
     try:
         rows = db._query(
             f"SELECT ad_id, link_url, video_url, video_sd_url FROM meta_ads"
-            f" WHERE page_id={p} AND (ad_id={p} OR link_url LIKE {p}"
+            f" WHERE page_id={p} AND (market IS NULL OR market = 'dz')"
+            f" AND (ad_id={p} OR link_url LIKE {p}"
             f" OR video_url LIKE {p} OR video_sd_url LIKE {p}) LIMIT 10",
             (str(page_id), str(post_id), f"%{post_id}%", f"%{post_id}%", f"%{post_id}%"))
     except Exception:  # noqa: BLE001
@@ -444,7 +445,8 @@ def _page_name_for(page_id: str, plan: dict) -> str:
     if pid:
         try:
             row = db._query_one(
-                f"SELECT page_name FROM meta_ads WHERE page_id={db._ph()} AND page_name<>'' LIMIT 1",
+                f"SELECT page_name FROM meta_ads WHERE page_id={db._ph()} "
+                f"AND (market IS NULL OR market = 'dz') AND page_name<>'' LIMIT 1",
                 (pid,))
             if row and row.get("page_name"):
                 return str(row["page_name"])
@@ -459,7 +461,8 @@ def _active_ads_count(page_id: str, job: dict) -> int:
     if pid:
         try:
             row = db._query_one(
-                f"SELECT COUNT(*) AS n FROM meta_ads WHERE page_id={db._ph()} AND is_active=1",
+                f"SELECT COUNT(*) AS n FROM meta_ads WHERE page_id={db._ph()} "
+                f"AND (market IS NULL OR market = 'dz') AND is_active=1",
                 (pid,))
             if row is not None:
                 return int(row.get("n") or 0)
@@ -669,7 +672,8 @@ def follow_watch_loop() -> None:
                         continue
                     p = db._ph()
                     found = db._query_one(
-                        f"SELECT COUNT(*) AS n FROM meta_ads WHERE page_id={p} AND first_seen>{p}",
+                        f"SELECT COUNT(*) AS n FROM meta_ads WHERE page_id={p} "
+                        f"AND (market IS NULL OR market = 'dz') AND first_seen>{p}",
                         (page_id, last))
                     count = int((found or {}).get("n") or 0)
                     if count <= 0:

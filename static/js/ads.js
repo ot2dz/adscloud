@@ -160,14 +160,16 @@ function groupTone(n) {
   return null;
 }
 
-async function openGroupModal(key, title) {
+async function openGroupModal(key, title, market) {
   const modal = document.getElementById('group-modal');
   const box = document.getElementById('group-modal-ads');
   document.getElementById('group-modal-title').innerText = title;
   box.innerHTML = '<div class="col-span-full py-10 text-center text-slate-500 font-bold">… جاري التحميل</div>';
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
-  const r = await fetch('/api/ads/group?key=' + encodeURIComponent(key) + adminUserParam('&'));
+  const url = '/api/ads/group?key=' + encodeURIComponent(key)
+    + (market === 'global' ? '&market=global' : '') + adminUserParam('&');
+  const r = await fetch(url);
   const d = await r.json();
   (d.ads || []).forEach(a => { adCache[String(a.ad_id)] = a; });
   box.innerHTML = (d.ads || []).map(a => adCardHtml(a, { plain: true })).join('') ||
