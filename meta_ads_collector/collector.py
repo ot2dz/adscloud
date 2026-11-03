@@ -336,9 +336,13 @@ class MetaAdsCollector:
             raise InvalidParameterError("search_type", search_type, VALID_SEARCH_TYPES)
         if sort_by not in VALID_SORT_MODES:
             raise InvalidParameterError("sort_by", sort_by, VALID_SORT_MODES)
-        if not country or len(country) != 2 or not country.isalpha():
+        if not country:
             raise InvalidParameterError(
-                "country", country, "a 2-letter ISO 3166-1 alpha-2 code (e.g. 'US', 'EG')"
+                "country", country, "a 2-letter ISO 3166-1 alpha-2 code (e.g. 'US', 'EG') or 'ALL'"
+            )
+        if country.upper() != "ALL" and (len(country) != 2 or not country.isalpha()):
+            raise InvalidParameterError(
+                "country", country, "a 2-letter ISO 3166-1 alpha-2 code (e.g. 'US', 'EG') or 'ALL'"
             )
 
     def search(

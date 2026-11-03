@@ -98,6 +98,16 @@ class GlobalMarketTest(unittest.TestCase):
         job = self.db.get_job(jid)
         self.assertEqual(job["market"], "global")
 
+    def test_collector_accepts_all_country(self):
+        from meta_ads_collector.collector import MetaAdsCollector
+        from meta_ads_collector.constants import AD_TYPE_ALL, STATUS_ACTIVE, SEARCH_KEYWORD
+        # country=ALL is what the public Ad Library URL uses for the global tab.
+        MetaAdsCollector._validate_params(
+            AD_TYPE_ALL, STATUS_ACTIVE, SEARCH_KEYWORD, None, "ALL")
+        with self.assertRaises(Exception):
+            MetaAdsCollector._validate_params(
+                AD_TYPE_ALL, STATUS_ACTIVE, SEARCH_KEYWORD, None, "ALLX")
+
 
 if __name__ == "__main__":
     unittest.main()
