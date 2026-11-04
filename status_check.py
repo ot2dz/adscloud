@@ -29,6 +29,7 @@ import time
 from typing import Callable, Optional
 
 from engine import active_ads_of_pages
+import ip_rotator
 from store_filter import product_key
 
 logger = logging.getLogger("status_check")
@@ -116,6 +117,11 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             continue
         # Rule 1: a page that ran ads in an earlier batch must still answer.
         if not canary_alive():
+            # Same recovery as a normal scrape: ask the IP rotator for a fresh
+            # public IP before giving up (the retry then runs on the new IP).
+            rot = ip_rotator.rotate()
+            if rot:
+                progress("🔄 طُلب تغيير IP بعد حجب Meta لفحص الحالة.")
             sleep(RECHECK_WAIT_SEC)
             if not canary_alive():
                 raise Blocked("Meta returns no ads even for a page known to run ads (IP soft-blocked?)")
@@ -130,6 +136,7 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             stats["skipped_batches"] += 1
             progress(f"⚠️ الدفعة {idx}/{len(batches)} لم تكتمل — تُركت بدون تغيير.")
             if not ads:
+                ip_rotator.rotate()
                 raise Blocked("batch returned nothing twice")
             if on_checkpoint:
                 on_checkpoint(idx + 1)

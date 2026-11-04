@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import config  # noqa: E402,F401  — loads E:\opencode\.env
 from db import db  # noqa: E402
 from mcp.server.mcpserver import MCPServer  # noqa: E402
 

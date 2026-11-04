@@ -24,6 +24,7 @@ from datetime import timedelta
 from flask import Flask, Response, g, jsonify, render_template, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import config  # noqa: F401  — loads E:\opencode\.env (proxy + IP rotator)
 from db import db
 from web.common import (
     SESSION_DAYS, _start_session, _int_arg, _client_ip, _audit,
