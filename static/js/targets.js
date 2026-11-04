@@ -176,6 +176,60 @@ function _actChip(label, value, tone) {
     <div class="text-[10px] font-bold opacity-80">${label}</div>
     <div class="text-lg font-black num">${value || 0}</div></div>`;
 }
+function _actDate(v) {
+  if (!v) return '—';
+  return String(v).slice(0, 10);
+}
+function _actAdRow(a) {
+  const status = a.current_active
+    ? { label: 'نشط الآن', cls: 'bg-emerald-100 text-emerald-800 border-emerald-200' }
+    : (a.current_active === false
+      ? { label: 'متوقف', cls: 'bg-rose-100 text-rose-800 border-rose-200' }
+      : { label: 'غير معروف', cls: 'bg-slate-100 text-slate-600 border-slate-200' });
+  const periods = (a.periods || []).map(p => {
+    const start = _actDate(p.start);
+    const end = p.open ? 'الآن' : _actDate(p.end);
+    const extra = p.open ? 'يعمل الآن' : 'متوقف';
+    const detected = (!p.open && p.stop_detected_at)
+      ? ` · اكتُشف التوقف: ${_actDate(p.stop_detected_at)}` : '';
+    return `<div class="text-[11px] text-slate-600 flex gap-1.5">
+      <span class="text-slate-400">•</span>
+      <span>من <b class="font-mono">${start}</b> إلى <b class="font-mono">${end}</b>
+      — ${extra} · <b class="num">${p.days || 0}</b> يوم${detected}</span></div>`;
+  }).join('');
+  const notes = [];
+  if (a.last_stop_at) notes.push(`آخر توقف: ${_actDate(a.last_stop_at)}` +
+    (a.last_stop_detected_at ? ` (اكتُشف: ${_actDate(a.last_stop_detected_at)})` : ''));
+  if (a.relaunch_of) {
+    const old = (a.periods || []).find(p => p.relaunch_of);
+    notes.push(`بديل لإعلان توقف سابقاً: ${escT(a.relaunch_of)}` +
+      (old && old.previous_stopped_at ? ` (توقف: ${_actDate(old.previous_stopped_at)})` : ''));
+  }
+  if ((a.relaunched_by || []).length) {
+    notes.push(`أُعيد إطلاقه بإعلان جديد: ${a.relaunched_by.map(escT).join('، ')}`);
+  }
+  const adUrl = 'https://www.facebook.com/ads/library/?id=' + encodeURIComponent(a.ad_id || '');
+  const body = escT(String(a.body || '').slice(0, 130));
+  return `<div class="px-4 py-3 border-b border-slate-100">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border ${status.cls}">${status.label}</span>
+        <span class="text-[12px] font-bold text-[#102a56] truncate">${escT(a.page_name || 'إعلان')}</span>
+        <span class="text-[10px] text-slate-400 font-mono">${escT(a.ad_id || '')}</span>
+      </div>
+      <div class="text-[10px] text-slate-500 font-bold">
+        الدورات: <b class="num">${a.cycles || 0}</b> · إجمالي التشغيل: <b class="num">${a.total_running_days || 0}</b> يوم
+      </div>
+    </div>
+    ${body ? `<div class="text-[11.5px] text-slate-700 mt-1 line-clamp-1">${body}</div>` : ''}
+    <div class="mt-1.5 space-y-0.5">${periods || '<div class="text-[11px] text-slate-400">لا فترات مسجلة بعد.</div>'}</div>
+    ${notes.length ? `<div class="text-[10.5px] text-slate-600 mt-1">${notes.join(' · ')}</div>` : ''}
+    <div class="flex gap-3 mt-1 text-[10.5px] font-bold">
+      ${a.ad_id ? `<a href="${adUrl}" target="_blank" rel="noopener" class="text-blue-700 hover:underline">فتح الإعلان</a>` : ''}
+      ${a.link_url ? `<a href="${escT(a.link_url)}" target="_blank" rel="noopener" class="text-slate-600 hover:underline">رابط المنتج</a>` : ''}
+    </div>
+  </div>`;
+}
 function _actEvent(e) {
   const d = e.detail || {};
   const isStop = e.event === 'stopped';
@@ -186,12 +240,24 @@ function _actEvent(e) {
       ? { box: 'border-amber-200 bg-amber-50', text: 'text-amber-800' }
       : { box: 'border-emerald-200 bg-emerald-50', text: 'text-emerald-800' });
   const title = isStop ? 'توقف الإعلان' : (isResume ? 'عاد للعمل' : 'إطلاق إعلان جديد');
+  const primary = [];
+  if (isStop && e.period_start) {
+    primary.push(`كان شغالاً من ${_actDate(e.period_start)} إلى ${_actDate(e.period_end)} (${e.period_days || 0} يوم) ثم توقف.`);
+  } else if (isResume) {
+    primary.push(`كان متوقفاً${d.previous_stopped_at ? ' منذ ' + _actDate(d.previous_stopped_at) : ''}` +
+      `${d.downtime_days != null ? ' وعاد بعد ' + d.downtime_days + ' يوم' : ' وعاد للعمل'}.`);
+  } else if (!isStop) {
+    primary.push(`أُطلق الإعلان${d.start_date ? ' بتاريخ ' + _actDate(d.start_date) : ''}.`);
+  }
   const notes = [];
-  if (d.start_date) notes.push('تاريخ إطلاق Meta: ' + d.start_date);
-  if (d.relaunch_of) notes.push('بديل لإعلان توقف سابقاً' + (d.previous_stopped_at ? ' (آخر ظهور: ' + String(d.previous_stopped_at).slice(0, 10) + ')' : ''));
-  if (d.downtime_days != null) notes.push('مدة التوقف قبل العودة: ' + d.downtime_days + ' يوم');
-  if (d.days_active != null) notes.push('مدة التشغيل عند التوقف: ' + d.days_active + ' يوم');
-  if (d.last_seen_active) notes.push('آخر ظهور نشط: ' + String(d.last_seen_active).slice(0, 10));
+  if (isStop) {
+    if (e.stop_detected_at) notes.push('اكتُشف التوقف: ' + _actDate(e.stop_detected_at));
+    if (d.last_seen_active) notes.push('آخر ظهور نشط: ' + _actDate(d.last_seen_active));
+    if (d.days_active != null) notes.push('مدة التشغيل: ' + d.days_active + ' يوم');
+  }
+  if (d.relaunch_of) notes.push('بديل لإعلان توقف سابقاً: ' + d.relaunch_of +
+    (d.previous_stopped_at ? ' (توقف: ' + _actDate(d.previous_stopped_at) + ')' : '') +
+    (d.downtime_days != null ? ' — مدة التوقف ' + d.downtime_days + ' يوم' : ''));
   const body = String(e.body || '').slice(0, 150);
   const adUrl = 'https://www.facebook.com/ads/library/?id=' + encodeURIComponent(e.ad_id || '');
   return `<div class="border ${tone.box} rounded-xl p-3">
@@ -200,6 +266,7 @@ function _actEvent(e) {
       <span class="text-[10px] text-slate-500 font-mono">${_actFmt(e.event_at)}</span>
     </div>
     <div class="text-[11px] text-slate-600 mt-1">${escT(e.page_name || '')}${e.store_domain ? ' · ' + escT(e.store_domain) : ''}</div>
+    ${primary.length ? `<div class="text-[11.5px] font-bold text-slate-700 mt-1">${primary.map(escT).join(' ')}</div>` : ''}
     ${body ? `<div class="text-[11.5px] text-slate-700 mt-1 line-clamp-2">${escT(body)}</div>` : ''}
     ${notes.length ? `<div class="text-[11px] text-slate-600 mt-1">${notes.map(escT).join(' · ')}</div>` : ''}
     <div class="flex gap-3 mt-1.5 text-[11px] font-bold">
@@ -212,6 +279,8 @@ async function openActivity(url, title) {
   const modal = document.getElementById('activity-modal');
   document.getElementById('activity-modal-title').innerText = title;
   document.getElementById('activity-summary').innerHTML = '';
+  document.getElementById('activity-ads').innerHTML =
+    '<div class="py-6 text-center text-slate-500 font-bold text-sm">… جاري التحميل</div>';
   document.getElementById('activity-timeline').innerHTML =
     '<div class="py-10 text-center text-slate-500 font-bold text-sm">… جاري التحميل</div>';
   modal.classList.remove('hidden');
@@ -227,6 +296,10 @@ async function openActivity(url, title) {
       _actChip('إطلاق 7 أيام', s.launched_7d, 'border-sky-200 bg-sky-50 text-sky-800') +
       _actChip('توقف 7 أيام', s.stopped_7d, 'border-amber-200 bg-amber-50 text-amber-800') +
       _actChip('عاد للعمل 7 أيام', s.resumed_7d, 'border-slate-200 bg-slate-50 text-slate-700');
+    const ads = d.ads || [];
+    document.getElementById('activity-ads').innerHTML = ads.length
+      ? ads.map(_actAdRow).join('')
+      : '<div class="py-6 text-center text-slate-500 font-bold text-sm">لا توجد إعلانات مسجلة بعد.</div>';
     const events = (d.events || []).map(e => ({ t: e.event_at, kind: 'event', e }));
     const scans = (d.scans || []).map(x => ({ t: x.captured_at, kind: 'scan', s: x }));
     const items = events.concat(scans).sort((a, b) => String(b.t || '').localeCompare(String(a.t || '')));
@@ -242,7 +315,8 @@ async function openActivity(url, title) {
            <span class="font-mono">${_actFmt(x.s.captured_at)}</span>
          </div>`).join('');
   } catch (e) {
-    document.getElementById('activity-timeline').innerHTML =
-      '<div class="py-10 text-center text-rose-600 font-bold text-sm">' + escT(e.message || 'تعذر تحميل السجل') + '</div>';
+    const msg = '<div class="py-10 text-center text-rose-600 font-bold text-sm">' + escT(e.message || 'تعذر تحميل السجل') + '</div>';
+    document.getElementById('activity-ads').innerHTML = msg;
+    document.getElementById('activity-timeline').innerHTML = msg;
   }
 }

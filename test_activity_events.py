@@ -92,6 +92,34 @@ class ActivityEventsTest(unittest.TestCase):
         self.assertEqual(kinds, {"launched", "stopped"})
         self.assertTrue(any(e["ad_id"] == "a2" and e["event"] == "stopped"
                             for e in data["events"]))
+        stopped = next(e for e in data["events"] if e["event"] == "stopped")
+        self.assertTrue(stopped.get("period_start"))
+        self.assertGreaterEqual(stopped.get("period_days") or 0, 10)
+
+    def test_ad_summary_shows_running_periods_and_resume(self):
+        self.db.save_ad(_ad("a1"), query="shop-test.dz")
+        self.db.apply_status_check({}, ["a1"])
+        self.db.save_ad(_ad("a1"), query="shop-test.dz")  # resumed
+        data = self.db.target_activity(self.target)
+        ad = next(x for x in data["ads"] if x["ad_id"] == "a1")
+        self.assertEqual(ad["cycles"], 2)
+        self.assertEqual(len(ad["periods"]), 2)
+        self.assertFalse(ad["periods"][0]["open"])
+        self.assertTrue(ad["periods"][1]["open"])
+        self.assertGreaterEqual(ad["periods"][0]["days"] or 0, 10)
+        self.assertGreaterEqual(ad["total_running_days"] or 0, 10)
+        self.assertTrue(ad["last_stop_at"])
+
+    def test_relaunch_links_between_old_and_new_ad(self):
+        self.db.save_ad(_ad("a1", "https://shop-test.dz/p/bag"), query="shop-test.dz")
+        self.db.apply_status_check({}, ["a1"])
+        self.db.save_ad(_ad("a2", "https://shop-test.dz/p/bag"), query="shop-test.dz")
+        data = self.db.target_activity(self.target)
+        by_id = {x["ad_id"]: x for x in data["ads"]}
+        self.assertEqual(by_id["a2"]["relaunch_of"], "a1")
+        self.assertIn("a2", by_id["a1"]["relaunched_by"])
+        self.assertEqual(by_id["a2"]["cycles"], 1)
+        self.assertTrue(by_id["a2"]["periods"][0]["open"])
 
     def test_backfill_creates_events_for_existing_ads(self):
         self.db.save_ad(_ad("a1"), query="shop-test.dz")

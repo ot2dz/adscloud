@@ -653,21 +653,137 @@ class Database:
         # keyword / custom_url events carry the scrape query.
         return f"({mcond}) AND e.query = {p}", [val]
 
+    @staticmethod
+    def _period_days(start, end) -> Optional[int]:
+        s = _to_algeria_date(str(start or ""))
+        e = _to_algeria_date(str(end or ""))
+        if not s or not e:
+            return None
+        return max(1, (e - s).days + 1)
+
+    def _build_ad_activity(self, events: list[dict]) -> list[dict]:
+        """Group the event stream into one summary per ad, with running periods.
+
+        Each period is a closed/open run: ``start`` -> ``end`` + ``days``. A
+        stopped ad can have several periods (stop -> resume -> stop...)."""
+        grouped: dict[str, list] = {}
+        for e in events:
+            grouped.setdefault(str(e.get("ad_id") or ""), []).append(e)
+        out: list[dict] = []
+        for ad_id, evs in grouped.items():
+            if not ad_id:
+                continue
+            evs.sort(key=lambda x: (x.get("event_at") or "", x.get("id") or 0))
+            last = evs[-1]
+            current_active = last.get("current_active")
+            current_active = bool(current_active) if current_active is not None else None
+            periods: list[dict] = []
+            open_p = None
+            relaunch_of = ""
+            for e in evs:
+                ev = e.get("event")
+                d = e.get("detail") or {}
+                if ev == "launched":
+                    open_p = {
+                        "start": d.get("start_date") or str(e.get("event_at") or "")[:10],
+                        "detected_at": e.get("event_at") or "",
+                        "kind": "launch",
+                        "relaunch_of": d.get("relaunch_of") or "",
+                        "previous_stopped_at": d.get("previous_stopped_at") or "",
+                        "downtime_days": d.get("downtime_days"),
+                    }
+                    if d.get("relaunch_of"):
+                        relaunch_of = str(d["relaunch_of"])
+                elif ev == "resumed":
+                    open_p = {
+                        "start": e.get("event_at") or "",
+                        "detected_at": e.get("event_at") or "",
+                        "kind": "resume",
+                        "previous_stopped_at": d.get("previous_stopped_at") or "",
+                        "downtime_days": d.get("downtime_days"),
+                    }
+                elif ev == "stopped":
+                    start = open_p.get("start") if open_p else ""
+                    days = self._period_days(start, e.get("event_at"))
+                    if days is None:
+                        days = d.get("days_active")
+                    period = {
+                        "start": start, "end": e.get("event_at") or "",
+                        "days": days, "open": False,
+                        "stop_detected_at": e.get("created_at") or "",
+                        "kind": open_p.get("kind", "unknown") if open_p else "unknown",
+                        "relaunch_of": open_p.get("relaunch_of", "") if open_p else "",
+                    }
+                    periods.append(period)
+                    e["period_start"] = period["start"]
+                    e["period_end"] = period["end"]
+                    e["period_days"] = days
+                    e["stop_detected_at"] = period["stop_detected_at"]
+                    open_p = None
+            if open_p:
+                if current_active:
+                    end = algeria_today().isoformat()
+                    is_open = True
+                else:
+                    end = last.get("meta_stopped_at") or last.get("meta_last_seen_active") \
+                        or open_p.get("detected_at")
+                    is_open = False
+                periods.append({
+                    "start": open_p.get("start") or "", "end": end,
+                    "days": self._period_days(open_p.get("start"), end),
+                    "open": is_open, "stop_detected_at": "",
+                    "kind": open_p.get("kind", "unknown"),
+                    "relaunch_of": open_p.get("relaunch_of", ""),
+                })
+            closed = [x for x in periods if not x.get("open")]
+            out.append({
+                "ad_id": ad_id,
+                "page_name": last.get("page_name") or "",
+                "body": last.get("body") or "",
+                "link_url": last.get("link_url") or "",
+                "store_domain": last.get("store_domain") or "",
+                "product_key": last.get("product_key") or "",
+                "current_active": current_active,
+                "meta_start_date": last.get("meta_start_date") or "",
+                "first_event_at": evs[0].get("event_at") or "",
+                "last_event_at": last.get("event_at") or "",
+                "periods": periods,
+                "cycles": len(periods),
+                "total_running_days": sum(int(x.get("days") or 0) for x in periods),
+                "last_stop_at": closed[-1]["end"] if closed else "",
+                "last_stop_detected_at": closed[-1].get("stop_detected_at") if closed else "",
+                "relaunch_of": relaunch_of,
+                "relaunched_by": [],
+                "events_count": len(evs),
+            })
+        by_old: dict[str, list] = {}
+        for s in out:
+            if s.get("relaunch_of"):
+                by_old.setdefault(str(s["relaunch_of"]), []).append(s["ad_id"])
+        for s in out:
+            s["relaunched_by"] = by_old.get(s["ad_id"], [])
+        out.sort(key=lambda s: s.get("last_event_at") or "", reverse=True)
+        return out
+
     def target_activity(self, target: dict, limit: int = 200) -> dict:
         """Rich timeline for one competitor: launches, stops, resumes + scans."""
         p = self._ph()
         ev_scope, ev_params = self._target_event_scope(target)
+        fetch = max(int(limit), 3000)
         events = self._query(
             f"SELECT e.*, m.is_active AS current_active, m.start_date AS meta_start_date, "
-            f"m.days_active AS current_days, m.preview_image_url "
+            f"m.days_active AS current_days, m.stopped_at AS meta_stopped_at, "
+            f"m.last_seen_active AS meta_last_seen_active, m.preview_image_url "
             f"FROM ad_events e LEFT JOIN meta_ads m ON m.ad_id = e.ad_id "
-            f"WHERE {ev_scope} ORDER BY e.event_at DESC, e.id DESC LIMIT {int(limit)}",
+            f"WHERE {ev_scope} ORDER BY e.event_at DESC, e.id DESC LIMIT {int(fetch)}",
             tuple(ev_params))
         for r in events:
             try:
                 r["detail"] = json.loads(r.get("detail") or "{}")
             except Exception:
                 r["detail"] = {}
+        ads = self._build_ad_activity(events)
+        timeline = events[:int(limit)]
         ad_scope, ad_params = self._target_ad_scope(target)
         srow = self._query_one(
             f"SELECT COUNT(*) AS total, "
@@ -695,7 +811,8 @@ class Database:
                 "stopped_7d": counts.get("stopped", 0),
                 "resumed_7d": counts.get("resumed", 0),
             },
-            "events": events,
+            "ads": ads[:500],
+            "events": timeline,
             "scans": scans,
         }
 
