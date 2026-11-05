@@ -51,6 +51,7 @@ def api_get_settings():
         "notify_webhook": s.get("notify_webhook", ""),
         "entity_stats_enabled": s.get("entity_stats_enabled", "true"),
         "registration_open": s.get("registration_open", "false"),
+        "extension_registration_open": s.get("extension_registration_open", "true"),
         "meta_ads_proxy": s.get("meta_ads_proxy", ""),
         "has_meta_ads_proxy": bool(s.get("meta_ads_proxy")),
         "env_meta_ads_proxy": bool(os.environ.get("META_ADS_PROXY")),
@@ -88,6 +89,8 @@ def api_set_settings():
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
     if "registration_open" in cfg:
         db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
+    if "extension_registration_open" in cfg:
+        db.set_setting("extension_registration_open", "true" if cfg["extension_registration_open"] else "false")
     if "cta_filter_enabled" in cfg:
         db.set_setting("cta_filter_enabled", "true" if cfg["cta_filter_enabled"] else "false")
     if "cta_allowlist" in cfg:

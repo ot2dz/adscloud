@@ -102,11 +102,19 @@ def _untrack_for_user(uid: int, page_id) -> None:
         db.untrack_page(page_id)
 
 
+def _extension_registration_open() -> bool:
+    """Signup from the extension. Deliberately independent from the dashboard
+    ``registration_open`` switch and ON by default, so invited friends can create
+    their account from the popup; an admin can still turn it off in settings."""
+    value = db.get_settings().get("extension_registration_open", "true")
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 @bp.route("/api/v1/auth/config", methods=["GET", "OPTIONS"])
 def api_ext_auth_config():
     """Public: whether the extension may create accounts + password rule."""
     return jsonify({"ok": True, "data": {
-        "registration_open": _registration_open(),
+        "registration_open": _extension_registration_open(),
         "min_password_length": MIN_PASSWORD_LEN,
     }})
 
@@ -133,8 +141,8 @@ def api_ext_register():
     Mirrors the dashboard register rules (email format, password strength,
     per-IP throttling) and returns a personal token so the user never has to
     sign in twice."""
-    if not _registration_open():
-        return jsonify({"ok": False, "error": {"message": "التسجيل مغلق حالياً. اطلب من المدير فتحه أو إنشاء حسابك."}}), 403
+    if not _extension_registration_open():
+        return jsonify({"ok": False, "error": {"message": "التسجيل من الإضافة مغلق حالياً. اطلب من المدير فتحه."}}), 403
     if db.count_attempts("register", 60, _client_ip()) >= REGISTER_MAX_PER_IP_HOUR:
         return jsonify({"ok": False, "error": {"message": "محاولات تسجيل كثيرة من هذا الجهاز. حاول لاحقاً."}}), 429
 

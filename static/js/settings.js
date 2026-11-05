@@ -4,6 +4,7 @@ async function loadSettings() {
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
   document.getElementById('cfg-registration-open').checked = s.registration_open === 'true';
+  document.getElementById('cfg-extension-registration-open').checked = (s.extension_registration_open ?? 'true') === 'true';
   document.getElementById('cfg-cta-filter').checked = (s.cta_filter_enabled || 'true') === 'true';
   document.getElementById('cfg-arabic-only').checked = (s.arabic_only || 'true') === 'true';
   document.getElementById('cfg-cta-allowlist').value = (s.cta_allowlist || '').split(',').join(', ');
@@ -47,6 +48,7 @@ async function saveAllSettings() {
       interval_hours: schedInt,
       entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
       registration_open: document.getElementById('cfg-registration-open').checked,
+      extension_registration_open: document.getElementById('cfg-extension-registration-open').checked,
       cta_filter_enabled: document.getElementById('cfg-cta-filter').checked,
       arabic_only: document.getElementById('cfg-arabic-only').checked,
       cta_allowlist: document.getElementById('cfg-cta-allowlist').value,
