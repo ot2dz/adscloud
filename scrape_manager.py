@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from db import db
 from engine import scrape
+from slicing import clean_scan_label
 from store_filter import product_key
 
 logger = logging.getLogger("web_app")
@@ -112,6 +113,11 @@ class ScrapeManager:
         # Start from the incoming checkpoint so an immediate failure keeps it.
         outcome = {"status": "done", "checkpoint": resume or None, "error": "", "scanned": 0, "ad_ids": []}
 
+        # Whole-market scans embed their date window in the job label; the ad
+        # tag stays clean so one ad carries "كل إعلانات السوق" instead of one
+        # variant per scanned window.
+        tag = clean_scan_label(query) if mode == MONTH_MODE else query
+
         def make_checkpointer(pass_idx: int):
             def _cp(cursor):
                 # Cursor None = this pass is exhausted -> next pass from scratch.
@@ -164,7 +170,7 @@ class ScrapeManager:
             if self.stop_event.is_set():
                 return
             d = ad.to_dict()
-            d["keywords"] = [query] if query else []
+            d["keywords"] = [tag] if tag else []
             d["market"] = market
             # Big marketplaces are purged from the bank — never ingest them.
             if ad.store_domain and db.is_blocked_domain(ad.store_domain):
@@ -183,7 +189,7 @@ class ScrapeManager:
             aid = d.get("ad_id")
             if aid and aid not in seen_ad_ids:
                 seen_ad_ids.add(aid)
-                stored = db.save_ad(d, query=query, country=country, market=market)
+                stored = db.save_ad(d, query=tag, country=country, market=market)
                 now_iso = datetime.now(timezone.utc).isoformat()
                 d["collected_at"] = now_iso
                 if stored:

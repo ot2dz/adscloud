@@ -5,10 +5,22 @@ to completely bypass Facebook's ~3,500-4,000 infinite scroll ceiling.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
 SORT_MODES = ["total_impressions", "relevancy_monthly_grouped"]
+
+# Whole-market jobs carry the window inside their label:
+#   "🔍 كل إعلانات السوق (متاجر فقط) 2026-10-01 ← 2026-10-20"
+# The same window already lives on the job and on each ad, so tags keep only
+# the clean label (one tag instead of one per scanned window).
+_DATE_SUFFIX_RE = re.compile(r"\s*\d{4}-\d{2}-\d{2}\s*[^\w\s]*\s*\d{4}-\d{2}-\d{2}\s*$", re.UNICODE)
+
+
+def clean_scan_label(label: str) -> str:
+    """Drop a trailing ``YYYY-MM-DD ← YYYY-MM-DD`` window from a scan label."""
+    return _DATE_SUFFIX_RE.sub("", str(label or "")).strip()
 
 
 def _strip_param(pairs: list[tuple[str, str]], name: str) -> list[tuple[str, str]]:

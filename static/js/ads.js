@@ -261,7 +261,7 @@ function openAdDetails(adId) {
   const video = sd || hd;
   const img = safeUrl(a.preview_image_url);
   const media = video
-    ? `<video id="ad-modal-video" src="${video}" controls autoplay playsinline class="w-full max-h-[62vh] rounded-xl bg-black"></video>
+    ? `<video id="ad-modal-video" src="${video}" controls preload="metadata" playsinline class="w-full max-h-[62vh] rounded-xl bg-black"></video>
        <div class="flex items-center justify-between gap-2 text-[11px] text-slate-400 mt-1">
          <span>إن لم يعمل التشغيل، استخدم زر «فتح في مكتبة الإعلانات».</span>
          ${sd && hd && sd !== hd ? `<button type="button" data-sd="${sd}" data-hd="${hd}" data-q="sd" onclick="switchModalQuality(this)"
@@ -272,6 +272,7 @@ function openAdDetails(adId) {
         : `<div class="w-full h-56 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold">لا توجد وسائط</div>`);
 
   const kws = [...new Set(((g && g.keywords) || a.keywords || []).filter(Boolean))];
+  const kwGroups = keywordGroups(kws);
   const pageLink = a.page_id
     ? `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&sort_data[mode]=total_impressions&sort_data[direction]=desc&view_all_page_id=${encodeURIComponent(a.page_id)}`
     : '';
@@ -324,7 +325,7 @@ function openAdDetails(adId) {
     ${g && g.count > 1 ? `<button data-key="${escT(g.key)}" data-title="${escT((a.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
         onclick="closeAdModal(); openGroupModal(this.dataset.key, this.dataset.title)"
         class="w-full py-2 rounded-xl ${(groupTone(g.count) || {}).badge || 'bg-blue-600'} hover:opacity-90 text-white font-bold text-xs">👁️ عرض كل الـ ${g.count} إعلان لهذا المنتج</button>` : ''}
-    ${kws.length ? `<div class="flex flex-wrap gap-1.5">${kws.map(k => keywordChipHtml(k)).join('')}</div>` : ''}
+    ${kwGroups.length ? `<div class="flex flex-wrap gap-1.5">${kwGroups.map(x => keywordChipHtml(x.label, { label: x.label, variants: x.variants })).join('')}</div>` : ''}
     ${adNicheChips(a).replace('mb-2.5', '')}
     ${entityBadges(escAd(a)).replace('mb-2.5', '')}
     <div class="grid sm:grid-cols-2 gap-2 text-xs text-slate-700 bg-[#f8fbff] border border-[#cfe0f5] rounded-xl p-3">${rows.join('')}</div>
@@ -379,9 +380,13 @@ function switchModalQuality(btn) {
   const v = document.getElementById('ad-modal-video');
   if (!v) return;
   const t = v.currentTime || 0;
+  const wasPlaying = !v.paused;
   const toHd = btn.dataset.q !== 'hd';
   v.src = toHd ? btn.dataset.hd : btn.dataset.sd;
-  v.addEventListener('loadedmetadata', () => { v.currentTime = t; v.play().catch(() => {}); }, { once: true });
+  v.addEventListener('loadedmetadata', () => {
+    v.currentTime = t;
+    if (wasPlaying) v.play().catch(() => {});
+  }, { once: true });
   btn.dataset.q = toHd ? 'hd' : 'sd';
   btn.textContent = toHd ? '⚡ جودة خفيفة (SD)' : '🎞️ جودة عالية (HD)';
 }
@@ -440,6 +445,7 @@ function adCardHtml(raw, opts = {}) {
     const adFbUrl = `https://www.facebook.com/ads/library/?id=${encodeURIComponent(raw.ad_id || '')}`;
     const previewImg = a.preview_image_url || '';
     const videoSrc = cardVideoSrc(raw);
+    const cardKeywords = (raw.group && raw.group.keywords) || raw.keywords || [];
     const active = g ? g.active > 0 : a.is_active;
     const iconBtn = 'w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-[#d7e3f4] text-[#174ea6] hover:bg-[#eef5ff] transition';
 
@@ -465,6 +471,7 @@ function adCardHtml(raw, opts = {}) {
       </div>
 
       <div class="p-3.5 flex flex-col gap-2 flex-1">
+        ${cardKeywordBadge(cardKeywords)}
         <div>
           <div class="flex items-center justify-between gap-2">
             <h3 class="font-bold text-[15px] text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
