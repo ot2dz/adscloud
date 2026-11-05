@@ -1,5 +1,8 @@
 "use strict";
 
+// Build-time config (fixed hosted URL). Must load before anything uses it.
+importScripts("../config.js");
+
 const ADRA_PLATFORM_CACHE_KEY = "adra_platform_origin_cache";
 const ADRA_PLATFORM_CACHE_VERSION = 4;
 const ADRA_PLATFORM_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -90,10 +93,15 @@ chrome.runtime.onInstalled.addListener(() => {
 // All backend traffic is centralized here in the service worker. Content
 // scripts never fetch the Worker directly — they send ADRA_CLOUD_* messages.
 
-const ADRA_CLOUD_API_URL_KEY = "adra_cloud_api_url";
+const ADRA_CLOUD_API_URL_KEY = "adra_cloud_api_url"; // legacy key, no longer editable
 const ADRA_CLOUD_TOKEN_KEY = "adra_cloud_token";
 const ADRA_CLOUD_EMAIL_KEY = "adra_cloud_email";
 const ADRA_CLOUD_TIMEOUT_MS = 8000;
+
+/** The hosted base URL this build is pinned to. */
+function adraCloudBaseUrl() {
+  return adraNormalizeCloudBaseUrl(ADRA_DEFAULT_CLOUD_URL);
+}
 
 /** Validate + normalize the configured base URL (http/https only, no trailing slash). */
 function adraNormalizeCloudBaseUrl(raw) {
@@ -125,12 +133,12 @@ async function adraCloudRequest(path, options = {}) {
 
   let stored;
   try {
-    stored = await adraStorageGet([ADRA_CLOUD_API_URL_KEY, ADRA_CLOUD_TOKEN_KEY]);
+    stored = await adraStorageGet([ADRA_CLOUD_TOKEN_KEY]);
   } catch (_error) {
     return { ok: false, error: "STORAGE_ERROR" };
   }
 
-  const normalized = adraNormalizeCloudBaseUrl(stored[ADRA_CLOUD_API_URL_KEY]);
+  const normalized = adraCloudBaseUrl();
   if (!normalized.configured) {
     return { ok: false, skipped: true, reason: "NOT_CONFIGURED" };
   }
@@ -437,6 +445,18 @@ async function adraSyncHistory() {
   };
 }
 
+async function adraCloudStoreSession(result, fallbackEmail) {
+  const token = result.data && result.data.token ? String(result.data.token) : "";
+  if (!token) return { ok: false, error: "INVALID_JSON" };
+  const email = (result.data && result.data.email) || fallbackEmail;
+  try {
+    await adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: token, [ADRA_CLOUD_EMAIL_KEY]: email });
+  } catch (_error) {
+    return { ok: false, error: "STORAGE_ERROR" };
+  }
+  return { ok: true, data: { email, role: (result.data && result.data.role) || "user" } };
+}
+
 /**
  * Sign in with the dashboard account. The old token is cleared first so the
  * login request is sent without one; the personal token is stored on success.
@@ -454,14 +474,36 @@ async function adraCloudLogin(email, password) {
     body: { email: cleanEmail, password: String(password) }
   });
   if (!result.ok) return result;
-  const token = result.data && result.data.token ? String(result.data.token) : "";
-  if (!token) return { ok: false, error: "INVALID_JSON" };
+  return adraCloudStoreSession(result, cleanEmail);
+}
+
+/**
+ * Create an account from the extension and sign in immediately (the server
+ * returns a personal token on success, so there is no second step).
+ */
+async function adraCloudRegister(email, password, passwordConfirm) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!cleanEmail || !password) return { ok: false, error: "MISSING_CREDENTIALS" };
   try {
-    await adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: token, [ADRA_CLOUD_EMAIL_KEY]: result.data.email || cleanEmail });
+    await adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: "", [ADRA_CLOUD_EMAIL_KEY]: "" });
   } catch (_error) {
     return { ok: false, error: "STORAGE_ERROR" };
   }
-  return { ok: true, data: { email: result.data.email || cleanEmail, role: result.data.role || "user" } };
+  const result = await adraCloudRequest("/api/v1/auth/register", {
+    method: "POST",
+    body: {
+      email: cleanEmail,
+      password: String(password),
+      password_confirm: String(passwordConfirm ?? "")
+    }
+  });
+  if (!result.ok) return result;
+  return adraCloudStoreSession(result, cleanEmail);
+}
+
+/** Public auth settings: whether signup is open + the minimum password length. */
+function adraCloudAuthConfig() {
+  return adraCloudRequest("/api/v1/auth/config", { method: "GET" });
 }
 
 /** Handle ADRA_CLOUD_* messages. Returns true when a response is pending. */
@@ -517,6 +559,10 @@ function adraHandleCloudMessage(message, sendResponse) {
       return respond(adraCloudRequest("/api/v1/health", { method: "GET" }));
     case "ADRA_CLOUD_LOGIN":
       return respond(adraCloudLogin(message.email, message.password));
+    case "ADRA_CLOUD_REGISTER":
+      return respond(adraCloudRegister(message.email, message.password, message.passwordConfirm));
+    case "ADRA_CLOUD_AUTH_CONFIG":
+      return respond(adraCloudAuthConfig());
     case "ADRA_CLOUD_LOGOUT":
       return respond(
         adraStorageSet({ [ADRA_CLOUD_TOKEN_KEY]: "", [ADRA_CLOUD_EMAIL_KEY]: "" }).then(() => ({ ok: true }))
@@ -671,6 +717,9 @@ globalThis.adraBackground = Object.freeze({
   mapPageToCloud: adraMapPageToCloud,
   mapSnapshotToCloud: adraMapSnapshotToCloud,
   apiUrlStorageKey: ADRA_CLOUD_API_URL_KEY,
+  defaultBaseUrl: ADRA_DEFAULT_CLOUD_URL,
+  register: adraCloudRegister,
+  authConfig: adraCloudAuthConfig,
   syncHistory: adraSyncHistory,
   syncChunkSize: ADRA_CLOUD_SYNC_CHUNK
 });

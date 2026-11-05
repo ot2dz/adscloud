@@ -102,6 +102,15 @@ def _untrack_for_user(uid: int, page_id) -> None:
         db.untrack_page(page_id)
 
 
+@bp.route("/api/v1/auth/config", methods=["GET", "OPTIONS"])
+def api_ext_auth_config():
+    """Public: whether the extension may create accounts + password rule."""
+    return jsonify({"ok": True, "data": {
+        "registration_open": _registration_open(),
+        "min_password_length": MIN_PASSWORD_LEN,
+    }})
+
+
 @bp.route("/api/v1/auth/login", methods=["POST"])
 def api_ext_login():
     """Extension sign-in with the dashboard email/password -> personal token."""
@@ -115,6 +124,51 @@ def api_ext_login():
     token = db.create_api_token(user["id"])
     _audit("api_token_created", "extension login", user=user)
     return jsonify({"ok": True, "data": {"token": token, "email": user["email"], "role": user["role"]}})
+
+
+@bp.route("/api/v1/auth/register", methods=["POST"])
+def api_ext_register():
+    """Create an account from the extension and sign in immediately.
+
+    Mirrors the dashboard register rules (email format, password strength,
+    per-IP throttling) and returns a personal token so the user never has to
+    sign in twice."""
+    if not _registration_open():
+        return jsonify({"ok": False, "error": {"message": "التسجيل مغلق حالياً. اطلب من المدير فتحه أو إنشاء حسابك."}}), 403
+    if db.count_attempts("register", 60, _client_ip()) >= REGISTER_MAX_PER_IP_HOUR:
+        return jsonify({"ok": False, "error": {"message": "محاولات تسجيل كثيرة من هذا الجهاز. حاول لاحقاً."}}), 429
+
+    data = request.get_json(force=True, silent=True) or {}
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "")
+    confirm = data.get("password_confirm")
+
+    if not email or not password:
+        return jsonify({"ok": False, "error": {"message": "يرجى ملء جميع الحقول المطلوبة"}}), 400
+    if confirm is not None and str(confirm) != password:
+        return jsonify({"ok": False, "error": {"message": "كلمتا المرور غير متطابقتين"}}), 400
+    import re as _re
+    if len(email) > 254 or not _re.fullmatch(r"[^@\s<>\"'`]+@[^@\s<>\"'`]+\.[A-Za-z]{2,}", email):
+        return jsonify({"ok": False, "error": {"message": "البريد الإلكتروني غير صالح"}}), 400
+    if len(password) < MIN_PASSWORD_LEN:
+        return jsonify({"ok": False, "error": {"message": f"كلمة المرور يجب أن لا تقل عن {MIN_PASSWORD_LEN} أحرف"}}), 400
+    if password.lower() == email or password.lower() in email or len(set(password)) < 4:
+        return jsonify({"ok": False, "error": {"message": "كلمة المرور ضعيفة جداً"}}), 400
+    db.record_auth_attempt("register", email, _client_ip(), True)
+
+    if db.get_user_by_email(email):
+        return jsonify({"ok": False, "error": {"message": "البريد الإلكتروني مسجل مسبقاً"}}), 400
+
+    user_id = db.create_user(
+        email=email, password_hash=generate_password_hash(password), role="user", is_active=1)
+    if not user_id:
+        return jsonify({"ok": False, "error": {"message": "فشل إنشاء الحساب، يرجى المحاولة لاحقاً"}}), 500
+
+    db.update_user_login(user_id)
+    token = db.create_api_token(user_id)
+    _audit("api_register", "extension signup", user={"id": user_id, "email": email})
+    return jsonify({"ok": True, "data": {"token": token, "email": email, "role": "user"}})
+
 
 
 @bp.route("/api/v1/auth/me", methods=["GET"])

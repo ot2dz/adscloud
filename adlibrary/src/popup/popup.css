@@ -96,3 +96,33 @@ body {
 }
 .adra-cloud-account small { display: block; margin-bottom: 8px; }
 #adra-cloud-login-status { display: block; min-height: 16px; margin-top: 6px; color: var(--adra-muted); }
+.adra-cloud-server {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--adra-border);
+  border-radius: 9px;
+  background: #eef5ff;
+  color: var(--adra-primary-dark);
+  font-weight: 700;
+  text-align: center;
+}
+.adra-cloud-server strong { font-weight: 800; }
+.adra-cloud-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.adra-cloud-tabs .adra-tab {
+  width: auto;
+  flex: 1 1 0;
+  margin-top: 0;
+  padding: 7px 6px;
+  border-radius: 9px;
+  background: #eef5ff;
+  border-color: var(--adra-border);
+  color: var(--adra-primary-dark);
+}
+.adra-cloud-tabs .adra-tab.is-active {
+  background: var(--adra-primary);
+  border-color: var(--adra-primary);
+  color: #fff;
+}
+.adra-cloud-form[hidden] { display: none; }
+.adra-cloud-rule { margin: -2px 0 8px; color: var(--adra-muted); font-size: 12px; }
+.adra-cloud-hint { display: block; margin-top: 8px; color: var(--adra-muted); font-size: 12px; }
