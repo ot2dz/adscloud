@@ -286,6 +286,7 @@ def api_ext_page_snapshot():
         _track_page_for(_ext_user_id(), page_id, page_name)
 
     saved_count = 0
+    uid = _ext_user_id()
     for ad in ads:
         aid = str(ad.get("facebook_ad_id") or ad.get("id") or "").strip()
         if not aid:
@@ -307,6 +308,8 @@ def api_ext_page_snapshot():
         }
         if db.save_ad(ad_dict, query=f"page:{page_id}", country=FIXED_COUNTRY):
             saved_count += 1
+        if uid:
+            db.link_user_ad(uid, aid)
         manager.events.put({"type": "ad", "data": ad_dict})
 
     logger.info("Chrome Extension snapshot for page %s: %s ads received, %s new", page_id, len(ads), saved_count)

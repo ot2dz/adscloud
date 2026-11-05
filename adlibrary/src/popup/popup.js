@@ -106,7 +106,9 @@ document.querySelector("#adra-save-min-page-likes").addEventListener("click", ()
 
 const adraCloudStatus = document.querySelector("#adra-cloud-status");
 const adraLoginStatus = document.querySelector("#adra-cloud-login-status");
-const adraAuthBlock = document.querySelector("#adra-cloud-auth");
+const adraAuthGate = document.querySelector("#adra-auth-gate");
+const adraMainUi = document.querySelector("#adra-main-ui");
+const adraBoot = document.querySelector("#adra-boot");
 const adraAccountBlock = document.querySelector("#adra-cloud-account");
 const adraLoginForm = document.querySelector("#adra-cloud-login-form");
 const adraRegisterForm = document.querySelector("#adra-cloud-register-form");
@@ -165,7 +167,9 @@ function adraRenderCloudStatus(connection, detail = "") {
 
 function adraRenderAccount(email) {
   adraSignedIn = Boolean(email);
-  adraAuthBlock.hidden = adraSignedIn;
+  if (adraBoot) adraBoot.hidden = true;
+  adraAuthGate.hidden = adraSignedIn;
+  adraMainUi.hidden = !adraSignedIn;
   adraAccountBlock.hidden = !adraSignedIn;
   document.querySelector("#adra-cloud-account-email").textContent = email || "";
 }
@@ -205,7 +209,10 @@ function adraLoadCloudSettings() {
   chrome.storage.local.get(
     [ADRA_CLOUD_TOKEN_KEY, ADRA_CLOUD_EMAIL_KEY, ADRA_CLOUD_STATUS_KEY],
     (result) => {
-      if (chrome.runtime.lastError) return;
+      if (chrome.runtime.lastError) {
+        adraRenderAccount("");
+        return;
+      }
       const signedIn = Boolean(String(result[ADRA_CLOUD_TOKEN_KEY] || "").trim());
       adraRenderAccount(signedIn ? String(result[ADRA_CLOUD_EMAIL_KEY] || "") : "");
       const status = String(result[ADRA_CLOUD_STATUS_KEY] || "");

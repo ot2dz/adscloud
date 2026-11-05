@@ -114,11 +114,20 @@ function onAdminUserFilterChange() {
   loadStores();
 }
 
-function viewUserData(userId) {
+function viewUserData(userId, tab) {
   const sel = document.getElementById('admin-user-filter');
-  sel.value = String(userId);
-  onAdminUserFilterChange();
-  showTab('ads');
+  const value = String(userId);
+  loadAdminUserFilter().then(() => {
+    if (!Array.from(sel.options).some(o => o.value === value)) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = `مستخدم #${value}`;
+      sel.appendChild(opt);
+    }
+    sel.value = value;
+    onAdminUserFilterChange();
+    showTab(tab || 'ads');
+  });
 }
 
 function showAuthModal() {
@@ -235,6 +244,7 @@ const SEC_EVENT_AR = {
   login_success: '✅ دخول', login_failed: '❌ كلمة مرور خاطئة', login_blocked: '⛔ حظر مؤقت (محاولات كثيرة)',
   login_refused_disabled: '🚫 حساب معطل حاول الدخول', logout: 'خروج', logout_all: 'خروج من كل الأجهزة',
   register: '🆕 تسجيل', user_created_by_admin: '🆕 حساب أنشأه المدير', user_disabled: '🔒 تعطيل حساب',
+  api_register: '🆕 تسجيل من الإضافة',
   user_enabled: '🔓 تفعيل حساب', role_changed: '👑 تغيير صلاحية', user_deleted: '🗑️ حذف حساب',
   user_signed_out_by_admin: '⏏️ إخراج مستخدم', api_token_created: '🔌 ربط إضافة', api_tokens_revoked: '🔌 فصل الإضافات',
   settings_changed: '⚙️ تعديل الإعدادات'
@@ -296,7 +306,7 @@ async function loadAdminUsers() {
       return `
       <tr class="hover:bg-slate-50 transition">
         <td class="py-3 px-5 text-slate-400 font-mono text-xs">${u.id}</td>
-        <td class="px-5 font-bold text-[#102a56]">${escT(u.email)} ${isSelf ? '<span class="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">(أنت)</span>' : ''}</td>
+        <td class="px-5 font-bold text-[#102a56]">${escT(u.email)} ${isSelf ? '<span class="text-[10px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">(أنت)</span>' : ''} ${Number(u.extension_signup_count) > 0 ? '<span class="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-bold">من الإضافة</span>' : ''}</td>
         <td class="px-5">${roleBadge}</td>
         <td class="px-5">${statusBadge}</td>
         <td class="px-5 num font-bold text-slate-800">${u.saved_ads_count || 0}</td>
@@ -306,8 +316,11 @@ async function loadAdminUsers() {
         <td class="px-5 text-center">
           ${isSelf ? '<span class="text-xs text-slate-400 italic">حسابك الحالي</span>' : `
             <div class="flex items-center justify-center gap-2">
-              <button onclick="viewUserData(${u.id})" class="text-xs px-2.5 py-1 rounded-lg bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100 font-bold transition">
-                عرض بياناته
+              <button onclick="viewUserData(${u.id}, 'ads')" title="عرض الإعلانات التي حفظها هذا المستخدم" class="text-xs px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 font-bold transition">
+                إعلاناته
+              </button>
+              <button onclick="viewUserData(${u.id}, 'targets')" title="عرض الصفحات/المنافسين الذين يتابعهم" class="text-xs px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 font-bold transition">
+                صفحاته
               </button>
               <button onclick="toggleUserStatus(${u.id})" class="text-xs px-2.5 py-1 rounded-lg border font-bold transition ${u.is_active ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}">
                 ${u.is_active ? 'تجميد' : 'تفعيل'}
@@ -390,7 +403,7 @@ function showTab(t) {
   if (t === 'global') loadGlobal();
   if (t === 'jobs') loadJobs();
   if (t === 'settings') loadSettings();
-  if (t === 'users') { loadAdminUsers(); loadSecurityEvents(); }
+  if (t === 'users') { loadAdminUsers(); loadSecurityEvents(); loadAdminUserFilter(); }
 }
 
 
@@ -450,3 +463,10 @@ function showTab(t) {
   load();
   setInterval(load, 60000);
 })();
+
+// Live refresh of the admin users table (new extension signups appear on their
+// own while the tab is open).
+setInterval(() => {
+  const view = document.getElementById('view-users');
+  if (isAdmin() && view && !view.classList.contains('hidden')) loadAdminUsers();
+}, 20000);

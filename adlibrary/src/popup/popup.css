@@ -124,5 +124,24 @@ body {
   color: #fff;
 }
 .adra-cloud-form[hidden] { display: none; }
+.adra-auth-gate[hidden],
+#adra-main-ui[hidden],
+.adra-boot[hidden] { display: none !important; }
+.adra-auth-gate { margin-top: 4px; }
+.adra-boot { margin: 0; text-align: center; color: var(--adra-muted); font-weight: 700; }
+.adra-cloud-form label { display: block; margin-bottom: 4px; font-weight: 700; }
+.adra-cloud-form input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 9px;
+  border: 1px solid #b7c9e2;
+  border-radius: 9px;
+  background: #fff;
+  color: #172b4d;
+  font: inherit;
+  direction: ltr;
+}
+.adra-cloud-form input:focus { outline: 2px solid #74a7ff; outline-offset: 1px; }
 .adra-cloud-rule { margin: -2px 0 8px; color: var(--adra-muted); font-size: 12px; }
 .adra-cloud-hint { display: block; margin-top: 8px; color: var(--adra-muted); font-size: 12px; }

@@ -2705,7 +2705,9 @@ class Database:
         return self._query(
             "SELECT id, email, role, is_active, created_at, last_login_at, "
             "(SELECT COUNT(*) FROM user_ads ua WHERE ua.user_id = users.id) AS saved_ads_count, "
-            "(SELECT COUNT(*) FROM user_pages up WHERE up.user_id = users.id) AS tracked_pages_count "
+            "(SELECT COUNT(*) FROM user_pages up WHERE up.user_id = users.id) AS tracked_pages_count, "
+            "(SELECT COUNT(*) FROM security_events se WHERE se.event = 'api_register' "
+            " AND se.user_id = users.id) AS extension_signup_count "
             "FROM users ORDER BY id ASC")
 
     # ── server-side sessions ──────────────────────────────────────────────

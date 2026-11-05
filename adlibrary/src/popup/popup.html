@@ -9,75 +9,80 @@
   <body>
     <main class="adra-popup">
       <h1>Ad Library Research Assistant</h1>
-      <p>الإعلانات المحفوظة: <strong id="adra-saved-count">0</strong></p>
-      <p>الصفحات المتتبعة: <strong id="adra-tracked-count">0</strong></p>
-      <button id="adra-view-saved" type="button">عرض الإعلانات المحفوظة</button>
-      <button id="adra-view-tracked" type="button">عرض الصفحات المتتبعة</button>
-      <button id="adra-clear-saved" type="button" class="adra-danger">مسح الكل</button>
-      <section class="adra-url-filter-settings">
-        <h2>My Landing-URL Filter</h2>
-        <label for="adra-url-filter-text">النص الموجود داخل الرابط</label>
-        <input id="adra-url-filter-text" type="text" placeholder="مثال: product">
-        <label class="adra-checkbox-label">
-          <input id="adra-url-filter-case" type="checkbox">
-          <span>حساس لحالة الأحرف</span>
-        </label>
-        <button id="adra-save-url-filter" type="button">حفظ الفلتر</button>
-        <small>بعد الحفظ فعّل خيار My Filter داخل صفحة Ad Library.</small>
-      </section>
-      <section class="adra-likes-filter-settings">
-        <h2>Min Page Likes Filter</h2>
-        <label for="adra-min-page-likes">الحد الأدنى لإعجابات الصفحة</label>
-        <input id="adra-min-page-likes" type="number" min="0" step="1" inputmode="numeric" placeholder="مثال: 1000">
-        <button id="adra-save-min-page-likes" type="button">حفظ الفلتر</button>
-        <small>بعد الحفظ سيتم تطبيق الفلتر داخل صفحة Ad Library.</small>
-      </section>
-      <section class="adra-cloud-settings">
-        <h2>ADRA Cloud</h2>
-        <p class="adra-cloud-server">الخادم: <strong dir="ltr" id="adra-cloud-server">ads.botdz.com</strong></p>
-        <button id="adra-test-cloud" type="button">اختبار الاتصال</button>
-        <small id="adra-cloud-status">الحالة: جارٍ الاتصال…</small>
-        <div id="adra-cloud-auth" class="adra-cloud-account">
-          <div class="adra-cloud-tabs" role="tablist">
-            <button id="adra-tab-login" class="adra-tab is-active" type="button">تسجيل الدخول</button>
-            <button id="adra-tab-register" class="adra-tab" type="button">إنشاء حساب</button>
-          </div>
-          <div id="adra-cloud-login-form" class="adra-cloud-form">
-            <label for="adra-cloud-email">البريد الإلكتروني</label>
-            <input id="adra-cloud-email" type="email" dir="ltr" autocomplete="username">
-            <label for="adra-cloud-password">كلمة المرور</label>
-            <input id="adra-cloud-password" type="password" dir="ltr" autocomplete="current-password">
-            <button id="adra-cloud-login" type="button">دخول</button>
-          </div>
-          <div id="adra-cloud-register-form" class="adra-cloud-form" hidden>
-            <label for="adra-cloud-register-email">البريد الإلكتروني</label>
-            <input id="adra-cloud-register-email" type="email" dir="ltr" autocomplete="email">
-            <label for="adra-cloud-register-password">كلمة المرور</label>
-            <input id="adra-cloud-register-password" type="password" dir="ltr" autocomplete="new-password">
-            <label for="adra-cloud-register-confirm">تأكيد كلمة المرور</label>
-            <input id="adra-cloud-register-confirm" type="password" dir="ltr" autocomplete="new-password">
-            <small id="adra-cloud-register-rule" class="adra-cloud-rule"></small>
-            <button id="adra-cloud-register" type="button">إنشاء الحساب</button>
-          </div>
+      <p id="adra-boot" class="adra-boot">جارٍ التحميل…</p>
+
+      <section id="adra-auth-gate" class="adra-auth-gate" hidden>
+        <div class="adra-cloud-tabs" role="tablist">
+          <button id="adra-tab-login" class="adra-tab is-active" type="button">تسجيل الدخول</button>
+          <button id="adra-tab-register" class="adra-tab" type="button">إنشاء حساب</button>
         </div>
-        <div id="adra-cloud-account" class="adra-cloud-account" hidden>
-          <small>متصل بحساب: <strong id="adra-cloud-account-email" dir="ltr"></strong></small>
-          <button id="adra-cloud-logout" type="button">تسجيل الخروج</button>
+        <div id="adra-cloud-login-form" class="adra-cloud-form">
+          <label for="adra-cloud-email">البريد الإلكتروني</label>
+          <input id="adra-cloud-email" type="email" dir="ltr" autocomplete="username">
+          <label for="adra-cloud-password">كلمة المرور</label>
+          <input id="adra-cloud-password" type="password" dir="ltr" autocomplete="current-password">
+          <button id="adra-cloud-login" type="button">دخول</button>
+        </div>
+        <div id="adra-cloud-register-form" class="adra-cloud-form" hidden>
+          <label for="adra-cloud-register-email">البريد الإلكتروني</label>
+          <input id="adra-cloud-register-email" type="email" dir="ltr" autocomplete="email">
+          <label for="adra-cloud-register-password">كلمة المرور</label>
+          <input id="adra-cloud-register-password" type="password" dir="ltr" autocomplete="new-password">
+          <label for="adra-cloud-register-confirm">تأكيد كلمة المرور</label>
+          <input id="adra-cloud-register-confirm" type="password" dir="ltr" autocomplete="new-password">
+          <small id="adra-cloud-register-rule" class="adra-cloud-rule"></small>
+          <button id="adra-cloud-register" type="button">إنشاء الحساب</button>
         </div>
         <small id="adra-cloud-login-status" role="status"></small>
-        <small class="adra-cloud-hint">الاتصال والتسجيل يتمان مباشرة على ads.botdz.com — بدون إدخال أي رابط.</small>
-        <div class="adra-history-sync">
-          <h3>Historical Sync</h3>
-          <button id="adra-sync-history" type="button">مزامنة الإعلانات والصفحات المحفوظة</button>
-          <small id="adra-sync-progress" role="status"></small>
-          <small id="adra-sync-last"></small>
-        </div>
       </section>
-      <p id="adra-popup-status" role="status"></p>
-      <footer class="adra-popup-signature">
-        Powered by Othmane Djoualil<br>
-        Telegram: <a href="https://t.me/ot2dz" target="_blank" rel="noopener noreferrer">@ot2dz</a>
-      </footer>
+
+      <div id="adra-main-ui" hidden>
+        <p>الإعلانات المحفوظة: <strong id="adra-saved-count">0</strong></p>
+        <p>الصفحات المتتبعة: <strong id="adra-tracked-count">0</strong></p>
+        <button id="adra-view-saved" type="button">عرض الإعلانات المحفوظة</button>
+        <button id="adra-view-tracked" type="button">عرض الصفحات المتتبعة</button>
+        <button id="adra-clear-saved" type="button" class="adra-danger">مسح الكل</button>
+        <section class="adra-url-filter-settings">
+          <h2>My Landing-URL Filter</h2>
+          <label for="adra-url-filter-text">النص الموجود داخل الرابط</label>
+          <input id="adra-url-filter-text" type="text" placeholder="مثال: product">
+          <label class="adra-checkbox-label">
+            <input id="adra-url-filter-case" type="checkbox">
+            <span>حساس لحالة الأحرف</span>
+          </label>
+          <button id="adra-save-url-filter" type="button">حفظ الفلتر</button>
+          <small>بعد الحفظ فعّل خيار My Filter داخل صفحة Ad Library.</small>
+        </section>
+        <section class="adra-likes-filter-settings">
+          <h2>Min Page Likes Filter</h2>
+          <label for="adra-min-page-likes">الحد الأدنى لإعجابات الصفحة</label>
+          <input id="adra-min-page-likes" type="number" min="0" step="1" inputmode="numeric" placeholder="مثال: 1000">
+          <button id="adra-save-min-page-likes" type="button">حفظ الفلتر</button>
+          <small>بعد الحفظ سيتم تطبيق الفلتر داخل صفحة Ad Library.</small>
+        </section>
+        <section class="adra-cloud-settings">
+          <h2>ADRA Cloud</h2>
+          <p class="adra-cloud-server">الخادم: <strong dir="ltr" id="adra-cloud-server">ads.botdz.com</strong></p>
+          <button id="adra-test-cloud" type="button">اختبار الاتصال</button>
+          <small id="adra-cloud-status">الحالة: جارٍ الاتصال…</small>
+          <div id="adra-cloud-account" class="adra-cloud-account" hidden>
+            <small>متصل بحساب: <strong id="adra-cloud-account-email" dir="ltr"></strong></small>
+            <button id="adra-cloud-logout" type="button">تسجيل الخروج</button>
+          </div>
+          <small class="adra-cloud-hint">الاتصال والتسجيل يتمان مباشرة على ads.botdz.com — بدون إدخال أي رابط.</small>
+          <div class="adra-history-sync">
+            <h3>Historical Sync</h3>
+            <button id="adra-sync-history" type="button">مزامنة الإعلانات والصفحات المحفوظة</button>
+            <small id="adra-sync-progress" role="status"></small>
+            <small id="adra-sync-last"></small>
+          </div>
+        </section>
+        <p id="adra-popup-status" role="status"></p>
+        <footer class="adra-popup-signature">
+          Powered by Othmane Djoualil<br>
+          Telegram: <a href="https://t.me/ot2dz" target="_blank" rel="noopener noreferrer">@ot2dz</a>
+        </footer>
+      </div>
     </main>
     <script src="../config.js"></script>
     <script src="popup.js"></script>
