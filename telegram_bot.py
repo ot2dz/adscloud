@@ -611,6 +611,34 @@ def _emit_log(text: str, key: str = "", every_s: float = 300.0) -> None:
 
 
 _LAST_EMIT: dict = {}
+_LAST_POLL = [0.0]  # epoch of the last successful getUpdates
+
+
+def _poll_heartbeat() -> None:
+    """Record that the polling loop is alive (also persisted for diagnostics)."""
+    now = time.time()
+    _LAST_POLL[0] = now
+    try:
+        cur = float(db.get_settings().get("telegram_bot_last_poll") or 0)
+    except Exception:  # noqa: BLE001
+        cur = 0.0
+    if now - cur > 60:  # at most one write a minute
+        try:
+            db.set_setting("telegram_bot_last_poll", str(int(now)))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _last_poll_age() -> float:
+    try:
+        ts = float(db.get_settings().get("telegram_bot_last_poll") or 0)
+    except Exception:  # noqa: BLE001
+        ts = 0.0
+    return (time.time() - ts) if ts else -1.0
+
+
+def _bot_disabled() -> bool:
+    return os.environ.get("TELEGRAM_BOT", "on").strip().lower() in ("0", "off", "false", "no")
 
 
 def bot_diagnostics(token: str) -> str:
@@ -618,6 +646,9 @@ def bot_diagnostics(token: str) -> str:
     token = (token or "").strip()
     if not token:
         return ""
+    if _bot_disabled():
+        return ("\n⛔ استقبال البوت <b>معطّل</b>: المتغير TELEGRAM_BOT=off على الخادم. "
+                "أعده إلى on (أو احذفه) ثم أعد النشر.")
     try:
         with urllib.request.urlopen(
                 f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10) as resp:
@@ -625,12 +656,30 @@ def bot_diagnostics(token: str) -> str:
         info = data.get("result") or {}
         hook = str(info.get("url") or "")
         pending = int(info.get("pending_update_count") or 0)
-        if hook:
-            return ("\n⚠️ يوجد <b>Webhook</b> مضبوط على البوت، ولهذا لا يستقبل الرسائل. "
-                    "احذفه (deleteWebhook) ليستقبل البوت من جديد.")
-        return f"\n✅ استقبال رسائل البوت جاهز (Webhook: لا يوجد، رسائل معلّقة: {pending})."
     except Exception as exc:  # noqa: BLE001
         return f"\n⚠️ تعذّر فحص حالة البوت: {html.escape(str(exc)[:80])}"
+    if hook:
+        return ("\n⚠️ يوجد <b>Webhook</b> مضبوط على البوت، ولهذا لا يستقبل الرسائل. "
+                "احذفه (deleteWebhook) ليستقبل البوت من جديد.")
+    age = _last_poll_age()
+    if age < 0:
+        return (f"\n⚠️ لا يوجد أي <b>polling</b> ناجح مسجّل بعد (رسائل معلّقة: {pending}). "
+                "تأكد أن الخدمة أحدث نسخة وأعد تشغيلها.")
+    if age > 180:
+        return (f"\n⚠️ استقبال البوت <b>متوقف</b>: آخر polling ناجح قبل {int(age)} ثانية "
+                f"(رسائل معلّقة: {pending}). أعد تشغيل الخدمة.")
+    return (f"\n✅ استقبال رسائل البوت جاهز (آخر polling قبل {int(age)} ث، "
+            f"رسائل معلّقة: {pending}).")
+
+
+def telegram_bot_supervisor() -> None:
+    """Keep the polling loop alive even if its thread ever dies."""
+    while True:
+        worker = threading.Thread(target=telegram_bot_loop, daemon=True)
+        worker.start()
+        worker.join()
+        logger.error("telegram bot loop exited unexpectedly; restarting in 5s")
+        time.sleep(5)
 
 
 def _handle_update(token: str, owner: str, update: dict) -> None:
@@ -839,6 +888,7 @@ def telegram_bot_loop() -> None:
                           key="tg_up", every_s=6 * 3600)
                 announced = True
             data = _api(token, "getUpdates", {"offset": offset, "timeout": 25}, timeout=35)
+            _poll_heartbeat()
             updates = data.get("result") or []
             for update in updates:
                 offset = max(offset, int(update.get("update_id", 0)) + 1)

@@ -11,7 +11,7 @@ from pages import resolve_target_url
 from scrape_manager import (
     manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, _proxy_setting,
 )
-from telegram_bot import follow_watch_loop, telegram_bot_loop
+from telegram_bot import follow_watch_loop, telegram_bot_supervisor
 
 logger = logging.getLogger("web_app")
 
@@ -516,8 +516,13 @@ def start_background_threads() -> None:
     threading.Thread(target=niches_loop, daemon=True).start()
     threading.Thread(target=hunter_backfill_once, daemon=True).start()
     if os.environ.get("TELEGRAM_BOT", "on").strip().lower() not in ("0", "off", "false", "no"):
-        threading.Thread(target=telegram_bot_loop, daemon=True).start()
+        threading.Thread(target=telegram_bot_supervisor, daemon=True).start()
         threading.Thread(target=follow_watch_loop, daemon=True).start()
+    else:
+        try:
+            manager._emit("log", {"text": "⚠️ بوت تلجرام معطّل (TELEGRAM_BOT=off) — لن يستقبل رسائل."})
+        except Exception:
+            pass
 
 
 
