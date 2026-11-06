@@ -21,7 +21,7 @@ import urllib.request
 import link_stats
 from db import db
 from pages import clean_domain, extract_page_id, page_url
-from scrape_manager import DEFAULT_COUNTRY, job_wakeup, manager
+from scrape_manager import DEFAULT_COUNTRY, job_wakeup, manager, _proxy_setting
 
 logger = logging.getLogger("web_app")
 
@@ -184,7 +184,7 @@ def _page_for_snippet(snippet: str) -> str | None:
         deadline = time.monotonic() + 20
         scrape(query=snippet, country=DEFAULT_COUNTRY, max_results=8, estimate=False,
                should_stop=lambda: time.monotonic() > deadline,
-               on_ad=lambda a: ads.append(a))
+               on_ad=lambda a: ads.append(a), proxy=_proxy_setting())
         counts: dict[str, int] = {}
         for ad in ads:
             d = ad.__dict__ if hasattr(ad, "__dict__") else ad

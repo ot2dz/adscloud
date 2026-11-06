@@ -28,7 +28,7 @@ import logging
 import time
 from typing import Callable, Optional
 
-from engine import active_ads_of_pages
+from engine import active_ads_of_pages, rotate_and_wait_ready
 import ip_rotator
 from store_filter import product_key
 
@@ -118,11 +118,11 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         # Rule 1: a page that ran ads in an earlier batch must still answer.
         if not canary_alive():
             # Same recovery as a normal scrape: ask the IP rotator for a fresh
-            # public IP before giving up (the retry then runs on the new IP).
-            rot = ip_rotator.rotate()
-            if rot:
-                progress("🔄 طُلب تغيير IP بعد حجب Meta لفحص الحالة.")
-            sleep(RECHECK_WAIT_SEC)
+            # public IP and wait until the tunnel is actually back (the re-dial
+            # drops it for ~1 minute), then re-check on the new IP.
+            rotated = rotate_and_wait_ready(proxy, progress, should_stop)
+            if not rotated:
+                sleep(RECHECK_WAIT_SEC)
             if not canary_alive():
                 raise Blocked("Meta returns no ads even for a page known to run ads (IP soft-blocked?)")
 

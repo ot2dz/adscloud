@@ -395,12 +395,17 @@ def entity_stats_loop() -> None:
                         logger.warning("entity counts: repeated failures, pausing 10 min")
                         time.sleep(600)
                         break
-                    time.sleep(1 + random.random())
+                    # Keep this background work light: it must never be the
+                    # thing that burns the proxy IP before a user scrape.
+                    time.sleep(2 + random.random())
             finally:
                 try:
                     client.close()
                 except Exception:
                     pass
+            # A batch just made ~20 requests: rest before the next one so the
+            # steady client churn stays well under Meta's block threshold.
+            time.sleep(90)
         except Exception:
             logger.exception("entity stats loop error")
             time.sleep(60)

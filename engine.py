@@ -142,6 +142,12 @@ class Pace:
         self.delay = min(PACE_MAX_DELAY, max(PACE_AFTER_BLOCK, self.delay * 2))
         return self.delay
 
+    def reset(self) -> float:
+        """Back to the base pace — a freshly rotated IP owes no penalty delay."""
+        self.delay = self.base
+        self._ok_pages = 0
+        return self.delay
+
     def page_ok(self) -> float:
         """Every 20 good pages, creep back 10% toward the base pace."""
         self._ok_pages += 1
@@ -194,6 +200,26 @@ def _proxy_ready(proxy_spec: str, timeout: float = 8.0) -> bool:
         return False
 
 
+def _public_ip(proxy_spec: Optional[str] = None, timeout: float = 8.0) -> str:
+    """The public IP as seen through the proxy (empty when unreachable)."""
+    try:
+        from curl_cffi import requests as creq
+        from meta_ads_collector.proxy_pool import parse_proxy
+
+        spec = _proxy_arg(proxy_spec)
+        proxies = None
+        if spec:
+            purl = parse_proxy(spec)
+            proxies = {"http": purl, "https": purl}
+        r = creq.get("https://api.ipify.org?format=json", proxies=proxies,
+                     impersonate="chrome", timeout=timeout)
+        if r.status_code != 200:
+            return ""
+        return str((r.json() or {}).get("ip") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _wait_proxy_ready(proxy_spec: str, progress, should_stop, wait_s: int = 40) -> bool:
     """Wait for the tunnel/proxy to come back before burning a scrape attempt."""
     if _proxy_ready(proxy_spec):
@@ -206,6 +232,65 @@ def _wait_proxy_ready(proxy_spec: str, progress, should_stop, wait_s: int = 40) 
         time.sleep(10)
         if _proxy_ready(proxy_spec):
             return True
+    return False
+
+
+# After a Meta block, ask the IP rotator for a fresh public IP and resume the
+# moment the tunnel is back. Turn it off with META_ADS_AUTO_ROTATE=0.
+_AUTO_ROTATE = os.environ.get("META_ADS_AUTO_ROTATE", "true").strip().lower() \
+    not in ("0", "off", "false", "no")
+
+_ROTATE_INITIAL_WAIT_S = 12.0   # the agent answers 202 at once; give the re-dial time to drop the tunnel
+_ROTATE_MAX_WAIT_S = 150.0      # typical PPPoE re-dial + tunnel back = 45-90s
+
+
+def rotate_and_wait_ready(proxy_spec=None, progress=None, should_stop=None,
+                          max_wait_s: float = _ROTATE_MAX_WAIT_S) -> bool:
+    """Rotate the public IP and return only when the proxy tunnel is answering.
+
+    The rotator agent re-dials the ONT PPPoE session and answers ``202`` before
+    the tunnel drops, so callers must never resume right after ``rotate()``:
+    this helper probes ``api.ipify.org`` through the proxy until the tunnel is
+    back (and, when possible, the IP actually changed). It also resets the
+    Penalty pace: a fresh IP does not inherit the blocked one's slow speed.
+
+    Returns True when the proxy is ready to scrape again (rotation skipped for
+    the 120s debounce still counts once the tunnel answers).
+    """
+    progress = progress or (lambda _m: None)
+    if not ip_rotator.enabled():
+        return False
+    old_ip = _public_ip(proxy_spec)
+    if old_ip:
+        progress(f"🔄 طلب تغيير IP (الحالي: {old_ip})…")
+    res = ip_rotator.rotate()
+    asked = bool(res and (res.get("ok") or res.get("accepted")))
+    if not asked and not old_ip:
+        # Nothing asked and the tunnel is down too: still wait for it (the
+        # previous rotation may already be in flight).
+        pass
+    time.sleep(_ROTATE_INITIAL_WAIT_S)
+    was_down = False
+    deadline = time.time() + max_wait_s
+    while time.time() < deadline:
+        if should_stop and should_stop():
+            return False
+        ip = _public_ip(proxy_spec)
+        if ip:
+            # Ready when the IP changed, when we never knew the old one, or
+            # once the tunnel was seen dropping (same-IP re-dial).
+            if ip != old_ip or was_down or not old_ip:
+                PACE.reset()
+                if old_ip and ip != old_ip:
+                    progress(f"🔄 تم تدوير الـ IP بنجاح: {old_ip} → {ip}")
+                else:
+                    progress(f"🔄 البروكسي جاهز ({ip})")
+                return True
+        else:
+            was_down = True
+        progress(_WAIT_PROXY)
+        time.sleep(5)
+    progress("⚠️ لم يعد البروكسي للعمل بعد تدوير الـ IP في الوقت المتاح.")
     return False
 
 
@@ -450,12 +535,6 @@ def scrape(
         f"{' | lang=' + ','.join(langs) if langs else ''}"
     )
 
-    _spec = _proxy_arg(proxy)
-    if _spec and not _wait_proxy_ready(_spec, progress, should_stop):
-        progress(_FAIL_PROXY)
-        return ScrapeResult(query=q, url=url or "", interrupted=True, error=_FAIL_PROXY)
-
-
     if not _proxy_arg(proxy) and not _allow_direct():
         _msg = "\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0631\u0648\u0643\u0633\u064a \u0645\u0636\u0628\u0648\u0637 \u2014 \u0627\u0644\u0633\u062d\u0628 \u0645\u0646 IP \u0627\u0644\u0633\u064a\u0631\u0641\u0631 \u0645\u0639\u0637\u0651\u0644. \u0623\u0636\u0641 \u0627\u0644\u0628\u0631\u0648\u0643\u0633\u064a \u0641\u064a \u0627\u0644\u0625\u0639\u062f\u0627\u062f\u0627\u062a."
         progress(_msg)
@@ -484,12 +563,20 @@ def scrape(
     block_pauses = 0
 
     def _on_block() -> bool:
-        """Slow down and pause; False = out of pauses (run is interrupted)."""
+        """React to an empty-results soft block. Returns True to continue the
+        loop (after either a fresh IP or the timed pause) or False to stop.
+
+        With the rotator configured, a blocked run asks for a new public IP and
+        resumes the moment the tunnel answers instead of sleeping out the whole
+        pause; without it, the classic paced pauses apply.
+        """
         nonlocal block_pauses
-        _rot = ip_rotator.rotate()
-        if _rot and _rot.get("ok"):
-            progress("IP rotated: %s -> %s (%ss)" % (
-                _rot.get("old_ip"), _rot.get("new_ip"), _rot.get("seconds")))
+        if _AUTO_ROTATE and ip_rotator.enabled():
+            block_pauses += 1
+            if rotate_and_wait_ready(proxy, progress, should_stop):
+                block_pauses = 0  # fresh IP = fresh block budget
+                return True
+            block_pauses -= 1  # rotation unavailable: fall back to the pauses
         delay = PACE.slow_down()
         if block_pauses >= len(BLOCK_PAUSES_MIN):
             res.interrupted = True
@@ -500,6 +587,9 @@ def scrape(
         block_pauses += 1
         progress(f"🐢 Meta بدأت تُرجع نتائج فارغة (حظر مؤقت) — إبطاء السحب إلى {delay:.1f} ث بين الطلبات، "
                  f"استراحة {wait_min} دقيقة ثم استئناف من آخر صفحة ({block_pauses}/{len(BLOCK_PAUSES_MIN)}).")
+        if _sleep_unless_stopped(wait_min * 60, should_stop):
+            res.stopped = True
+            return False
         return True
 
     if resume_cursor:
@@ -507,6 +597,14 @@ def scrape(
 
     attempt = 0
     while True:
+        # Never start an attempt while the proxy tunnel is down (it just
+        # burned curl 7/28 errors after every IP rotation).
+        _spec = _proxy_arg(proxy)
+        if _spec and not _wait_proxy_ready(_spec, progress, should_stop, wait_s=60):
+            progress(_FAIL_PROXY)
+            res.interrupted = True
+            res.error = _FAIL_PROXY
+            break
         collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=PACE.delay,
                                      jitter=REQUEST_JITTER)
         try:
@@ -581,9 +679,6 @@ def scrape(
                 if meta_blocked(proxy):
                     if not _on_block():
                         break
-                    if _sleep_unless_stopped(BLOCK_PAUSES_MIN[block_pauses - 1] * 60, should_stop):
-                        res.stopped = True
-                        break
                     continue
                 _checkpoint(None)  # Meta answers normally: this search is really over
             if early_stopped and not res.stopped:
@@ -599,9 +694,6 @@ def scrape(
                 res.error = ""
                 if not _on_block():
                     break
-                if _sleep_unless_stopped(BLOCK_PAUSES_MIN[block_pauses - 1] * 60, should_stop):
-                    res.stopped = True
-                    break
                 continue
             if _is_permanent(exc):
                 logger.error("HTTP scrape failed permanently: %s", exc)
@@ -616,7 +708,10 @@ def scrape(
                 res.interrupted = True
                 break
             if _is_meta_block(exc):
-                ip_rotator.rotate()  # real Meta block: fresh IP helps
+                if _AUTO_ROTATE and ip_rotator.enabled():
+                    rotate_and_wait_ready(proxy, progress, should_stop)
+                else:
+                    ip_rotator.rotate()  # real Meta block: fresh IP helps
             # network/proxy failures just wait: rotating would drop the tunnel
             wait = IN_RUN_RETRY_WAITS[attempt]
             attempt += 1
