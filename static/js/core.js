@@ -412,13 +412,32 @@ function showTab(t) {
   const badge = document.getElementById('egress-ip-badge');
   const value = document.getElementById('egress-ip');
   const btn = document.getElementById('egress-rotate');
+  const checkBadge = document.getElementById('egress-check-badge');
+  const checkValue = document.getElementById('egress-check-ip');
   if (!badge || !value) return;
 
+  // The two rotators report differently: the home agent `ip`, the tablet `new_ip`.
+  function rotatorInfo(r) {
+    if (!r) return '';
+    const ip = r.ip || r.new_ip;
+    return ' | rotator: ' + (r.status || '') + (ip ? ' ' + ip : '');
+  }
+
+  function paintCheck(c) {
+    if (!checkBadge || !checkValue) return;
+    if (!c) { checkBadge.classList.add('hidden'); return; }
+    checkValue.textContent = c.ip || '--';
+    checkBadge.title = (c.proxy ? 'proxy: ' + c.proxy : '') + rotatorInfo(c.rotator)
+      + (c.error ? ' | ' + c.error : '');
+    checkBadge.classList.remove('hidden');
+  }
+
   function paint(j) {
+    paintCheck(j && j.status_check);
     if (!j || !j.ok || !j.ip) { badge.classList.add('hidden'); return; }
     value.textContent = j.ip;
     badge.title = 'source: ' + (j.source || '?') + (j.proxy ? ' | proxy: ' + j.proxy : '')
-      + (j.rotator && j.rotator.ip ? ' | rotator: ' + j.rotator.ip : '');
+      + rotatorInfo(j.rotator);
     badge.classList.remove('hidden');
   }
 

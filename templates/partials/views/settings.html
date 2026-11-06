@@ -108,6 +108,14 @@
               </div>
               <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
                 <input id="cfg-status-check-hour" type="number" min="0" max="23" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
+              <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">كل (يوم)
+                <input id="cfg-status-check-interval" type="number" min="1" max="30" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
+            </div>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <label class="text-[11px] font-bold text-slate-600">بروكسي الفحص (فارغ = نفس بروكسي السحب)
+                <input id="cfg-status-check-proxy" type="text" dir="ltr" autocomplete="off" class="mt-1 w-full bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 font-mono text-xs"></label>
+              <label class="text-[11px] font-bold text-slate-600">رابط تدوير الفحص (فارغ مع بروكسي الفحص = بلا تدوير)
+                <input id="cfg-status-check-rotate-url" type="text" dir="ltr" autocomplete="off" class="mt-1 w-full bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 font-mono text-xs"></label>
             </div>
             <div class="flex items-center justify-between gap-2">
               <span id="status-check-summary" class="text-[11px] text-slate-500"></span>

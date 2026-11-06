@@ -64,6 +64,9 @@ def api_get_settings():
         "month_rescan_last": s.get("month_rescan_last", ""),
         "status_check_enabled": s.get("status_check_enabled", "true"),
         "status_check_hour": s.get("status_check_hour", "3"),
+        "status_check_interval_days": s.get("status_check_interval_days", "1"),
+        "status_check_proxy": s.get("status_check_proxy", ""),
+        "status_check_rotate_url": s.get("status_check_rotate_url", ""),
         "status_check_last": s.get("status_check_last", ""),
         "status_check_summary": s.get("status_check_summary", ""),
     })
@@ -111,6 +114,15 @@ def api_set_settings():
             db.set_setting("status_check_hour", str(max(0, min(23, int(cfg["status_check_hour"])))))
         except (TypeError, ValueError):
             pass
+    if "status_check_interval_days" in cfg:
+        try:
+            db.set_setting("status_check_interval_days",
+                           str(max(1, min(30, int(cfg["status_check_interval_days"])))))
+        except (TypeError, ValueError):
+            pass
+    for key in ("status_check_proxy", "status_check_rotate_url"):
+        if key in cfg:
+            db.set_setting(key, str(cfg[key] or "").strip())
     if "meta_ads_proxy" in cfg:
         db.set_setting("meta_ads_proxy", str(cfg["meta_ads_proxy"] or "").strip())
     purged = None

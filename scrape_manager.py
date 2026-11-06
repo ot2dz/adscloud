@@ -35,6 +35,25 @@ def _proxy_setting() -> str:
     except Exception:
         return ""
 
+def _status_egress() -> tuple:
+    """(proxy, rotate_url, rotate_token) of the status check.
+
+    Without a dedicated ``status_check_proxy`` the check shares the scrape
+    egress, exactly as before. With one, ``rotate_url`` is never None: an empty
+    value means "no rotator", so a block on that egress cannot rotate the
+    scrape line.
+    """
+    try:
+        s = db.get_settings()
+    except Exception:
+        return "", None, None
+    dedicated = (s.get("status_check_proxy") or "").strip()
+    if not dedicated:
+        return (s.get("meta_ads_proxy") or "").strip(), None, None
+    return (dedicated, (s.get("status_check_rotate_url") or "").strip(),
+            (os.environ.get("STATUS_CHECK_ROTATE_TOKEN") or "").strip() or None)
+
+
 class ScrapeManager:
     def __init__(self):
         self.thread = None
@@ -236,11 +255,13 @@ class ScrapeManager:
                     if on_checkpoint:
                         on_checkpoint(outcome["checkpoint"])
 
+                check_proxy, rotate_url, rotate_token = _status_egress()
                 try:
                     outcome["status"] = status_check.run(
                         db, progress=progress, should_stop=lambda: self.stop_event.is_set(),
-                        proxy=proxy_spec, start_batch=max(1, int(resume.get("pass") or 1)),
-                        on_checkpoint=status_cp, on_new_ad=save_new, stats=st)
+                        proxy=check_proxy, start_batch=max(1, int(resume.get("pass") or 1)),
+                        on_checkpoint=status_cp, on_new_ad=save_new, stats=st,
+                        rotate_url=rotate_url, rotate_token=rotate_token)
                 except status_check.Blocked as exc:
                     outcome.update(status="interrupted", error=f"Meta لا تُرجع نتائج (حجب مؤقت؟) — لم يُعلَّم أي إعلان: {exc}")
                     progress("⏸ " + outcome["error"])

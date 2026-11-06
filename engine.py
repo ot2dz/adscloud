@@ -245,7 +245,8 @@ _ROTATE_MAX_WAIT_S = 150.0      # typical PPPoE re-dial + tunnel back = 45-90s
 
 
 def rotate_and_wait_ready(proxy_spec=None, progress=None, should_stop=None,
-                          max_wait_s: float = _ROTATE_MAX_WAIT_S) -> bool:
+                          max_wait_s: float = _ROTATE_MAX_WAIT_S,
+                          rotate_url=None, rotate_token=None) -> bool:
     """Rotate the public IP and return only when the proxy tunnel is answering.
 
     The rotator agent re-dials the ONT PPPoE session and answers ``202`` before
@@ -256,14 +257,16 @@ def rotate_and_wait_ready(proxy_spec=None, progress=None, should_stop=None,
 
     Returns True when the proxy is ready to scrape again (rotation skipped for
     the 120s debounce still counts once the tunnel answers).
+
+    ``rotate_url`` picks the rotator of this egress (see ``ip_rotator``).
     """
     progress = progress or (lambda _m: None)
-    if not ip_rotator.enabled():
+    if not ip_rotator.enabled(rotate_url):
         return False
     old_ip = _public_ip(proxy_spec)
     if old_ip:
         progress(f"🔄 طلب تغيير IP (الحالي: {old_ip})…")
-    res = ip_rotator.rotate()
+    res = ip_rotator.rotate(url=rotate_url, token=rotate_token)
     asked = bool(res and (res.get("ok") or res.get("accepted")))
     if not asked and not old_ip:
         # Nothing asked and the tunnel is down too: still wait for it (the

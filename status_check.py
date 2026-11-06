@@ -74,7 +74,8 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         proxy: Optional[str] = None, start_batch: int = 1,
         on_checkpoint: Optional[Callable[[int], None]] = None,
         on_new_ad: Optional[Callable] = None, stats: Optional[dict] = None,
-        fetch=active_ads_of_pages, sleep=time.sleep) -> str:
+        fetch=active_ads_of_pages, sleep=time.sleep,
+        rotate_url: Optional[str] = None, rotate_token: Optional[str] = None) -> str:
     """Check every page with active ads. Returns done | stopped | interrupted."""
     stats = stats if stats is not None else {}
     for k in ("pages", "batches", "requests", "confirmed", "stopped", "new", "skipped_batches"):
@@ -120,7 +121,8 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             # Same recovery as a normal scrape: ask the IP rotator for a fresh
             # public IP and wait until the tunnel is actually back (the re-dial
             # drops it for ~1 minute), then re-check on the new IP.
-            rotated = rotate_and_wait_ready(proxy, progress, should_stop)
+            rotated = rotate_and_wait_ready(proxy, progress, should_stop,
+                                            rotate_url=rotate_url, rotate_token=rotate_token)
             if not rotated:
                 sleep(RECHECK_WAIT_SEC)
             if not canary_alive():
@@ -136,7 +138,7 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             stats["skipped_batches"] += 1
             progress(f"⚠️ الدفعة {idx}/{len(batches)} لم تكتمل — تُركت بدون تغيير.")
             if not ads:
-                ip_rotator.rotate()
+                ip_rotator.rotate(url=rotate_url, token=rotate_token)
                 raise Blocked("batch returned nothing twice")
             if on_checkpoint:
                 on_checkpoint(idx + 1)

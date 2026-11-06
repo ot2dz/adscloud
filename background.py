@@ -47,7 +47,8 @@ def _queue_status_check(source: str):
 
 
 def _status_check_due(settings: dict) -> bool:
-    """Once per Algerian day, after the configured hour (default 03:00)."""
+    """Every ``status_check_interval_days`` Algerian days (default 1), after the
+    configured hour (default 03:00)."""
     from datetime import datetime as _dt
     from db import ALGERIA_TZ, algeria_today
     if settings.get("status_check_enabled", "true").lower() not in ("1", "true", "yes", "on"):
@@ -58,8 +59,16 @@ def _status_check_due(settings: dict) -> bool:
         hour = 3
     if _dt.now(ALGERIA_TZ).hour < hour:
         return False
-    if settings.get("status_check_last", "") == algeria_today().isoformat():
+    last = settings.get("status_check_last", "")
+    today = algeria_today()
+    if last == today.isoformat():
         return False
+    try:
+        interval = max(1, int(settings.get("status_check_interval_days", "1") or 1))
+        if last and (today - _dt.fromisoformat(last).date()).days < interval:
+            return False
+    except ValueError:
+        pass
     return not db.has_open_mode_job(STATUS_MODE)
 
 

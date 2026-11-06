@@ -10,6 +10,9 @@ This module is a thin, failure-proof client:
 - no-op when ``IP_ROTATE_URL`` is unset (deployments stay unchanged)
 - never raises: the scrape continues exactly as before on any error
 - debounced: a burst of blocks triggers a single rotation
+- per egress: pass ``url`` to drive another rotator; each URL keeps its own
+  lock and debounce. ``url=None`` means ``IP_ROTATE_URL``, ``url=""`` means no
+  rotator, so a dedicated egress can never rotate the default one by accident
 
 The agent answers ``202 {"accepted": true}`` immediately and re-dials a
 moment later, because the re-dial tears down the SSH tunnel that carries
@@ -27,48 +30,61 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
-_last_ok = 0.0
+_states: dict = {}
+_states_lock = threading.Lock()
 
 
-def _url() -> str:
+class _State:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.last_ok = 0.0
+
+
+def _state(url: str) -> _State:
+    with _states_lock:
+        return _states.setdefault(url, _State())
+
+
+def _url(url: "str | None" = None) -> str:
+    if url is not None:
+        return url.strip()
     return (os.environ.get("IP_ROTATE_URL") or "").strip()
 
 
-def enabled() -> bool:
+def enabled(url: "str | None" = None) -> bool:
     """True when a rotator endpoint is configured."""
-    return bool(_url())
+    return bool(_url(url))
 
 
-def rotate(timeout: float = 30.0, min_interval: float = 120.0) -> "dict | None":
+def rotate(timeout: float = 30.0, min_interval: float = 120.0,
+           url: "str | None" = None, token: "str | None" = None) -> "dict | None":
     """Ask the rotator to change the public IP. Returns the agent's JSON or None.
 
     ``min_interval=0`` forces a manual rotation (still bounded by the agent).
+    ``token`` is sent as ``X-Rotate-Token`` for rotators that require one.
     """
-    url = _url()
+    url = _url(url)
     if not url:
         return None
 
-    global _last_ok
-    with _lock:
-        if min_interval and _last_ok and (time.time() - _last_ok) < min_interval:
+    state = _state(url)
+    with state.lock:
+        if min_interval and state.last_ok and (time.time() - state.last_ok) < min_interval:
             logger.info("IP rotate skipped (debounce %ss)", min_interval)
             return None
         try:
-            req = urllib.request.Request(
-                url,
-                method="POST",
-                data=b"{}",
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-            )
+            headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            if token:
+                headers["X-Rotate-Token"] = token
+            req = urllib.request.Request(url, method="POST", data=b"{}", headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")
             data = json.loads(body or "{}")
             if data.get("accepted"):
-                _last_ok = time.time()
+                state.last_ok = time.time()
                 logger.warning("Public IP rotation started (agent working in background)")
             elif data.get("ok"):
-                _last_ok = time.time()
+                state.last_ok = time.time()
                 logger.warning(
                     "Public IP rotated: %s -> %s (%.1fs)",
                     data.get("old_ip"), data.get("new_ip"), float(data.get("seconds") or 0),
@@ -89,9 +105,9 @@ def rotate(timeout: float = 30.0, min_interval: float = 120.0) -> "dict | None":
             return None
 
 
-def status(timeout: float = 10.0) -> "dict | None":
+def status(timeout: float = 10.0, url: "str | None" = None) -> "dict | None":
     """Agent status (current IP, last rotation). None when unavailable."""
-    url = _url()
+    url = _url(url)
     if not url:
         return None
     try:

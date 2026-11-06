@@ -4,6 +4,8 @@
 - without a proxy: the server's own public IP
 - additionally reports the local rotator agent state (current home IP,
   last rotation) when IP_ROTATE_URL is configured.
+- with a dedicated status check proxy: the same report for that egress, under
+  ``status_check``.
 
 The answer is cached for a few seconds so the header can poll cheaply.
 """
@@ -15,7 +17,7 @@ import time
 
 from flask import Blueprint, jsonify
 
-from scrape_manager import _proxy_setting
+from scrape_manager import _proxy_setting, _status_egress
 from web.common import login_required
 
 import ip_rotator
@@ -48,6 +50,25 @@ def _probe(proxy_url: str | None) -> str:
         return (r.json() or {}).get("ip", "")
     except Exception:
         return (r.text or "").strip()
+
+
+def _status_check_egress() -> "dict | None":
+    """The status check egress, or None when it shares the scrape egress."""
+    proxy, rotate_url, _token = _status_egress()
+    if rotate_url is None:
+        return None
+    from meta_ads_collector.proxy_pool import parse_proxy, _redact_proxy
+
+    data = {"ok": True, "ip": None, "proxy": None, "error": None, "rotator": None}
+    try:
+        purl = parse_proxy(_first_proxy(proxy))
+        data["proxy"] = _redact_proxy(purl)
+        data["ip"] = _probe(purl)
+    except Exception as exc:  # noqa: BLE001
+        data["ok"] = False
+        data["error"] = str(exc)[:160]
+    data["rotator"] = ip_rotator.status(timeout=6, url=rotate_url)
+    return data
 
 
 @bp.route("/api/egress-ip/rotate", methods=["POST"])
@@ -93,6 +114,8 @@ def api_egress_ip():
         data["rotator"] = ip_rotator.status(timeout=6)
     except Exception:  # noqa: BLE001
         data["rotator"] = None
+
+    data["status_check"] = _status_check_egress()
 
     _CACHE["ts"], _CACHE["data"] = now, data
     return jsonify(data)
