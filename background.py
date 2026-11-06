@@ -286,6 +286,10 @@ def job_worker_loop() -> None:
                 mode=job.get("mode") or "",
                 languages=[x for x in (job.get("languages") or "").split(",") if x],
                 market=job.get("market") or "dz",
+                # Competitor scans (tracking tab, scan-all and the schedule)
+                # carry a target_id: route them through the dedicated status
+                # egress when one is configured.
+                egress="status" if job.get("target_id") else "scrape",
             )
             if not started:
                 db.release_job(jid)

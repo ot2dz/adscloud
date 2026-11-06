@@ -84,7 +84,7 @@ class ScrapeManager:
               on_checkpoint: Optional[Callable[[Optional[dict]], None]] = None,
               job_id: Optional[int] = None, base_count: int = 0,
               mode: str = "", languages: Optional[list] = None,
-              market: str = "dz") -> bool:
+              market: str = "dz", egress: str = "scrape") -> bool:
         """Start a scrape thread.
 
         ``resume`` is a checkpoint ``{"pass": n, "cursor": "..."}`` from an
@@ -106,7 +106,8 @@ class ScrapeManager:
             args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
             kwargs={"resume": resume, "on_checkpoint": on_checkpoint, "base_count": base_count,
                     "mode": mode, "month_languages": languages,
-                    "market": "global" if str(market).lower() == "global" else "dz"},
+                    "market": "global" if str(market).lower() == "global" else "dz",
+                    "egress": egress if egress in ("scrape", "status") else "scrape"},
             daemon=True)
         self.thread.start()
         return True
@@ -117,12 +118,20 @@ class ScrapeManager:
     def _run(self, query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope="impressions",
              resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0,
              mode: str = "", month_languages: Optional[list] = None,
-             market: str = "dz") -> None:
+             market: str = "dz", egress: str = "scrape") -> None:
         country = (country or DEFAULT_COUNTRY).strip().upper()
         market = "global" if str(market).lower() == "global" else "dz"
         # The foreign side tab keeps every language; the Algerian bank is Arabic.
         languages = [] if market == "global" else FIXED_LANGS
-        proxy_spec = _proxy_setting()
+        # Egress the scrape goes out from: the saved scrape proxy by default,
+        # or the dedicated status-check line (a competitor scan may be routed
+        # there so its heavy checking never burns the scrape IP).
+        if egress == "status":
+            proxy_spec, check_rot_url, check_rot_token = _status_egress()
+            rot_url, rot_token = check_rot_url, check_rot_token
+        else:
+            proxy_spec = _proxy_setting()
+            rot_url = rot_token = None
         seen_stores: set = set()
         seen_ad_ids: set = set()
         seen_collations: set = set()
@@ -300,6 +309,7 @@ class ScrapeManager:
                                content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
                                progress=progress, on_ad=on_ad, on_scanned=on_scanned,
                                should_stop=lambda: self.stop_event.is_set(), proxy=proxy_spec,
+                               rotate_url=rot_url, rotate_token=rot_token,
                                resume_cursor=(resume.get("cursor") if idx == start_pass else None),
                                on_checkpoint=make_checkpointer(idx))
                     if r.failed:
@@ -336,8 +346,9 @@ class ScrapeManager:
                     r = scrape(query=query, country=country, url=p["url"],
                                stores_only=False, progress=progress, on_ad=on_ad,
                                on_reported=on_reported, on_scanned=on_scanned,
-                               date_scope=date_scope, proxy=proxy_spec,
                                should_stop=lambda: self.stop_event.is_set(),
+                               date_scope=date_scope, proxy=proxy_spec,
+                               rotate_url=rot_url, rotate_token=rot_token,
                                resume_cursor=(resume.get("cursor") if idx == start_pass else None),
                                on_checkpoint=make_checkpointer(idx))
                     if r.failed:
@@ -360,6 +371,7 @@ class ScrapeManager:
                                 on_scanned=on_scanned,
                                 should_stop=lambda: self.stop_event.is_set(),
                                 date_scope=date_scope, proxy=proxy_spec,
+                                rotate_url=rot_url, rotate_token=rot_token,
                                 resume_cursor=resume.get("cursor"),
                                 on_checkpoint=make_checkpointer(1))
                 if result.reported_count is not None:

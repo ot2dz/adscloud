@@ -484,6 +484,8 @@ def scrape(
     proxy: Optional[str] = None,
     content_languages: Optional[list] = None,
     estimate: bool = True,
+    rotate_url: Optional[str] = None,
+    rotate_token: Optional[str] = None,
 ) -> ScrapeResult:
     """Collect ads for a keyword / page / domain / custom URL over HTTP.
 
@@ -574,9 +576,10 @@ def scrape(
         pause; without it, the classic paced pauses apply.
         """
         nonlocal block_pauses
-        if _AUTO_ROTATE and ip_rotator.enabled():
+        if _AUTO_ROTATE and ip_rotator.enabled(rotate_url):
             block_pauses += 1
-            if rotate_and_wait_ready(proxy, progress, should_stop):
+            if rotate_and_wait_ready(proxy, progress, should_stop,
+                                     rotate_url=rotate_url, rotate_token=rotate_token):
                 block_pauses = 0  # fresh IP = fresh block budget
                 return True
             block_pauses -= 1  # rotation unavailable: fall back to the pauses
@@ -705,16 +708,17 @@ def scrape(
                 break
             if attempt >= len(IN_RUN_RETRY_WAITS):
                 if _is_meta_block(exc):
-                    ip_rotator.rotate()  # leave a fresh IP for the queued retry
+                    ip_rotator.rotate(url=rotate_url, token=rotate_token)  # leave a fresh IP for the queued retry
                 logger.warning("HTTP scrape interrupted after %s retries: %s", attempt, exc)
                 progress(f"⏸ انقطع السحب بعد {attempt} محاولات: {exc} — سيُستأنف لاحقاً من نفس النقطة.")
                 res.interrupted = True
                 break
             if _is_meta_block(exc):
-                if _AUTO_ROTATE and ip_rotator.enabled():
-                    rotate_and_wait_ready(proxy, progress, should_stop)
+                if _AUTO_ROTATE and ip_rotator.enabled(rotate_url):
+                    rotate_and_wait_ready(proxy, progress, should_stop,
+                                          rotate_url=rotate_url, rotate_token=rotate_token)
                 else:
-                    ip_rotator.rotate()  # real Meta block: fresh IP helps
+                    ip_rotator.rotate(url=rotate_url, token=rotate_token)  # real Meta block: fresh IP helps
             # network/proxy failures just wait: rotating would drop the tunnel
             wait = IN_RUN_RETRY_WAITS[attempt]
             attempt += 1
