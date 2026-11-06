@@ -651,8 +651,14 @@ def _handle_update(token: str, owner: str, update: dict) -> None:
             _send(token, chat_id, "⚠️ " + html.escape(plan["error"]))
     if not valid:
         return
+    # Acknowledge at once: a single link used to stay silent until the scrape
+    # ended, which looked like the bot ignored it (the queue can wait hours
+    # behind a market scan).
     if len(valid) > 1:
-        _send(token, chat_id, f"⏳ سحب {len(valid)} صفحة/هدف...")
+        _send(token, chat_id, f"⏳ جاري السحب: {len(valid)} صفحة/هدف — النتيجة تصلك عند اكتمال كل واحدة.")
+    else:
+        leaf = str(valid[0].get("label") or valid[0].get("url") or "-")
+        _send(token, chat_id, f"⏳ جاري السحب: {html.escape(leaf[:90])} — النتيجة تصلك عند الاكتمال.")
     for plan in valid:
         _save_link_snapshot(plan)
         try:
