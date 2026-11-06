@@ -191,6 +191,13 @@ def api_telegram_test():
     chat_id = (cfg.get("telegram_chat_id") or s.get("telegram_chat_id") or "").strip()
     from notify import send_telegram_test
     ok, msg = send_telegram_test(token, chat_id)
+    try:
+        from telegram_bot import bot_diagnostics
+        extra = bot_diagnostics(token)
+        if extra:
+            msg = msg + extra
+    except Exception:  # noqa: BLE001
+        pass
     return jsonify({"ok": ok, "message": msg})
 
 

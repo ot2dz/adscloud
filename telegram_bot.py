@@ -597,25 +597,77 @@ def _watch_job(token: str, chat_id: str, job_id: int, plan: dict) -> None:
     _send_report(token, chat_id, job, plan)
 
 
+def _emit_log(text: str, key: str = "", every_s: float = 300.0) -> None:
+    """Surface bot state in the dashboard log panel (throttled, never fatal)."""
+    now = time.time()
+    if key:
+        if now - _LAST_EMIT.get(key, 0.0) < every_s:
+            return
+        _LAST_EMIT[key] = now
+    try:
+        manager._emit("log", {"text": text})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_LAST_EMIT: dict = {}
+
+
+def bot_diagnostics(token: str) -> str:
+    """One-line Telegram polling/webhook state for the settings test message."""
+    token = (token or "").strip()
+    if not token:
+        return ""
+    try:
+        with urllib.request.urlopen(
+                f"https://api.telegram.org/bot{token}/getWebhookInfo", timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        info = data.get("result") or {}
+        hook = str(info.get("url") or "")
+        pending = int(info.get("pending_update_count") or 0)
+        if hook:
+            return ("\n⚠️ يوجد <b>Webhook</b> مضبوط على البوت، ولهذا لا يستقبل الرسائل. "
+                    "احذفه (deleteWebhook) ليستقبل البوت من جديد.")
+        return f"\n✅ استقبال رسائل البوت جاهز (Webhook: لا يوجد، رسائل معلّقة: {pending})."
+    except Exception as exc:  # noqa: BLE001
+        return f"\n⚠️ تعذّر فحص حالة البوت: {html.escape(str(exc)[:80])}"
+
+
 def _handle_update(token: str, owner: str, update: dict) -> None:
     msg = update.get("message") or update.get("channel_post") or {}
     chat_id = str((msg.get("chat") or {}).get("id", ""))
     text = (msg.get("text") or msg.get("caption") or "").strip()
     if not chat_id or not text:
         return
-    if not owner:
-        _send(token, chat_id, "أضف <b>Chat ID</b> في إعدادات AdsCloud أولًا.")
-        return
-    if chat_id != owner:
-        logger.warning("telegram bot: ignored message from chat %s", chat_id)
-        return
-
     cmd = text.split()[0].lower()
-    if cmd in ("/start", "/help"):
-        _send(token, chat_id, HELP_TEXT)
-        return
+    is_owner = bool(owner) and chat_id == owner
+
+    # /id works from ANY chat: it shows the exact number to paste in Settings,
+    # which is the usual reason "the bot ignores me" (wrong chat id).
     if cmd == "/id":
         _send(token, chat_id, f"Chat ID: <code>{html.escape(chat_id)}</code>")
+        return
+    if cmd in ("/start", "/help") and not is_owner:
+        _send(token, chat_id,
+              "<b>AdsCloud Bot</b>\n"
+              f"Chat ID لهذه المحادثة: <code>{html.escape(chat_id)}</code>\n"
+              "إن لم يستجب البوت للروابط فضع هذا الرقم في إعدادات AdsCloud "
+              "← <b>Telegram Chat ID</b>.")
+        return
+    if not owner:
+        _send(token, chat_id,
+              "أضف <b>Chat ID</b> في إعدادات AdsCloud أولًا. أرسل /id لمعرفة رقم هذه المحادثة.")
+        return
+    if not is_owner:
+        logger.warning("telegram bot: ignored message from chat %s", chat_id)
+        _send(token, chat_id,
+              "هذه المحادثة غير مربوطة بالبوت.\n"
+              f"Chat ID لها: <code>{html.escape(chat_id)}</code>\n"
+              "ضع هذا الرقم في إعدادات AdsCloud ← Telegram Chat ID.")
+        return
+
+    if cmd in ("/start", "/help"):
+        _send(token, chat_id, HELP_TEXT)
         return
     if cmd == "/status":
         st = manager.state or {}
@@ -730,37 +782,84 @@ def follow_watch_loop() -> None:
         time.sleep(interval)
 
 
+_SLOW_UPDATE_LOCK = threading.BoundedSemaphore(1)
+
+
+def _process_update(token: str, owner: str, update: dict) -> None:
+    """Run one update off the polling thread.
+
+    A shared Facebook link can fetch pages + run a short scrape (tens of
+    seconds); doing that inline froze getUpdates, so /start and every later
+    message looked ignored. Commands stay instant; slow work is serialized.
+    """
+    try:
+        if update.get("callback_query"):
+            _handle_callback(token, owner, update["callback_query"])
+            return
+        msg = update.get("message") or update.get("channel_post") or {}
+        text = (msg.get("text") or msg.get("caption") or "").strip()
+        if text.startswith("/"):
+            _handle_update(token, owner, update)
+            return
+        with _SLOW_UPDATE_LOCK:
+            _handle_update(token, owner, update)
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram bot: update failed")
+
+
+def _saved_offset() -> int:
+    try:
+        return max(0, int(db.get_settings().get("telegram_last_update_id") or 0))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def telegram_bot_loop() -> None:
     """Long-poll Telegram and queue scrapes from the owner's share messages."""
-    offset = 0
+    offset = _saved_offset()
     webhook_cleared = False
+    announced = False
     while True:
         try:
             settings = db.get_settings()
             token = (settings.get("telegram_token") or "").strip()
             owner = (settings.get("telegram_chat_id") or "").strip()
             if not token:
+                _emit_log("⚠️ بوت تلجرام: لا يوجد Bot Token في الإعدادات.", key="tg_no_token")
                 time.sleep(60)
                 continue
             if not webhook_cleared:
                 try:
                     _api(token, "deleteWebhook", {"drop_pending_updates": "false"})
+                    webhook_cleared = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("telegram bot: deleteWebhook failed: %s", exc)
+            if not announced:
+                _emit_log("🤖 بوت تلجرام يعمل ويستقبل الرسائل (long polling).",
+                          key="tg_up", every_s=6 * 3600)
+                announced = True
+            data = _api(token, "getUpdates", {"offset": offset, "timeout": 25}, timeout=35)
+            updates = data.get("result") or []
+            for update in updates:
+                offset = max(offset, int(update.get("update_id", 0)) + 1)
+                threading.Thread(target=_process_update, args=(token, owner, update),
+                                 daemon=True).start()
+            if updates:
+                # Remember the last update so a redeploy does not re-run old links.
+                try:
+                    db.set_setting("telegram_last_update_id", str(offset))
                 except Exception:  # noqa: BLE001
                     pass
-                webhook_cleared = True
-            data = _api(token, "getUpdates", {"offset": offset, "timeout": 25}, timeout=35)
-            for update in data.get("result") or []:
-                offset = max(offset, int(update.get("update_id", 0)) + 1)
-                try:
-                    if update.get("callback_query"):
-                        _handle_callback(token, owner, update["callback_query"])
-                    else:
-                        _handle_update(token, owner, update)
-                except Exception:  # noqa: BLE001
-                    logger.exception("telegram bot: update failed")
         except urllib.error.HTTPError as exc:
             if exc.code == 409:
-                logger.warning("telegram bot: webhook conflict (delete the bot webhook)")
+                # A webhook or a second poller owns the updates: retry clearing.
+                webhook_cleared = False
+                logger.warning("telegram bot: 409 conflict (webhook or another poller)")
+                _emit_log("⚠️ بوت تلجرام: تعارض 409 — يوجد Webhook مضبوط أو نسخة ثانية "
+                          "من البوت تستقبل الرسائل. احذف الـ Webhook/النسخة المكررة.",
+                          key="tg409", every_s=600)
+            else:
+                logger.warning("telegram bot HTTP %s: %s", exc.code, exc)
             time.sleep(15)
         except Exception as exc:  # noqa: BLE001
             logger.warning("telegram bot loop: %s", exc)
