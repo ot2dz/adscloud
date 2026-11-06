@@ -311,15 +311,45 @@ def _save_link_snapshot(plan: dict) -> None:
             logger.exception("link snapshot save failed")
 
 
+def _ad_page_id_from_bank(ad_id: str) -> str:
+    """The Facebook page of a bank ad by its library id (same-platform ads)."""
+    try:
+        row = db._query_one(
+            f"SELECT page_id FROM meta_ads WHERE ad_id={db._ph()} "
+            f"AND (market IS NULL OR market = 'dz') LIMIT 1", (str(ad_id),))
+        pid = str((row or {}).get("page_id") or "")
+        return pid if pid.isdigit() else ""
+    except Exception:  # noqa: BLE001
+        logger.exception("ad -> page lookup failed")
+        return ""
+
+
 def _plan_for_url(url: str) -> dict:
     """Turn one URL into a scrape plan (no side effects)."""
     low = url.lower()
     if "facebook.com/ads/library" in low:
-        plan = {"kind": "link", "url": url, "label": "رابط مكتبة إعلانات"}
-        m = re.search(r"(?:view_all_page_id|page_id)=(\d{6,})", url)
+        m = re.search(r"(?:view_all_page_id|page_id)=(\d{6,})", low)
         if m:
-            plan["page_id"] = m.group(1)
-        return plan
+            return {"kind": "link", "url": url, "page_id": m.group(1),
+                    "label": "رابط مكتبة إعلانات"}
+        # A single-ad link (?id=...) has no page in the URL and the search
+        # engine cannot query by ad id alone: resolve the advertiser's page
+        # from our own bank, or hand the user a clear instruction.
+        m_ad = re.search(r"[?&]id=(\d{6,})", low)
+        if m_ad:
+            ad_id = m_ad.group(1)
+            pid = _ad_page_id_from_bank(ad_id)
+            if pid:
+                return {"kind": "page", "url": page_url(pid, DEFAULT_COUNTRY),
+                        "page_id": pid,
+                        "label": f"صفحة {pid} (صاحبة الإعلان {ad_id})"}
+            return {"error": "هذا رابط إعلان واحد ولم أجد الإعلان في بنكنا. "
+                             "أرسل رابط المنشور/الريل للإعلان، أو رابط مكتبة إعلانات "
+                             "يحتوي view_all_page_id (كل إعلانات الصفحة)، أو رقم الصفحة مباشرة."}
+        if re.search(r"[?&]q=", low):
+            return {"kind": "link", "url": url, "label": "رابط مكتبة إعلانات"}
+        return {"error": "رابط مكتبة إعلانات بلا بحث ولا صفحة ولا إعلان. "
+                         "أرسل رابطًا يحتوي view_all_page_id أو q أو id."}
     if any(h in low for h in FB_HOSTS):
         final, page_html = _share_html(url)
         stats = _reel_stats(page_html)
