@@ -289,14 +289,10 @@ function onStreamMessage(e) {
     liveScrapeState.scraped++;
     adCache[String(d.ad_id)] = d;
     updateLiveProgressUI();
-    // Show live ads only on page 1 of the "newest scraped" view, so a user
-    // reading another page is not shifted under their eyes.
-    adsTotal++;
-    if (!groupMode && adsPage === 1 && document.getElementById('sort-by').value === 'collected_at') {
-      ads.unshift(d); if (ads.length > adsPageSize) ads.pop(); renderAds();
-    }
-    renderAdsPager();
-    document.getElementById('ads-total').innerText = adsTotal;
+    // Only scrape counters change here. The visible list is refreshed from the
+    // server (same filters/sort/page) every few seconds, so nothing unfiltered
+    // is ever injected above the user's filtered results.
+    scheduleLiveRefresh();
   } else if (m.type === 'progress') {
     loadJobs();
     liveScrapeState.active = true;
@@ -322,6 +318,7 @@ function onStreamMessage(e) {
     if (d.reported) liveScrapeState.reported = d.reported;
     if (d.stores) liveScrapeState.stores = d.stores;
     updateLiveProgressUI();
+    scheduleLiveRefresh();  // flush the last batch of the run within ~4s
     const note = document.getElementById('live-status-note');
     if (d.status === 'interrupted') {
       note.innerText = `⏸ انقطع الاتصال بعد ${d.scraped} إعلان — التقدم محفوظ وسيُستأنف تلقائياً من نفس النقطة.`;

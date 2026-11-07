@@ -59,7 +59,79 @@ function renderAdsPager() {
   });
 }
 
+// ── Live scrape: quietly refresh the CURRENT filtered page ──
+// New ads stream over SSE while a scrape runs. Instead of injecting them into
+// the grid (which mixed unfiltered results into a filtered view), we ask the
+// server for the current filters/sort/page every few seconds and merge only
+// what is genuinely new.
+let liveRefreshTimer = null;
+let liveEpoch = 0;
+let liveDirty = false;
+
+function cancelLiveRefresh() {
+  liveEpoch++;                 // any in-flight live answer is now stale
+  liveDirty = false;
+  if (liveRefreshTimer) {
+    clearTimeout(liveRefreshTimer);
+    liveRefreshTimer = null;
+  }
+}
+
+function scheduleLiveRefresh() {
+  liveDirty = true;
+  if (liveRefreshTimer) return; // one refresh every ~4s, not one per ad
+  liveRefreshTimer = setTimeout(liveRefreshNow, 4000);
+}
+
+function prependLiveCards(fresh) {
+  const grid = document.getElementById('ads');
+  if (!grid || !fresh.length) return;
+  // Insert new cards above, but compensate the scroll so the viewport does
+  // not jump. Nothing is rebuilt, so an open modal or a playing video lives on.
+  const before = grid.scrollHeight;
+  grid.insertAdjacentHTML('afterbegin', fresh.map(a => adCardHtml(a)).join(''));
+  fresh.forEach(a => { adCache[String(a.ad_id)] = a; });
+  ads = [...fresh, ...ads].slice(0, adsPageSize);
+  while (grid.children.length > adsPageSize) grid.lastElementChild.remove();
+  const after = grid.scrollHeight;
+  if (after > before) window.scrollBy(0, after - before);
+}
+
+async function liveRefreshNow() {
+  liveRefreshTimer = null;
+  if (!liveDirty || !adsFilterKey) return;
+  liveDirty = false;
+  const epoch = liveEpoch;
+  const newestView = !groupMode && adsPage === 1 &&
+    document.getElementById('sort-by').value === 'collected_at';
+  const offset = newestView ? 0 : (adsPage - 1) * adsPageSize;
+  let d;
+  try {
+    const r = await fetch(`${adsFilterKey}&limit=${adsPageSize}&offset=${offset}`);
+    d = await r.json();
+  } catch (_e) {
+    return;
+  }
+  if (epoch !== liveEpoch) return; // filters/page changed: loadAds owns the view now
+  // The total comes from the server for the CURRENT filter (never +1 per ad).
+  adsTotal = d.total || 0;
+  document.getElementById('ads-total').innerText = adsTotal;
+  if (groupMode && d.total_ads != null) {
+    document.getElementById('ads-total-sub').innerText = `(من ${d.total_ads} إعلان)`;
+  }
+  renderAdsPager();
+  // Only on the newest-first page 1: prepend ads that are not displayed yet.
+  // Any other page/sort stays exactly as the user left it.
+  if (newestView) {
+    const existing = new Set(ads.map(a => String(a.ad_id)));
+    const fresh = (d.ads || []).filter(a => !existing.has(String(a.ad_id)));
+    if (fresh.length) prependLiveCards(fresh);
+  }
+  if (liveDirty) scheduleLiveRefresh();
+}
+
 async function loadAds(opts = {}) {
+  cancelLiveRefresh();
   const q = document.getElementById('search').value;
   const dmin = document.getElementById('start-date-min').value;
   const dmax = document.getElementById('start-date-max').value;
