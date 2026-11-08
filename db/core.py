@@ -367,6 +367,12 @@ class Database:
             ("heartbeat_at", "TEXT"),
             # 'dz' or 'global' (foreign market, manual scans only).
             ("market", "TEXT DEFAULT 'dz'"),
+            # Completeness check: Meta's own estimate at the start of the scan,
+            # ads Meta actually returned (before our filters, cumulative over
+            # resumed runs) and whether Meta said "no more pages" (NULL = n/a).
+            ("reported_count", "INTEGER"),
+            ("scanned_count", "INTEGER DEFAULT 0"),
+            ("completed", "INTEGER"),
         ]:
             try:
                 if self.is_postgres:
@@ -2174,13 +2180,33 @@ class Database:
         return job
 
     def finish_job(self, job_id: int, status: str = "done", result_count: int = 0,
-                   error: str = "", checkpoint: Optional[str] = None) -> None:
-        """Close a job. ``checkpoint`` is kept on failure so it can be resumed."""
+                   error: str = "", checkpoint: Optional[str] = None,
+                   scanned_count: Optional[int] = None, completed: Optional[bool] = None) -> None:
+        """Close a job. ``checkpoint`` is kept on failure so it can be resumed.
+
+        ``scanned_count`` / ``completed`` are only written when given, so
+        callers that do not track them leave the stored values untouched.
+        """
         p = self._ph()
-        self._execute(
-            f"UPDATE jobs SET status={p}, finished_at={p}, result_count={p}, error={p}, "
-            f"checkpoint={p}, retry_at=NULL WHERE id={p}",
-            (status, _now(), result_count, error, checkpoint, job_id))
+        sets = [f"status={p}", f"finished_at={p}", f"result_count={p}", f"error={p}",
+                f"checkpoint={p}", "retry_at=NULL"]
+        vals: list = [status, _now(), result_count, error, checkpoint]
+        if scanned_count is not None:
+            sets.append(f"scanned_count={p}")
+            vals.append(int(scanned_count))
+        if completed is not None:
+            sets.append(f"completed={p}")
+            vals.append(1 if completed else 0)
+        vals.append(job_id)
+        self._execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id={p}", tuple(vals))
+
+    def set_job_reported(self, job_id: int, reported_count: Optional[int]) -> None:
+        """Store Meta's estimated result count, as soon as it is known."""
+        if reported_count is None:
+            return
+        p = self._ph()
+        self._execute(f"UPDATE jobs SET reported_count={p} WHERE id={p}",
+                      (int(reported_count), job_id))
 
     def save_checkpoint(self, job_id: int, checkpoint: Optional[str],
                         result_count: Optional[int] = None) -> None:
@@ -2195,16 +2221,22 @@ class Database:
                 (checkpoint, _now(), result_count, job_id))
 
     def schedule_retry(self, job_id: int, delay_minutes: float, checkpoint: Optional[str],
-                       result_count: int = 0, error: str = "") -> None:
+                       result_count: int = 0, error: str = "",
+                       scanned_count: Optional[int] = None) -> None:
         """Put an interrupted job back in the queue, to resume after a delay."""
         from datetime import timedelta
         p = self._ph()
         retry_at = (datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)).isoformat()
+        extra, vals = "", [retry_at, checkpoint, result_count, error]
+        if scanned_count is not None:
+            extra = f", scanned_count={p}"
+            vals.append(int(scanned_count))
+        vals.append(job_id)
         self._execute(
             f"UPDATE jobs SET status='pending', worker_id=NULL, started_at=NULL, "
             f"attempts=COALESCE(attempts, 0) + 1, retry_at={p}, checkpoint={p}, "
-            f"result_count={p}, error={p} WHERE id={p}",
-            (retry_at, checkpoint, result_count, error, job_id))
+            f"result_count={p}, error={p}{extra} WHERE id={p}",
+            tuple(vals))
 
     def release_job(self, job_id: int) -> None:
         """Hand a claimed-but-not-started job back to the queue untouched."""

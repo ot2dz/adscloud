@@ -1,5 +1,30 @@
 // ── Jobs loop ──
 const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف' };
+// Below this share of Meta's estimate, a run that Meta "finished" most likely
+// hit Meta's pagination limit rather than the real end of the results.
+const JOB_COVERAGE_OK = 0.9;
+const fmtN = n => Number(n || 0).toLocaleString('en-US');
+
+// Meta estimate vs. what Meta really returned, and whether the run reached
+// the end. Empty for jobs that do not track it (old jobs, market scans).
+function jobCoverage(j) {
+  const reported = j.reported_count == null ? null : Number(j.reported_count);
+  const scanned = Number(j.scanned_count || 0);
+  const finished = ['done', 'stopped', 'failed'].includes(j.status);
+  if (reported == null && !scanned) return '';
+  const nums = `<span class="num">${reported != null ? 'Meta: ' + fmtN(reported) + ' · ' : ''}مفحوص: ${fmtN(scanned)} · محفوظ: ${fmtN(j.result_count)}</span>`;
+  let verdict = '';
+  if (finished && j.completed != null) {
+    if (Number(j.completed) !== 1) {
+      verdict = `<span class="text-amber-700">⚠️ لم يكتمل — توقف قبل نهاية النتائج</span>`;
+    } else if (reported && scanned < reported * JOB_COVERAGE_OK) {
+      verdict = `<span class="text-orange-700" title="Meta أوقفت الصفحات قبل الوصول لعددها التقديري">🟠 Meta توقفت عند ${fmtN(scanned)} من ${fmtN(reported)} (${Math.round(scanned / reported * 100)}%) — غالباً حد Meta</span>`;
+    } else {
+      verdict = `<span class="text-emerald-700">✅ اكتمل — Meta لم تعد تعطي نتائج</span>`;
+    }
+  }
+  return `<div class="text-[11px] text-slate-600 font-semibold flex flex-wrap gap-x-2">📊 ${nums}${verdict ? ' · ' + verdict : ''}</div>`;
+}
 async function loadJobs() {
   const r = await fetch('/api/jobs'); const d = await r.json();
   const el = document.getElementById('jobs');
@@ -30,6 +55,7 @@ async function loadJobs() {
         <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full bg-blue-600 animate-pulse" style="width:100%"></div></div>` : ''}
       ${j.status === 'pending' && j.retry_at ? `
         <div class="text-xs text-amber-700 font-semibold">⏸ انقطع بعد ${j.result_count || 0} إعلان · سيُستأنف من نفس النقطة ${new Date(j.retry_at).toLocaleTimeString('ar-DZ', {hour: '2-digit', minute: '2-digit'})} (محاولة ${j.attempts || 1})</div>` : ''}
+      ${jobCoverage(j)}
       ${j.status === 'failed' && j.error ? `
         <div class="text-xs text-rose-700 font-semibold truncate" title="${escT(j.error)}">⚠️ ${escT(j.error)}</div>` : ''}
     </div>`).join('');

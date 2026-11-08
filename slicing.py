@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Deep Search Sweeper: partition queries across calendar month slices
-to completely bypass Facebook's ~3,500-4,000 infinite scroll ceiling.
+Scan planning: split a search into date slices.
+
+Note: the old belief that Meta stops paginating after ~3,500-4,000 ads is
+NOT true today. Tested 2026-11-08: a plain keyword search for "التوصيل" (DZ)
+returned 29,929 of Meta's estimated 30,412 ads (98%) and Meta itself
+reported the end of the results. Slicing is therefore not needed to get past
+a page limit; check a job's coverage line (Meta estimate vs. scanned, and
+"completed") before assuming one exists. ``build_deep_passes`` (monthly
+Deep Sweep) is unused since the scrape panel redesign; ``build_day_passes``
+plans the whole-market scan.
 """
 from __future__ import annotations
 
@@ -160,7 +168,7 @@ def build_day_passes(start_date: str, end_date: str, languages: list[str]) -> li
     day first (today's ads are the most valuable and change the most).
 
     Meta's start-date window on a single day returns the ads launched that
-    day, so each pass is small and well under any pagination ceiling. The
+    day, so each pass is small and quick to resume or retry. The
     plan only depends on the job's stored dates, so it is identical when an
     interrupted job resumes days later.
     """

@@ -84,7 +84,8 @@ class ScrapeManager:
               on_checkpoint: Optional[Callable[[Optional[dict]], None]] = None,
               job_id: Optional[int] = None, base_count: int = 0,
               mode: str = "", languages: Optional[list] = None,
-              market: str = "dz", egress: str = "scrape") -> bool:
+              market: str = "dz", egress: str = "scrape",
+              base_reported: Optional[int] = None) -> bool:
         """Start a scrape thread.
 
         ``resume`` is a checkpoint ``{"pass": n, "cursor": "..."}`` from an
@@ -92,6 +93,8 @@ class ScrapeManager:
         every fully-processed page (``None`` once everything is done).
         ``base_count`` = ads already collected by earlier runs of the same
         job, so counters continue instead of restarting at zero.
+        ``base_reported`` = Meta's estimate saved by the first run (a resumed
+        run does not ask again), so the live bar keeps its total.
         """
         if self.state["running"]:
             return False
@@ -99,8 +102,8 @@ class ScrapeManager:
         while not self.events.empty():
             self.events.get_nowait()
         self.state.update({"running": True, "query": query or url, "scraped": base_count,
-                           "stored": 0, "stores": 0, "reported": None, "error": "",
-                           "log": [], "outcome": None, "job_id": job_id})
+                           "stored": 0, "stores": 0, "scanned": 0, "reported": base_reported,
+                           "error": "", "log": [], "outcome": None, "job_id": job_id})
         self.thread = threading.Thread(
             target=self._run,
             args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
@@ -139,7 +142,11 @@ class ScrapeManager:
         resume = resume if isinstance(resume, dict) else {}
         # Outcome read by the job runner: done | stopped | interrupted | failed.
         # Start from the incoming checkpoint so an immediate failure keeps it.
-        outcome = {"status": "done", "checkpoint": resume or None, "error": "", "scanned": 0, "ad_ids": []}
+        # "completed": True = Meta said there are no more pages, False = the
+        # run ended before that, None = not tracked (multi-slice modes).
+        outcome = {"status": "done", "checkpoint": resume or None, "error": "", "scanned": 0, "ad_ids": [],
+                   "completed": None}
+        job_id = self.state.get("job_id")
 
         # Whole-market scans embed their date window in the job label; the ad
         # tag stays clean so one ad carries "كل إعلانات السوق" instead of one
@@ -182,6 +189,12 @@ class ScrapeManager:
             if count is not None:
                 self.state["reported"] = count
                 self._emit("reported", {"reported": count, "query": query or url})
+                # Saved at once: an interrupted run resumes without re-asking.
+                if job_id:
+                    try:
+                        db.set_job_reported(int(job_id), count)
+                    except Exception:
+                        logger.exception("saving reported count failed")
 
         def on_scanned(n):
             self.state["scanned"] = n
@@ -376,6 +389,7 @@ class ScrapeManager:
                                 on_checkpoint=make_checkpointer(1))
                 if result.reported_count is not None:
                     self.state["reported"] = result.reported_count
+                outcome["completed"] = bool(result.completed)
                 absorb(result)
 
             # Never finish silently on an empty run: Meta answers HTTP 200 with

@@ -90,6 +90,13 @@ def _month_rescan_due(settings: dict) -> bool:
     return not db.has_open_mode_job(MONTH_MODE)
 
 
+def _auto_schedule_enabled() -> bool:
+    """AUTO_SCHEDULE=off (local testing) stops the scheduler from queueing
+    automatic jobs: daily status check, daily market re-scan and competitor
+    scans. Housekeeping (ad age, stale-job requeue) keeps running."""
+    return os.environ.get("AUTO_SCHEDULE", "on").strip().lower() not in ("0", "off", "false", "no")
+
+
 def scheduler_loop() -> None:
     from datetime import timedelta
     from db import algeria_today
@@ -109,6 +116,10 @@ def scheduler_loop() -> None:
             n = db.requeue_stale_jobs(minutes=20)
             if n:
                 manager.events.put({"type": "log", "data": {"text": f"♻️ أُعيد {n} أمر عالق إلى قائمة الانتظار."}})
+
+            if not _auto_schedule_enabled():
+                time.sleep(60)
+                continue
 
             s = db.get_settings()
             if _month_rescan_due(s):
@@ -248,6 +259,10 @@ def job_worker_loop() -> None:
             attempts = int(job.get("attempts") or 0)
             # Ads already collected by earlier (interrupted) runs of this job.
             base_count = int(job.get("result_count") or 0) if resume else 0
+            # Same for the ads Meta returned and its estimate (asked once, by
+            # the first run only).
+            base_scanned = int(job.get("scanned_count") or 0) if resume else 0
+            base_reported = job.get("reported_count") if resume else None
             d_min, d_max = job.get("start_date_min") or "", job.get("start_date_max") or ""
             logger.info("job %s: in-process scrape start (attempt %s, resume=%s)", jid, attempts + 1, resume)
             db.update_job_progress(jid, 1, "استئناف من آخر نقطة" if resume else "بدء السحب عبر HTTP")
@@ -290,6 +305,7 @@ def job_worker_loop() -> None:
                 # carry a target_id: route them through the dedicated status
                 # egress when one is configured.
                 egress="status" if job.get("target_id") else "scrape",
+                base_reported=int(base_reported) if base_reported is not None else None,
             )
             if not started:
                 db.release_job(jid)
@@ -311,6 +327,11 @@ def job_worker_loop() -> None:
             cp = outcome.get("checkpoint")
             cp_json = json.dumps(cp) if cp else None
             status = outcome.get("status")
+            scanned_total = base_scanned + int(outcome.get("scanned") or 0)
+            completed = outcome.get("completed")  # None = not tracked for this mode
+            reported = manager.state.get("reported")
+            summary = (f" (Meta: {reported} · مفحوص: {scanned_total})" if reported is not None
+                       else (f" (مفحوص: {scanned_total})" if scanned_total else ""))
 
             # A stop request that arrived while the run was finishing wins.
             try:
@@ -324,7 +345,7 @@ def job_worker_loop() -> None:
                 if attempts < len(JOB_RETRY_DELAYS_MIN):
                     delay = JOB_RETRY_DELAYS_MIN[attempts]
                     db.schedule_retry(jid, delay, cp_json, result_count=count,
-                                      error=outcome.get("error", ""))
+                                      error=outcome.get("error", ""), scanned_count=scanned_total)
                     manager._emit("paused", {
                         "job_id": jid, "scraped": count, "delay_min": delay,
                         "attempt": attempts + 1, "max_attempts": len(JOB_RETRY_DELAYS_MIN),
@@ -335,21 +356,29 @@ def job_worker_loop() -> None:
                     logger.info("job %s: interrupted, retry in %s min from %s", jid, delay, cp)
                 else:
                     db.finish_job(jid, status="failed", result_count=count,
-                                  error=outcome.get("error", ""), checkpoint=cp_json)
+                                  error=outcome.get("error", ""), checkpoint=cp_json,
+                                  scanned_count=scanned_total,
+                                  completed=False if completed is not None else None)
                     manager._emit("log", {"text": f"⛔ توقف السحب نهائياً بعد {attempts + 1} محاولات: {outcome.get('error', '')}"})
                     logger.warning("job %s: failed after %s attempts", jid, attempts + 1)
             elif status == "failed":
                 db.finish_job(jid, status="failed", result_count=count,
-                              error=outcome.get("error", ""), checkpoint=cp_json)
+                              error=outcome.get("error", ""), checkpoint=cp_json,
+                              scanned_count=scanned_total,
+                              completed=False if completed is not None else None)
                 manager._emit("log", {"text": f"⛔ فشلت المهمة #{jid}: {outcome.get('error', '')}"})
             elif status == "stopped":
-                db.finish_job(jid, status="stopped", result_count=count)
+                db.finish_job(jid, status="stopped", result_count=count,
+                              scanned_count=scanned_total,
+                              completed=False if completed is not None else None)
                 manager.state["error"] = ""
-                manager._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان."})
+                manager._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان{summary}."})
             else:
-                db.finish_job(jid, status="done", result_count=count)
-                logger.info("job %s: done (%s ads)", jid, count)
-                manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان."})
+                db.finish_job(jid, status="done", result_count=count,
+                              scanned_count=scanned_total, completed=completed)
+                logger.info("job %s: done (%s ads, scanned=%s, reported=%s, completed=%s)",
+                            jid, count, scanned_total, reported, completed)
+                manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان{summary}."})
                 if not resume:  # a resumed run only saw part of the page's ads
                     _snapshot_page_target(job, outcome)
                     _reconcile_target_scan(job, outcome, resumed=False)
@@ -510,6 +539,8 @@ def start_background_threads() -> None:
             logger.info("requeued %s job(s) left running by a previous process", n)
     except Exception:
         logger.exception("orphaned job requeue failed")
+    if not _auto_schedule_enabled():
+        logger.info("AUTO_SCHEDULE=off: no automatic jobs will be queued")
     threading.Thread(target=scheduler_loop, daemon=True).start()
     threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
