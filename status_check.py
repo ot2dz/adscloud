@@ -75,8 +75,15 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         on_checkpoint: Optional[Callable[[int], None]] = None,
         on_new_ad: Optional[Callable] = None, stats: Optional[dict] = None,
         fetch=active_ads_of_pages, sleep=time.sleep,
-        rotate_url: Optional[str] = None, rotate_token: Optional[str] = None) -> str:
-    """Check every page with active ads. Returns done | stopped | interrupted."""
+        rotate_url: Optional[str] = None, rotate_token: Optional[str] = None,
+        pages: Optional[list] = None, watch_returns: bool = False) -> str:
+    """Check every page with active ads. Returns done | stopped | interrupted.
+
+    ``pages`` replaces the default list (pages with active ads). With
+    ``watch_returns`` (winning products check) a batch is fetched even when
+    none of its pages has an ad marked active, and ``on_new_ad`` also gets the
+    ads we hold as stopped that Meta shows again, so a relaunch is noticed.
+    """
     stats = stats if stats is not None else {}
     for k in ("pages", "batches", "requests", "confirmed", "stopped", "new", "skipped_batches"):
         stats.setdefault(k, 0)
@@ -86,10 +93,11 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         stats["error"] = msg
         return "interrupted"
 
-    pages = db.status_check_pages()
+    pages = list(pages) if pages is not None else db.status_check_pages()
     batches = [pages[i:i + BATCH_PAGES] for i in range(0, len(pages), BATCH_PAGES)]
     stats["total_batches"] = len(batches)
-    progress(f"🔎 فحص حالة الإعلانات: {len(pages)} صفحة لها إعلانات نشطة = {len(batches)} دفعة (50 صفحة لكل طلب).")
+    what = "صفحة لمنتجات رابحة" if watch_returns else "صفحة لها إعلانات نشطة"
+    progress(f"🔎 فحص حالة الإعلانات: {len(pages)} {what} = {len(batches)} دفعة (50 صفحة لكل طلب).")
     if start_batch > 1:
         progress(f"↩️ استئناف من الدفعة {start_batch}/{len(batches)}.")
     # Two pages known to run many ads: one request, alive if either answers.
@@ -112,7 +120,7 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         if should_stop():
             return "stopped"
         ours = db.active_ads_of_pages(batch)
-        if not ours:
+        if not ours and not watch_returns:
             if on_checkpoint:
                 on_checkpoint(idx + 1)
             continue
@@ -176,7 +184,8 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         if on_new_ad:
             known = {str(r["ad_id"]) for r in ours}
             for a in ads:
-                if str(a.ad_id) not in known and a.store_domain and not db.ad_exists(a.ad_id):
+                if str(a.ad_id) not in known and a.store_domain and (
+                        watch_returns or not db.ad_exists(a.ad_id)):
                     known.add(str(a.ad_id))
                     if on_new_ad(a):
                         stats["new"] += 1

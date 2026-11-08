@@ -569,6 +569,7 @@ function adCardHtml(raw, opts = {}) {
           ${a.link_url ? `<a href="${a.link_url}" target="_blank" rel="noopener" title="فتح المتجر" class="${iconBtn}">🛒</a>` : ''}
           <a href="${adFbUrl}" target="_blank" rel="noopener" title="فتح الإعلان في مكتبة الإعلانات" class="${iconBtn}">↗</a>
           <button type="button" data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" title="نسخ النص" class="${iconBtn}">📋</button>
+          ${winStarHtml(raw, iconBtn)}
           ${a.page_id ? `<button type="button" data-page="${a.page_id}" data-name="${a.page_name || ''}" onclick="trackPage(this.dataset.page, this.dataset.name)" title="تتبع الصفحة" class="${iconBtn}">👁️</button>`
             : (a.store_domain ? `<button type="button" data-domain="${a.store_domain}" onclick="trackDomain(this.dataset.domain)" title="تتبع المتجر" class="${iconBtn}">👁️</button>` : '')}
         </div>

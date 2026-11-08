@@ -31,6 +31,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _json_or_empty(raw) -> dict:
+    """ad_events.detail as a dict ({} when empty or not JSON)."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        val = json.loads(raw or "{}")
+        return val if isinstance(val, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 # Algeria is UTC+1 all year (no daylight saving), so a fixed offset is exact
 # and needs no tz database in the container.
 ALGERIA_TZ = timezone(timedelta(hours=1))
@@ -492,6 +503,29 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_niches_niche ON ad_niches (niche_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_niches_ad ON ad_niches (ad_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_niche ON meta_ads (primary_niche)")
+        # Winning products: a product (same advertiser + same product page =
+        # product_key) a user saved to follow, with personal notes. Its ads,
+        # status and launch/stop history come from meta_ads / ad_events.
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS winning_products (
+            id {idcol},
+            user_id INTEGER NOT NULL,
+            product_key TEXT NOT NULL,
+            ad_id TEXT,
+            page_id TEXT,
+            page_name TEXT,
+            store_domain TEXT,
+            link_url TEXT,
+            body TEXT,
+            notes TEXT DEFAULT '',
+            stage TEXT DEFAULT 'watching',
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE (user_id, product_key)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_winning_pkey ON winning_products (product_key)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_events_pkey ON ad_events (product_key)")
         # Seed/refresh the taxonomy from code (idempotent by slug).
         try:
             p = "%s" if self.is_postgres else "?"
@@ -2469,6 +2503,158 @@ class Database:
         return self._query_one(f"SELECT 1 AS x FROM user_targets WHERE user_id={p} AND target_id={p}",
                                (int(user_id), int(target_id))) is not None
 
+    # ── winning products (saved by a user, followed every 12 h) ───────────
+    WINNING_STAGES = ("watching", "testing", "ordered", "dropped")
+
+    def add_winning_product(self, user_id: int, ad_id: str) -> Optional[dict]:
+        """Save the product of ``ad_id`` for ``user_id`` (idempotent).
+
+        A product is every ad of the same advertiser for the same product
+        page (product_key). Returns the saved row, or None if the ad is unknown.
+        """
+        p = self._ph()
+        ad = self._query_one(
+            f"SELECT ad_id, product_key, page_id, page_name, store_domain, link_url, body "
+            f"FROM meta_ads WHERE ad_id={p}", (str(ad_id),))
+        if not ad:
+            return None
+        pkey = str(ad.get("product_key") or "")
+        if not pkey:
+            from store_filter import product_key
+            pkey = product_key(str(ad.get("page_id") or ""), ad.get("link_url") or "",
+                               ad.get("body") or "", ad.get("store_domain") or "")
+        now = _now()
+        self._execute(
+            f"INSERT INTO winning_products (user_id, product_key, ad_id, page_id, page_name, "
+            f"store_domain, link_url, body, notes, stage, created_at, updated_at) "
+            f"VALUES ({', '.join([p] * 12)}) ON CONFLICT (user_id, product_key) DO NOTHING",
+            (int(user_id), pkey, str(ad["ad_id"]), str(ad.get("page_id") or ""),
+             str(ad.get("page_name") or ""), str(ad.get("store_domain") or ""),
+             str(ad.get("link_url") or ""), str(ad.get("body") or "")[:2000], "", "watching", now, now))
+        return self._query_one(f"SELECT * FROM winning_products WHERE user_id={p} AND product_key={p}",
+                               (int(user_id), pkey))
+
+    def get_winning_product(self, wid: int) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM winning_products WHERE id={self._ph()}", (int(wid),))
+
+    def update_winning_product(self, wid: int, notes: Optional[str] = None,
+                               stage: Optional[str] = None) -> None:
+        p = self._ph()
+        sets, vals = [f"updated_at={p}"], [_now()]
+        if notes is not None:
+            sets.append(f"notes={p}")
+            vals.append(str(notes)[:4000])
+        if stage is not None and stage in self.WINNING_STAGES:
+            sets.append(f"stage={p}")
+            vals.append(stage)
+        vals.append(int(wid))
+        self._execute(f"UPDATE winning_products SET {', '.join(sets)} WHERE id={p}", tuple(vals))
+
+    def remove_winning_product(self, wid: int) -> None:
+        self._execute(f"DELETE FROM winning_products WHERE id={self._ph()}", (int(wid),))
+
+    def winning_product_keys(self, user_id: int) -> dict[str, int]:
+        """{product_key: saved id} of one user's winning products."""
+        rows = self._query(f"SELECT id, product_key FROM winning_products WHERE user_id={self._ph()}",
+                           (int(user_id),))
+        return {r["product_key"]: int(r["id"]) for r in rows}
+
+    def winning_pages(self) -> list[str]:
+        """Pages of every saved product, active or not: a stopped product's
+        page must keep being checked so a relaunch is noticed."""
+        rows = self._query("SELECT DISTINCT page_id FROM winning_products "
+                           "WHERE page_id IS NOT NULL AND page_id <> '' ORDER BY page_id")
+        return [str(r["page_id"]) for r in rows]
+
+    def list_winning_products(self, user_id: Optional[int] = None) -> list[dict]:
+        """Saved products with their live numbers (None = every user's)."""
+        p = self._ph()
+        where, params = ("WHERE w.user_id = " + p, (int(user_id),)) if user_id is not None else ("", ())
+        rows = self._query(
+            f"SELECT w.*, u.email AS owner_email FROM winning_products w "
+            f"LEFT JOIN users u ON u.id = w.user_id {where} ORDER BY w.created_at DESC", params)
+        keys = sorted({r["product_key"] for r in rows})
+        if not keys:
+            return rows
+        in_list = ", ".join([p] * len(keys))
+        stats = {r["product_key"]: r for r in self._query(
+            f"SELECT product_key, COUNT(*) AS total_ads, "
+            f"SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_ads, "
+            f"MIN(start_date) AS first_launch, MAX(start_date) AS last_launch, "
+            f"MAX(days_active) AS max_days, MAX(COALESCE(stopped_at, last_seen_active)) AS last_seen, "
+            f"MAX(status_checked_at) AS checked_at "
+            f"FROM meta_ads WHERE product_key IN ({in_list}) GROUP BY product_key", tuple(keys))}
+        # Picture: the newest running ad's image, else the newest ad's.
+        images: dict = {}
+        for r in self._query(
+                f"SELECT product_key, preview_image_url FROM meta_ads WHERE product_key IN ({in_list}) "
+                f"AND preview_image_url IS NOT NULL AND preview_image_url <> '' "
+                f"ORDER BY is_active DESC, start_date DESC", tuple(keys)):
+            images.setdefault(r["product_key"], r["preview_image_url"])
+        week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        recent: dict = {}
+        last_event: dict = {}
+        for e in self._query(
+                f"SELECT product_key, event, event_at, detail FROM ad_events "
+                f"WHERE product_key IN ({in_list}) ORDER BY event_at DESC, id DESC", tuple(keys)):
+            k = e["product_key"]
+            if k not in last_event:
+                last_event[k] = {"event": e["event"], "event_at": e["event_at"],
+                                 "detail": _json_or_empty(e.get("detail"))}
+            if str(e.get("event_at") or "") >= week_ago:
+                c = recent.setdefault(k, {"launched": 0, "stopped": 0, "resumed": 0})
+                if e["event"] in c:
+                    c[e["event"]] += 1
+        out = []
+        for r in rows:
+            k = r["product_key"]
+            s = stats.get(k) or {}
+            item = dict(r)
+            item.update({
+                "total_ads": int(s.get("total_ads") or 0),
+                "active_ads": int(s.get("active_ads") or 0),
+                "first_launch": s.get("first_launch") or "",
+                "last_launch": s.get("last_launch") or "",
+                "max_days": int(s.get("max_days") or 0),
+                "last_seen": s.get("last_seen") or "",
+                "checked_at": s.get("checked_at") or "",
+                "image": images.get(k, ""),
+                "last_event": last_event.get(k),
+                "week": recent.get(k, {"launched": 0, "stopped": 0, "resumed": 0}),
+            })
+            out.append(item)
+        return out
+
+    def winning_product_events(self, pkey: str, limit: int = 60) -> list[dict]:
+        p = self._ph()
+        rows = self._query(
+            f"SELECT id, ad_id, event, event_at, detail FROM ad_events WHERE product_key={p} "
+            f"ORDER BY event_at DESC, id DESC LIMIT {int(limit)}", (pkey,))
+        for r in rows:
+            r["detail"] = _json_or_empty(r.get("detail"))
+        return rows
+
+    def max_ad_event_id(self) -> int:
+        row = self._query_one("SELECT MAX(id) AS m FROM ad_events")
+        return int((row or {}).get("m") or 0)
+
+    def winning_events_after(self, last_id: int, limit: int = 1000) -> list[dict]:
+        """Events of saved products newer than ``last_id`` (oldest first)."""
+        p = self._ph()
+        rows = self._query(
+            f"SELECT id, product_key, ad_id, event, event_at, detail, page_name, store_domain, "
+            f"link_url, body FROM ad_events WHERE id > {p} AND product_key IN "
+            f"(SELECT product_key FROM winning_products) ORDER BY id LIMIT {int(limit)}",
+            (int(last_id),))
+        for r in rows:
+            r["detail"] = _json_or_empty(r.get("detail"))
+        return rows
+
+    def product_active_count(self, pkey: str) -> int:
+        row = self._query_one(
+            f"SELECT COUNT(*) AS c FROM meta_ads WHERE product_key={self._ph()} AND is_active = 1", (pkey,))
+        return int((row or {}).get("c") or 0)
+
     def delete_target_everywhere(self, target_id: int) -> None:
         """Remove a competitor for everyone (and its page history)."""
         t = self.get_target(target_id)
@@ -2925,6 +3111,7 @@ class Database:
         for row in self._query(f"SELECT target_id FROM user_targets WHERE user_id = {p}", (int(user_id),)):
             self.remove_user_target(int(user_id), int(row["target_id"]))
         self._execute(f"DELETE FROM user_pages WHERE user_id = {p}", (int(user_id),))
+        self._execute(f"DELETE FROM winning_products WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM user_sessions WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM api_tokens WHERE user_id = {p}", (int(user_id),))
         self._execute(f"DELETE FROM users WHERE id = {p}", (int(user_id),))

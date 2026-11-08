@@ -25,6 +25,7 @@ MONTH_MODE = "month_days"
 MONTH_LANGS = ["ar"]      # Arabic-language ads only
 MARKET_WILDCARD = '" "'   # Meta exact-phrase wildcard: matches every ad
 STATUS_MODE = "status_check"  # daily "is it still running?" check (status_check.py)
+WINNING_MODE = "winning_check"  # every 12 h: pages of the saved winning products
 
 SCRAPE_ENABLED = os.environ.get("SCRAPE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
@@ -258,8 +259,12 @@ class ScrapeManager:
         try:
             self._emit("started", {"query": query or url, "country": country})
 
-            if mode == STATUS_MODE:
+            if mode in (STATUS_MODE, WINNING_MODE):
+                # Same safe page-batch check; the winning-products variant
+                # covers the saved products' pages (stopped ones too) and
+                # records ads that come back (relaunch / resume).
                 import status_check
+                winning = mode == WINNING_MODE
                 st = {}
 
                 def save_new(a):
@@ -286,15 +291,18 @@ class ScrapeManager:
                         db, progress=progress, should_stop=lambda: self.stop_event.is_set(),
                         proxy=check_proxy, start_batch=max(1, int(resume.get("pass") or 1)),
                         on_checkpoint=status_cp, on_new_ad=save_new, stats=st,
-                        rotate_url=rotate_url, rotate_token=rotate_token)
+                        rotate_url=rotate_url, rotate_token=rotate_token,
+                        pages=db.winning_pages() if winning else None, watch_returns=winning)
                 except status_check.Blocked as exc:
                     outcome.update(status="interrupted", error=f"Meta لا تُرجع نتائج (حجب مؤقت؟) — لم يُعلَّم أي إعلان: {exc}")
                     progress("⏸ " + outcome["error"])
                 self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
                 st["finished_at"] = datetime.now(timezone.utc).isoformat()
                 st["status"] = outcome["status"]
-                db.set_setting("status_check_summary", json.dumps(st, ensure_ascii=False))
-                progress(f"🏁 فحص الحالة: {st.get('confirmed', 0)} نشط مؤكد، {st.get('stopped', 0)} توقف، "
+                db.set_setting("winning_check_summary" if winning else "status_check_summary",
+                               json.dumps(st, ensure_ascii=False))
+                progress(f"🏁 {'فحص المنتجات الرابحة' if winning else 'فحص الحالة'}: "
+                         f"{st.get('confirmed', 0)} نشط مؤكد، {st.get('stopped', 0)} توقف، "
                          f"{st.get('new', 0)} إعلان جديد، {st.get('requests', 0)} طلب.")
 
             elif mode == MONTH_MODE:
@@ -371,7 +379,7 @@ class ScrapeManager:
             # Never finish silently on an empty run: Meta answers HTTP 200 with
             # zero results when the egress IP is soft-blocked, which looks like
             # "success" but means nothing was collected.
-            if ((base_count + len(seen_ad_ids)) == 0 and mode != STATUS_MODE
+            if ((base_count + len(seen_ad_ids)) == 0 and mode not in (STATUS_MODE, WINNING_MODE)
                     and outcome.get("status") not in ("stopped", "failed")
                     and not self.stop_event.is_set()):
                 reported = self.state.get("reported")

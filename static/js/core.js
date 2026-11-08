@@ -79,12 +79,16 @@ function loadDashboardData() {
   loadKeywordChips();
   loadNicheChips();
   loadServerLogs();
+  loadWinningKeys();
   if (isAdmin()) {
     loadTargets();
     loadJobs();
     loadAdminUserFilter();
     startEventStream();
   }
+  // Deep link from Telegram alerts: /?tab=winning
+  const tab = new URLSearchParams(location.search).get('tab');
+  if (tab === 'winning') showTab('winning');
 }
 
 // Admin: whose data to show ('' = everyone). Regular users are always scoped server-side.
@@ -382,11 +386,12 @@ function escT(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&am
 // ── Tab switcher ──
 function showTab(t) {
   if (t === 'tracked') t = 'targets';  // old tab merged into competitors
-  ['ads','targets','stores','global','jobs','settings','users'].forEach(v => {
+  const views = ['ads','targets','winning','stores','global','jobs','settings','users'];
+  views.forEach(v => {
     const el = document.getElementById('view-'+v);
     if (el) el.classList.toggle('hidden', t!==v);
   });
-  ['ads','targets','stores','global','jobs','settings','users'].forEach(v => {
+  views.forEach(v => {
     const btn = document.getElementById('tab-'+v);
     if (btn) {
       if (t === v) {
@@ -399,6 +404,7 @@ function showTab(t) {
   });
   if (t === 'ads') { loadKeywordChips(); loadNicheChips(); }
   if (t === 'targets') loadTargets();
+  if (t === 'winning') loadWinning();
   if (t === 'stores') loadStores();
   if (t === 'global') loadGlobal();
   if (t === 'jobs') loadJobs();

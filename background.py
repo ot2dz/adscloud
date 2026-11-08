@@ -9,7 +9,8 @@ from typing import Optional
 from db import db
 from pages import resolve_target_url
 from scrape_manager import (
-    manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, _proxy_setting,
+    manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, WINNING_MODE,
+    _proxy_setting,
 )
 from telegram_bot import follow_watch_loop, telegram_bot_supervisor
 
@@ -44,6 +45,50 @@ def _queue_status_check(source: str):
     job_wakeup.set()
     manager._emit("log", {"text": "🔎 أُضيف فحص حالة الإعلانات" + (" إلى قائمة الانتظار." if busy else ".")})
     return job_id, busy
+
+
+WINNING_CHECK_HOURS = float(os.environ.get("WINNING_CHECK_HOURS", "12") or 12)
+WINNING_NOTIFY_EVERY_SEC = 120
+
+
+def _queue_winning_check(source: str):
+    """Queue the winning-products check. Returns (job_id, queued_behind)."""
+    busy = bool(manager.state.get("running")) or db.has_pending_jobs()
+    job_id = db.create_job(query="فحص المنتجات الرابحة (إطلاق / إيقاف)", country=DEFAULT_COUNTRY,
+                           stores_only=True, source=source, mode=WINNING_MODE)
+    job_wakeup.set()
+    manager._emit("log", {"text": "🏆 أُضيف فحص المنتجات الرابحة" + (" إلى قائمة الانتظار." if busy else ".")})
+    return job_id, busy
+
+
+def _winning_check_due(settings: dict) -> bool:
+    """Every WINNING_CHECK_HOURS (default 12) while products are saved."""
+    if not db.winning_pages():
+        return False
+    last = (settings.get("winning_check_last") or "").strip()
+    if last:
+        try:
+            age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 3600
+            if age_h < WINNING_CHECK_HOURS:
+                return False
+        except ValueError:
+            pass
+    return not db.has_open_mode_job(WINNING_MODE)
+
+
+def winning_notify_loop() -> None:
+    """Telegram alerts for saved products, a couple of minutes after any
+    scan records a launch, stop or resume."""
+    import winning
+    time.sleep(30)
+    while True:
+        try:
+            n = winning.notify_new_events(db)
+            if n:
+                logger.info("winning products: %s Telegram alert(s) sent", n)
+        except Exception:
+            logger.exception("winning notify failed")
+        time.sleep(WINNING_NOTIFY_EVERY_SEC)
 
 
 def _status_check_due(settings: dict) -> bool:
@@ -129,6 +174,9 @@ def scheduler_loop() -> None:
             if _status_check_due(s):
                 _queue_status_check("daily")
                 db.set_setting("status_check_last", today_dz.isoformat())
+            if _winning_check_due(s):
+                _queue_winning_check("schedule")
+                db.set_setting("winning_check_last", datetime.now(timezone.utc).isoformat())
             if s.get("schedule_enabled", "true").lower() in ("1", "true", "yes", "on"):
                 targets = [t for t in db.list_targets(market="dz") if t.get("enabled")]
                 now_utc = datetime.now(timezone.utc)
@@ -548,6 +596,7 @@ def start_background_threads() -> None:
     if os.environ.get("TELEGRAM_BOT", "on").strip().lower() not in ("0", "off", "false", "no"):
         threading.Thread(target=telegram_bot_supervisor, daemon=True).start()
         threading.Thread(target=follow_watch_loop, daemon=True).start()
+        threading.Thread(target=winning_notify_loop, daemon=True).start()
     else:
         try:
             manager._emit("log", {"text": "⚠️ بوت تلجرام معطّل (TELEGRAM_BOT=off) — لن يستقبل رسائل."})

@@ -1,0 +1,21 @@
+  <!-- VIEW: WINNING PRODUCTS -->
+  <section id="view-winning" class="hidden space-y-4">
+    <div class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 class="text-lg font-extrabold text-[#102a56]">🏆 المنتجات الرابحة</h2>
+          <p class="text-xs text-slate-500 font-semibold mt-1 leading-relaxed">
+            احفظ أي منتج من زر ⭐ في بطاقة الإعلان. يُفحص كل 12 ساعة، وتصلك رسالة تيليغرام عندما يطلق المنافس إعلاناً جديداً له أو يوقفه أو يعيد إطلاقه.
+          </p>
+          <p id="winning-check-info" class="text-[11px] text-slate-400 font-semibold mt-1"></p>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <select id="winning-stage-filter" onchange="renderWinning()" class="text-xs bg-white text-slate-700 font-bold rounded-lg px-3 py-2 border border-[#b7c9e2]">
+            <option value="">كل الحالات</option>
+          </select>
+          <button id="winning-check-btn" data-admin-only onclick="checkWinningNow(this)" class="hidden text-xs px-3.5 py-2 rounded-lg bg-[#174ea6] hover:bg-[#123f87] text-white font-bold transition">🔎 افحص الآن</button>
+        </div>
+      </div>
+    </div>
+    <div id="winning-list" class="grid gap-4 md:grid-cols-2"></div>
+  </section>
