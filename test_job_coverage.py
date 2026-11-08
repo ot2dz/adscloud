@@ -87,5 +87,55 @@ class ManagerOutcomeTest(unittest.TestCase):
         self.assertFalse(m.state["outcome"]["completed"])
 
 
+class MarketSlicesTest(unittest.TestCase):
+    """Whole-market scan: 3 days x 1 language = 3 slices."""
+
+    def setUp(self):
+        patches = [mock.patch.object(scrape_manager, "db", mock.MagicMock()),
+                   mock.patch.object(scrape_manager, "_proxy_setting", lambda: "")]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _run(self, results, resume=None):
+        replies = iter(results)
+
+        def fake_scrape(*a, **k):
+            r = next(replies)
+            if r.completed:
+                k["on_checkpoint"](None)  # the engine closes a finished slice
+            return r
+
+        m = scrape_manager.ScrapeManager()
+        with mock.patch.object(scrape_manager, "scrape", fake_scrape):
+            m.start("سوق", mode=scrape_manager.MONTH_MODE, start_date_min="2026-11-01",
+                    start_date_max="2026-11-03", languages=["ar"], resume=resume, job_id=1)
+            m.thread.join(10)
+        return m.state["outcome"]
+
+    def test_all_slices_reach_the_end(self):
+        out = self._run([ScrapeResult(completed=True, scanned=10)] * 3)
+        self.assertEqual((out["slices_ok"], out["slices_total"], out["completed"]), (3, 3, True))
+        self.assertEqual(out["scanned"], 30)
+        self.assertEqual(out["checkpoint"], {"pass": 4, "cursor": None, "ok": 3})
+
+    def test_a_failed_slice_is_skipped_and_counted_missing(self):
+        out = self._run([ScrapeResult(completed=True, scanned=5),
+                         ScrapeResult(failed=True, error="boom", scanned=2),
+                         ScrapeResult(completed=True, scanned=5)])
+        self.assertEqual((out["slices_ok"], out["completed"]), (2, False))
+        self.assertEqual(out["scanned"], 12)
+
+    def test_resume_carries_the_ok_count(self):
+        # Slice 1 missed in an earlier run; resume at slice 3.
+        out = self._run([ScrapeResult(completed=True, scanned=1)],
+                        resume={"pass": 3, "cursor": None, "ok": 1})
+        self.assertEqual((out["slices_ok"], out["completed"]), (2, False))
+
+    def test_old_checkpoint_without_ok_assumes_earlier_slices_finished(self):
+        out = self._run([ScrapeResult(completed=True, scanned=1)], resume={"pass": 3, "cursor": None})
+        self.assertEqual((out["slices_ok"], out["completed"]), (3, True))
+
+
 if __name__ == "__main__":
     unittest.main()

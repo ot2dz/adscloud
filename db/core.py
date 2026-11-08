@@ -373,6 +373,10 @@ class Database:
             ("reported_count", "INTEGER"),
             ("scanned_count", "INTEGER DEFAULT 0"),
             ("completed", "INTEGER"),
+            # Whole-market scans: slices planned and slices that reached
+            # Meta's end (NULL for single searches).
+            ("slices_total", "INTEGER"),
+            ("slices_ok", "INTEGER"),
         ]:
             try:
                 if self.is_postgres:
@@ -2106,7 +2110,7 @@ class Database:
 
     def create_job(self, query: str, country: str = "DZ", exact_phrase: bool = False,
                    stores_only: bool = False, sort_mode: str = "total_impressions",
-                   source: str = "manual", url: str = "", sweep: bool = False,
+                   source: str = "manual", url: str = "",
                    target_id: Optional[int] = None, incremental: bool = False,
                    start_date_min: str = "", start_date_max: str = "",
                    date_scope: str = "impressions", mode: str = "", languages: str = "",
@@ -2115,10 +2119,10 @@ class Database:
         conn = self._connect()
         try:
             cur = conn.cursor()
-            cols = ("query", "url", "country", "exact_phrase", "stores_only", "sweep",
+            cols = ("query", "url", "country", "exact_phrase", "stores_only",
                     "sort_mode", "status", "source", "created_at", "target_id", "incremental",
                     "start_date_min", "start_date_max", "date_scope", "mode", "languages", "market")
-            vals = (query, url, country, int(exact_phrase), int(stores_only), int(sweep),
+            vals = (query, url, country, int(exact_phrase), int(stores_only),
                     sort_mode, "pending", source, _now(), target_id, int(incremental),
                     start_date_min, start_date_max, date_scope or "impressions", mode or "", languages or "",
                     "global" if str(market).lower() == "global" else "dz")
@@ -2181,11 +2185,12 @@ class Database:
 
     def finish_job(self, job_id: int, status: str = "done", result_count: int = 0,
                    error: str = "", checkpoint: Optional[str] = None,
-                   scanned_count: Optional[int] = None, completed: Optional[bool] = None) -> None:
+                   scanned_count: Optional[int] = None, completed: Optional[bool] = None,
+                   slices_total: Optional[int] = None, slices_ok: Optional[int] = None) -> None:
         """Close a job. ``checkpoint`` is kept on failure so it can be resumed.
 
-        ``scanned_count`` / ``completed`` are only written when given, so
-        callers that do not track them leave the stored values untouched.
+        The coverage fields (scanned / completed / slices) are only written
+        when given, so callers that do not track them leave them untouched.
         """
         p = self._ph()
         sets = [f"status={p}", f"finished_at={p}", f"result_count={p}", f"error={p}",
@@ -2197,6 +2202,10 @@ class Database:
         if completed is not None:
             sets.append(f"completed={p}")
             vals.append(1 if completed else 0)
+        for col, val in (("slices_total", slices_total), ("slices_ok", slices_ok)):
+            if val is not None:
+                sets.append(f"{col}={p}")
+                vals.append(int(val))
         vals.append(job_id)
         self._execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id={p}", tuple(vals))
 

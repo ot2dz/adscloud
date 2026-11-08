@@ -458,7 +458,6 @@ def _queue(plan: dict) -> int:
         country=DEFAULT_COUNTRY,
         exact_phrase=False,
         stores_only=True,
-        sweep=False,
         sort_mode="total_impressions",
         source="manual",
         date_scope="impressions",

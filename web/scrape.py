@@ -112,7 +112,7 @@ def api_start():
     busy = bool(manager.state.get("running")) or db.has_pending_jobs()
     job_id = db.create_job(
         query=query, url=url, country=country, exact_phrase=exact, stores_only=True,
-        sweep=False, sort_mode=sort_mode, source="manual",
+        sort_mode=sort_mode, source="manual",
         start_date_min=d_min, start_date_max=d_max, date_scope=date_scope,
     )
     job_wakeup.set()
@@ -241,7 +241,6 @@ def api_create_job():
         country=cfg.get("country", DEFAULT_COUNTRY),
         exact_phrase=bool(cfg.get("exact", False)),
         stores_only=bool(cfg.get("stores_only", False)),
-        sweep=False,  # Deep Sweep removed: use the day-by-day market mode
         sort_mode=cfg.get("sort", "total_impressions"),
         source="manual",
         date_scope=(cfg.get("date_scope") or "impressions"),

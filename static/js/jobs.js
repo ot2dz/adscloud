@@ -6,15 +6,22 @@ const JOB_COVERAGE_OK = 0.9;
 const fmtN = n => Number(n || 0).toLocaleString('en-US');
 
 // Meta estimate vs. what Meta really returned, and whether the run reached
-// the end. Empty for jobs that do not track it (old jobs, market scans).
+// the end (whole market: how many day x language slices did). Empty for
+// jobs that do not track it (old jobs, status check).
 function jobCoverage(j) {
   const reported = j.reported_count == null ? null : Number(j.reported_count);
   const scanned = Number(j.scanned_count || 0);
+  const slicesTotal = Number(j.slices_total || 0);
+  const slicesOk = Number(j.slices_ok || 0);
   const finished = ['done', 'stopped', 'failed'].includes(j.status);
-  if (reported == null && !scanned) return '';
-  const nums = `<span class="num">${reported != null ? 'Meta: ' + fmtN(reported) + ' · ' : ''}مفحوص: ${fmtN(scanned)} · محفوظ: ${fmtN(j.result_count)}</span>`;
+  if (reported == null && !scanned && !slicesTotal) return '';
+  const nums = `<span class="num">${reported != null ? 'Meta: ' + fmtN(reported) + ' · ' : ''}مفحوص: ${fmtN(scanned)} · محفوظ: ${fmtN(j.result_count)}${slicesTotal ? ` · شرائح: ${slicesOk}/${slicesTotal}` : ''}</span>`;
   let verdict = '';
-  if (finished && j.completed != null) {
+  if (finished && slicesTotal) {
+    verdict = Number(j.completed) === 1
+      ? `<span class="text-emerald-700">✅ اكتملت كل الشرائح</span>`
+      : `<span class="text-amber-700">⚠️ ${slicesTotal - slicesOk} شريحة لم تكتمل</span>`;
+  } else if (finished && j.completed != null) {
     if (Number(j.completed) !== 1) {
       verdict = `<span class="text-amber-700">⚠️ لم يكتمل — توقف قبل نهاية النتائج</span>`;
     } else if (reported && scanned < reported * JOB_COVERAGE_OK) {

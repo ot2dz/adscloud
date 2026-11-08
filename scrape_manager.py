@@ -78,7 +78,7 @@ class ScrapeManager:
 
     def start(self, query: str, country: str = DEFAULT_COUNTRY, exact: bool = False,
               stores_only: bool = False, sort_mode: str = "total_impressions",
-              sweep: bool = False, url: str = "", start_date_min: str = "",
+              url: str = "", start_date_min: str = "",
               start_date_max: str = "", date_label: str = "",
               date_scope: str = "impressions", resume: Optional[dict] = None,
               on_checkpoint: Optional[Callable[[Optional[dict]], None]] = None,
@@ -106,7 +106,7 @@ class ScrapeManager:
                            "error": "", "log": [], "outcome": None, "job_id": job_id})
         self.thread = threading.Thread(
             target=self._run,
-            args=(query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope),
+            args=(query, country, exact, stores_only, sort_mode, url, start_date_min, start_date_max, date_label, date_scope),
             kwargs={"resume": resume, "on_checkpoint": on_checkpoint, "base_count": base_count,
                     "mode": mode, "month_languages": languages,
                     "market": "global" if str(market).lower() == "global" else "dz",
@@ -118,7 +118,7 @@ class ScrapeManager:
     def stop(self) -> None:
         self.stop_event.set()
 
-    def _run(self, query, country, exact, stores_only, sort_mode, sweep, url, start_date_min, start_date_max, date_label, date_scope="impressions",
+    def _run(self, query, country, exact, stores_only, sort_mode, url, start_date_min, start_date_max, date_label, date_scope="impressions",
              resume: Optional[dict] = None, on_checkpoint=None, base_count: int = 0,
              mode: str = "", month_languages: Optional[list] = None,
              market: str = "dz", egress: str = "scrape") -> None:
@@ -142,8 +142,9 @@ class ScrapeManager:
         resume = resume if isinstance(resume, dict) else {}
         # Outcome read by the job runner: done | stopped | interrupted | failed.
         # Start from the incoming checkpoint so an immediate failure keeps it.
-        # "completed": True = Meta said there are no more pages, False = the
-        # run ended before that, None = not tracked (multi-slice modes).
+        # "completed": True = Meta said there are no more pages (whole market:
+        # every slice did), False = the run ended before that, None = not
+        # tracked (status check). Market scans add slices_total / slices_ok.
         outcome = {"status": "done", "checkpoint": resume or None, "error": "", "scanned": 0, "ad_ids": [],
                    "completed": None}
         job_id = self.state.get("job_id")
@@ -157,6 +158,8 @@ class ScrapeManager:
             def _cp(cursor):
                 # Cursor None = this pass is exhausted -> next pass from scratch.
                 cp = {"pass": pass_idx, "cursor": cursor} if cursor else {"pass": pass_idx + 1, "cursor": None}
+                if "slices_ok" in outcome:
+                    cp["ok"] = outcome["slices_ok"]
                 outcome["checkpoint"] = cp
                 if on_checkpoint:
                     try:
@@ -303,6 +306,10 @@ class ScrapeManager:
                 progress(f"🗓️ سحب السوق يوماً بيوم: {start_date_min} ← {start_date_max} "
                          f"({total_passes} شريحة = يوم × لغة، الأحدث أولاً، المتاجر فقط).")
                 start_pass = max(1, int(resume.get("pass") or 1))
+                outcome["slices_total"] = total_passes
+                # Slices that reached Meta's end, carried in the checkpoint
+                # across resumes (older checkpoints: assume the earlier ones did).
+                outcome["slices_ok"] = int(resume.get("ok", start_pass - 1) or 0)
                 if start_pass > 1:
                     progress(f"↩️ استئناف من الشريحة {start_pass}/{total_passes}.")
                 for idx, p in enumerate(passes, 1):
@@ -326,51 +333,20 @@ class ScrapeManager:
                                resume_cursor=(resume.get("cursor") if idx == start_pass else None),
                                on_checkpoint=make_checkpointer(idx))
                     if r.failed:
+                        outcome["scanned"] += int(r.scanned or 0)
                         progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
                         make_checkpointer(idx)(None)
                         continue
                     if not absorb(r):
                         break
-
-            elif sweep and not (start_date_min or start_date_max):
-                from slicing import build_deep_passes
-                passes = build_deep_passes(query=query, url=url, country=country,
-                                           exact=exact, sort_mode=sort_mode, months_back=12)
-                total_passes = len(passes)
-                progress(f"🚀 بدء التغطية الموسعة (Deep Sweep): تقسيم البحث إلى {total_passes} شريحة شهرية.")
-                start_pass = max(1, int(resume.get("pass") or 1))
-                if start_pass > 1:
-                    progress(f"↩️ استئناف التغطية من الشريحة {start_pass}/{total_passes}.")
-
-                for idx, p in enumerate(passes, 1):
-                    if idx < start_pass:
-                        continue
-                    if self.stop_event.is_set():
-                        outcome["status"] = "stopped"
-                        progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
-                        break
-                    progress(f"↪ شريحة {idx}/{total_passes} (شهر {p['label']}) — إجمالي مجمع: {(base_count + len(seen_ad_ids))} إعلان.")
-                    self._emit("slice_update", {
-                        "pass": idx,
-                        "total_passes": total_passes,
-                        "label": p["label"],
-                        "accumulated": (base_count + len(seen_ad_ids))
-                    })
-                    r = scrape(query=query, country=country, url=p["url"],
-                               stores_only=False, progress=progress, on_ad=on_ad,
-                               on_reported=on_reported, on_scanned=on_scanned,
-                               should_stop=lambda: self.stop_event.is_set(),
-                               date_scope=date_scope, proxy=proxy_spec,
-                               rotate_url=rot_url, rotate_token=rot_token,
-                               resume_cursor=(resume.get("cursor") if idx == start_pass else None),
-                               on_checkpoint=make_checkpointer(idx))
-                    if r.failed:
-                        # A broken slice must not block the rest of the sweep.
-                        progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
-                        make_checkpointer(idx)(None)
-                        continue
-                    if not absorb(r):
-                        break
+                    if r.completed:
+                        outcome["slices_ok"] += 1
+                        make_checkpointer(idx)(None)  # persist the new "ok" count
+                ok, total = outcome["slices_ok"], total_passes
+                outcome["completed"] = ok >= total
+                if outcome["status"] == "done":
+                    progress(f"🧩 الشرائح المكتملة: {ok}/{total}"
+                             + ("" if ok >= total else f" — {total - ok} شريحة لم تكتمل"))
 
             else:
                 if date_label:

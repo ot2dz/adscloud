@@ -183,7 +183,7 @@ def _reconcile_target_scan(job: dict, outcome: dict, resumed: bool) -> None:
     """After a complete competitor re-scan, mark the ads it no longer returns
     as stopped (with their exact last-seen duration), like the daily check."""
     try:
-        if resumed or job.get("mode") or job.get("sweep"):
+        if resumed or job.get("mode"):
             return
         # The first scan only builds the baseline: there is nothing to compare.
         if job.get("source") == "new_competitor":
@@ -219,7 +219,7 @@ def _snapshot_page_target(job: dict, outcome: dict) -> None:
     try:
         tid = job.get("target_id")
         t = db.get_target(int(tid)) if tid else None
-        if not t or t.get("type") != "page" or job.get("sweep"):
+        if not t or t.get("type") != "page":
             return
         pid = str(t["target_value"])
         db.upsert_tracked_page(page_id=pid, page_name=t.get("label") or "", country=t.get("country") or "DZ",
@@ -288,7 +288,6 @@ def job_worker_loop() -> None:
                 exact=bool(job.get("exact_phrase")),
                 stores_only=bool(job.get("stores_only")),
                 sort_mode=job.get("sort_mode") or "total_impressions",
-                sweep=bool(job.get("sweep")),
                 url=job.get("url") or "",
                 start_date_min=job.get("start_date_min") or "",
                 start_date_max=job.get("start_date_max") or "",
@@ -330,8 +329,15 @@ def job_worker_loop() -> None:
             scanned_total = base_scanned + int(outcome.get("scanned") or 0)
             completed = outcome.get("completed")  # None = not tracked for this mode
             reported = manager.state.get("reported")
-            summary = (f" (Meta: {reported} · مفحوص: {scanned_total})" if reported is not None
-                       else (f" (مفحوص: {scanned_total})" if scanned_total else ""))
+            # Coverage written on every close; a run that did not finish
+            # cannot be "completed" whatever the slices said.
+            cov = {"scanned_count": scanned_total, "slices_total": outcome.get("slices_total"),
+                   "slices_ok": outcome.get("slices_ok")}
+            cov_unfinished = {**cov, "completed": False if completed is not None else None}
+            parts = ([f"Meta: {reported}"] if reported is not None else []) + \
+                    ([f"مفحوص: {scanned_total}"] if scanned_total else []) + \
+                    ([f"شرائح: {cov['slices_ok']}/{cov['slices_total']}"] if cov["slices_total"] else [])
+            summary = f" ({' · '.join(parts)})" if parts else ""
 
             # A stop request that arrived while the run was finishing wins.
             try:
@@ -356,26 +362,19 @@ def job_worker_loop() -> None:
                     logger.info("job %s: interrupted, retry in %s min from %s", jid, delay, cp)
                 else:
                     db.finish_job(jid, status="failed", result_count=count,
-                                  error=outcome.get("error", ""), checkpoint=cp_json,
-                                  scanned_count=scanned_total,
-                                  completed=False if completed is not None else None)
+                                  error=outcome.get("error", ""), checkpoint=cp_json, **cov_unfinished)
                     manager._emit("log", {"text": f"⛔ توقف السحب نهائياً بعد {attempts + 1} محاولات: {outcome.get('error', '')}"})
                     logger.warning("job %s: failed after %s attempts", jid, attempts + 1)
             elif status == "failed":
                 db.finish_job(jid, status="failed", result_count=count,
-                              error=outcome.get("error", ""), checkpoint=cp_json,
-                              scanned_count=scanned_total,
-                              completed=False if completed is not None else None)
+                              error=outcome.get("error", ""), checkpoint=cp_json, **cov_unfinished)
                 manager._emit("log", {"text": f"⛔ فشلت المهمة #{jid}: {outcome.get('error', '')}"})
             elif status == "stopped":
-                db.finish_job(jid, status="stopped", result_count=count,
-                              scanned_count=scanned_total,
-                              completed=False if completed is not None else None)
+                db.finish_job(jid, status="stopped", result_count=count, **cov_unfinished)
                 manager.state["error"] = ""
                 manager._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان{summary}."})
             else:
-                db.finish_job(jid, status="done", result_count=count,
-                              scanned_count=scanned_total, completed=completed)
+                db.finish_job(jid, status="done", result_count=count, completed=completed, **cov)
                 logger.info("job %s: done (%s ads, scanned=%s, reported=%s, completed=%s)",
                             jid, count, scanned_total, reported, completed)
                 manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان{summary}."})

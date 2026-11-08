@@ -7,17 +7,13 @@ NOT true today. Tested 2026-11-08: a plain keyword search for "التوصيل" (
 returned 29,929 of Meta's estimated 30,412 ads (98%) and Meta itself
 reported the end of the results. Slicing is therefore not needed to get past
 a page limit; check a job's coverage line (Meta estimate vs. scanned, and
-"completed") before assuming one exists. ``build_deep_passes`` (monthly
-Deep Sweep) is unused since the scrape panel redesign; ``build_day_passes``
-plans the whole-market scan.
+"completed") before assuming one exists. The old monthly "Deep Sweep" was
+removed for that reason; ``build_day_passes`` plans the whole-market scan.
 """
 from __future__ import annotations
 
 import re
 from datetime import date, timedelta
-from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
-
-SORT_MODES = ["total_impressions", "relevancy_monthly_grouped"]
 
 # Whole-market jobs carry the window inside their label:
 #   "🔍 كل إعلانات السوق (متاجر فقط) 2026-10-01 ← 2026-10-20"
@@ -29,23 +25,6 @@ _DATE_SUFFIX_RE = re.compile(r"\s*\d{4}-\d{2}-\d{2}\s*[^\w\s]*\s*\d{4}-\d{2}-\d{
 def clean_scan_label(label: str) -> str:
     """Drop a trailing ``YYYY-MM-DD ← YYYY-MM-DD`` window from a scan label."""
     return _DATE_SUFFIX_RE.sub("", str(label or "")).strip()
-
-
-def _strip_param(pairs: list[tuple[str, str]], name: str) -> list[tuple[str, str]]:
-    return [(k, v) for (k, v) in pairs if k != name]
-
-
-def with_params(base_url: str, **params) -> str:
-    """Return base_url with the given query params set (overwriting existing)."""
-    parts = urlsplit(base_url)
-    pairs = parse_qsl(parts.query, keep_blank_values=True)
-    for key, value in params.items():
-        if value is None:
-            pairs = _strip_param(pairs, key)
-        else:
-            pairs = _strip_param(pairs, key)
-            pairs.append((key, value))
-    return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
 def _algeria_today() -> date:
@@ -106,63 +85,6 @@ def resolve_date_range(preset: str = "all", min_date: str = "", max_date: str = 
     return "", "", "كل الفترات (بدون تقييد تاريخ)"
 
 
-def clean_month_windows(months_back: int = 12) -> list[dict]:
-    """Generate exact non-overlapping monthly partitions backwards from today."""
-    windows = []
-    today = date.today()
-    y, m = today.year, today.month
-
-    for _ in range(months_back):
-        first = date(y, m, 1)
-        if m == 12:
-            nxt = date(y + 1, 1, 1)
-        else:
-            nxt = date(y, m + 1, 1)
-        last = nxt - timedelta(days=1)
-        max_date = today if (y == today.year and m == today.month) else last
-        label = f"{y}-{m:02d}"
-        windows.append({
-            "min_date": first.isoformat(),
-            "max_date": max_date.isoformat(),
-            "label": label,
-        })
-        m -= 1
-        if m == 0:
-            m = 12
-            y -= 1
-    return windows
-
-
-def build_deep_passes(query: str = "", url: str = "", country: str = "DZ",
-                      exact: bool = False, sort_mode: str = "total_impressions",
-                      months_back: int = 12) -> list[dict]:
-    """Build sliced pass URLs for deep comprehensive scraping."""
-    from pages import keyword_url
-
-    base = url.strip() if url.strip() else keyword_url(query, country=country, exact_phrase=exact, sort_mode=sort_mode)
-    windows = clean_month_windows(months_back)
-    passes = []
-
-    for idx, win in enumerate(windows, 1):
-        max_exclusive = (date.fromisoformat(win["max_date"][:10]) + timedelta(days=1)).isoformat()
-        params = {
-            "start_date[min]": win["min_date"],
-            "start_date[max]": max_exclusive,
-            "sort_data[mode]": sort_mode,
-            "sort_data[direction]": "desc",
-        }
-        pass_url = with_params(base, **params)
-        passes.append({
-            "pass_index": idx,
-            "total_passes": len(windows),
-            "label": win["label"],
-            "min_date": win["min_date"],
-            "max_date": win["max_date"],
-            "url": pass_url,
-        })
-    return passes
-
-
 def build_day_passes(start_date: str, end_date: str, languages: list[str]) -> list[dict]:
     """Whole-market scrape plan: one pass per launch day x language, newest
     day first (today's ads are the most valuable and change the most).
@@ -186,9 +108,3 @@ def build_day_passes(start_date: str, end_date: str, languages: list[str]) -> li
 
 
 LANG_AR = {"ar": "عربي", "fr": "فرنسي", "en": "إنجليزي"}
-
-
-def build_pass_urls(base_url: str, sorts: list[str] | None = None,
-                    windows: list[tuple[str, str] | None] | None = None) -> list[dict]:
-    """Compatibility helper for existing callers."""
-    return build_deep_passes(url=base_url)

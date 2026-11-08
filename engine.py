@@ -689,7 +689,7 @@ def scrape(
                 _checkpoint(None)  # Meta answers normally: this search is really over
             if early_stopped and not res.stopped:
                 _checkpoint(None)  # nothing left worth fetching for this window
-            res.completed = (exhausted or early_stopped) and not res.stopped
+            res.completed = (exhausted or early_stopped or ended_on_empty_page) and not res.stopped
             break
         except Exception as exc:  # noqa: BLE001
             res.error = str(exc)
