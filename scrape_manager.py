@@ -380,7 +380,9 @@ class ScrapeManager:
             # zero results when the egress IP is soft-blocked, which looks like
             # "success" but means nothing was collected.
             if ((base_count + len(seen_ad_ids)) == 0 and mode not in (STATUS_MODE, WINNING_MODE)
-                    and outcome.get("status") not in ("stopped", "failed")
+                    # "interrupted" (proxy down / transient error) must stay
+                    # interrupted so the job queue retries it, not end as "empty".
+                    and outcome.get("status") not in ("stopped", "failed", "interrupted")
                     and not self.stop_event.is_set()):
                 reported = self.state.get("reported")
                 if reported is None or reported == 0:

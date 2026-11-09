@@ -606,7 +606,7 @@ def scrape(
         # Never start an attempt while the proxy tunnel is down (it just
         # burned curl 7/28 errors after every IP rotation).
         _spec = _proxy_arg(proxy)
-        if _spec and not _wait_proxy_ready(_spec, progress, should_stop, wait_s=60):
+        if _spec and not _wait_proxy_ready(_spec, progress, should_stop, wait_s=int(_ROTATE_MAX_WAIT_S)):
             progress(_FAIL_PROXY)
             res.interrupted = True
             res.error = _FAIL_PROXY
