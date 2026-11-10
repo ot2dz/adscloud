@@ -17,7 +17,59 @@ function adsPageCount() { return Math.max(1, Math.ceil(adsTotal / adsPageSize));
 
 function goToAdsPage(n) {
   adsPage = Math.min(Math.max(1, n), adsPageCount());
-  loadAds({ keepPage: true, scroll: true });
+  loadAds({ keepPage: true, scroll: true, usePrefetch: true });
+}
+
+// ── Request bookkeeping ──
+// Only the newest loadAds() may draw: a slow answer for old filters is
+// aborted instead of overwriting the results of the filters chosen since.
+let adsAbort = null;
+// Pages fetched ahead of time (the next page, the one before), so paging is
+// instant. Short-lived and only used for page clicks: refreshes after a
+// scrape or a filter change always ask the server.
+const adsPrefetch = new Map();   // url -> { at, promise }
+const ADS_PREFETCH_TTL = 60000;
+
+function adsPageUrl(page) {
+  return `${adsFilterKey}&limit=${adsPageSize}&offset=${(page - 1) * adsPageSize}`;
+}
+
+function prefetchAdsPage(page) {
+  if (page < 1 || page > adsPageCount() || !adsFilterKey) return;
+  const url = adsPageUrl(page);
+  const hit = adsPrefetch.get(url);
+  if (hit && Date.now() - hit.at < ADS_PREFETCH_TTL) return;
+  const promise = fetch(url).then(r => (r.ok ? r.json() : null)).catch(() => null);
+  adsPrefetch.set(url, { at: Date.now(), promise });
+  if (adsPrefetch.size > 8) adsPrefetch.delete(adsPrefetch.keys().next().value);
+}
+
+function takePrefetched(url) {
+  const hit = adsPrefetch.get(url);
+  adsPrefetch.delete(url);
+  return hit && Date.now() - hit.at < ADS_PREFETCH_TTL ? hit.promise : null;
+}
+
+function prefetchNeighbours() {
+  // Wait until the browser is idle so the visible page's images go first.
+  const run = () => { prefetchAdsPage(adsPage + 1); prefetchAdsPage(adsPage - 1); };
+  if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 2000 });
+  else setTimeout(run, 600);
+}
+
+function setAdsLoading(on) {
+  const grid = document.getElementById('ads');
+  if (!grid) return;
+  if (on && !grid.children.length) {
+    // First load: placeholder cards instead of an empty page.
+    grid.innerHTML = Array.from({ length: 8 }, () => `
+      <div class="ads-skeleton bg-white border border-[#d7e3f4] rounded-2xl overflow-hidden">
+        <div class="aspect-[4/3] bg-[#eef3f9]"></div>
+        <div class="p-3.5 space-y-2"><div class="h-4 w-2/3 rounded bg-[#eef3f9]"></div>
+        <div class="h-3 w-1/2 rounded bg-[#eef3f9]"></div><div class="h-3 w-full rounded bg-[#eef3f9]"></div></div>
+      </div>`).join('');
+  }
+  grid.classList.toggle('ads-loading', !!on);
 }
 
 function setAdsPageSize(v) {
@@ -162,11 +214,31 @@ async function loadAds(opts = {}) {
   // scrape, periodic reloads) keep the page the user is reading.
   if (url !== adsFilterKey) {
     adsFilterKey = url;
+    adsPrefetch.clear();
     if (!opts.keepPage) adsPage = 1;
   }
 
-  const r = await fetch(`${url}&limit=${adsPageSize}&offset=${(adsPage - 1) * adsPageSize}`);
-  const d = await r.json();
+  if (adsAbort) adsAbort.abort();
+  const ctrl = adsAbort = new AbortController();
+  const pageUrl = adsPageUrl(adsPage);
+  const ready = opts.usePrefetch ? takePrefetched(pageUrl) : null;
+  if (!opts.usePrefetch) adsPrefetch.clear();   // a refresh: older prefetches may be stale
+  setAdsLoading(true);
+  let d;
+  try {
+    d = ready ? await ready : null;
+    if (!d) {
+      const r = await fetch(pageUrl, { signal: ctrl.signal });
+      d = await r.json();
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;   // a newer loadAds() owns the view
+    setAdsLoading(false);
+    throw e;
+  }
+  if (ctrl !== adsAbort) return;                // superseded while waiting
+  adsAbort = null;
+  setAdsLoading(false);
   adsTotal = d.total || 0;
   // Page beyond the end (e.g. ads were deleted): jump to the last page.
   if (adsPage > adsPageCount() && adsTotal > 0) {
@@ -181,6 +253,7 @@ async function loadAds(opts = {}) {
   document.getElementById('ads-total-sub').innerText = groupMode && d.total_ads != null ? `(من ${d.total_ads} إعلان)` : '';
   document.getElementById('ads-total').innerText = adsTotal;
   if (opts.scroll) document.getElementById('ads-total').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  prefetchNeighbours();
 }
 
 function copyAdText(txt) {
@@ -525,7 +598,7 @@ function adCardHtml(raw, opts = {}) {
     <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl overflow-hidden flex flex-col shadow-[0_6px_18px_rgba(23,43,77,0.05)] hover:shadow-md transition">
       <div class="relative w-full aspect-[4/3] shrink-0 overflow-hidden bg-[#eef3f9] flex items-center justify-center">
         ${previewImg ? `
-          <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" class="absolute inset-0 w-full h-full object-cover" onerror="this.remove()">
+          <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-cover" onerror="this.remove()">
         ` : `<span class="text-3xl opacity-40">🖼️</span>`}
         ${videoSrc ? `
           <button type="button" data-src="${videoSrc}" onclick="playCardVideo(this)" title="تشغيل الفيديو"

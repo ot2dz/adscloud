@@ -91,6 +91,43 @@ app.config.update(
 
 
 
+SLOW_REQUEST_MS = float(os.environ.get("SLOW_REQUEST_MS", "800"))
+
+
+@app.before_request
+def _start_timer():
+    g._t0 = time.perf_counter()
+
+
+@app.after_request
+def _compress_and_time(resp):
+    """gzip JSON/HTML answers (an ads page shrinks ~5-8x) and report how long
+    the request took (Server-Timing header + a log line when slow)."""
+    t0 = getattr(g, "_t0", None)
+    if t0 is not None:
+        ms = (time.perf_counter() - t0) * 1000
+        resp.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+        if SLOW_REQUEST_MS and ms >= SLOW_REQUEST_MS and request.path.startswith("/api/"):
+            logger.warning("slow request %.0f ms: %s %s", ms, request.method, request.full_path[:300])
+    if (resp.direct_passthrough or resp.is_streamed or resp.status_code != 200
+            or "Content-Encoding" in resp.headers
+            or "gzip" not in (request.headers.get("Accept-Encoding") or "").lower()):
+        return resp
+    ctype = (resp.mimetype or "")
+    if not (ctype in ("application/json", "text/html", "text/css", "application/javascript",
+                      "text/javascript", "text/csv")):
+        return resp
+    data = resp.get_data()
+    if len(data) < 1024:
+        return resp
+    import gzip
+    resp.set_data(gzip.compress(data, compresslevel=5))
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["Content-Length"] = str(len(resp.get_data()))
+    resp.headers.add("Vary", "Accept-Encoding")
+    return resp
+
+
 @app.before_request
 def _limit_request_size():
     """Refuse oversized bodies up front (before any handler reads them)."""

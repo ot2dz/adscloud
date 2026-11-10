@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import sqlite3
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -25,6 +27,134 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 # Path override keeps tests (and side-by-side runs) off the production file.
 _SQLITE_PATH = (os.environ.get("META_ADS_SQLITE")
                 or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "meta_ads.sqlite"))
+
+
+SLOW_QUERY_MS = float(os.environ.get("SLOW_QUERY_MS", "300"))
+_CACHE_LOCK = threading.Lock()
+
+
+def _log_if_slow(sql: str, t0: float) -> None:
+    """Log queries slower than SLOW_QUERY_MS (0 = off), to find what is heavy."""
+    ms = (time.perf_counter() - t0) * 1000
+    if SLOW_QUERY_MS and ms >= SLOW_QUERY_MS:
+        logger.warning("slow query %.0f ms: %s", ms, " ".join(sql.split())[:400])
+
+
+def _invalidates_cache(fn):
+    """Database method that changes what the cached counters count: drop the
+    cache before (so nothing stale is served) and after (so a read that raced
+    with the write is not kept)."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        self.invalidate_cache()
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            self.invalidate_cache()
+    return wrapper
+
+
+def _changes_ads(fn):
+    """Database method that rewrites many ads at once (status check, purge,
+    backfill…): drops the counter cache and marks the whole product summary
+    for a rebuild."""
+    import functools
+
+    inner = _invalidates_cache(fn)
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return inner(self, *args, **kwargs)
+        finally:
+            self.mark_groups_stale()
+    return wrapper
+
+
+class _PgPool:
+    """Reuses PostgreSQL connections across queries and threads.
+
+    Never blocks and never refuses: when every pooled connection is busy a new
+    one is opened (as before), and at most ``max_idle`` are kept for reuse.
+    A connection idle for a while is pinged first, so one the server dropped
+    is replaced instead of failing the next query."""
+
+    PING_AFTER_S = 30.0
+
+    def __init__(self, url: str, max_idle: int = int(os.environ.get("DB_POOL_SIZE", "10"))):
+        self.url = url
+        self.max_idle = max(0, max_idle)
+        self._idle: list = []          # [(raw_conn, last_used_monotonic)]
+        self._lock = threading.Lock()
+
+    def _new(self):
+        import psycopg2
+        conn = psycopg2.connect(self.url)
+        conn.autocommit = True
+        return conn
+
+    def get(self) -> "_PooledConn":
+        while True:
+            with self._lock:
+                item = self._idle.pop() if self._idle else None
+            if item is None:
+                return _PooledConn(self, self._new())
+            raw, last = item
+            if raw.closed:
+                continue
+            if time.monotonic() - last > self.PING_AFTER_S:
+                try:
+                    with raw.cursor() as c:
+                        c.execute("SELECT 1")
+                except Exception:  # noqa: BLE001 — dropped by the server
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                    continue
+            return _PooledConn(self, raw)
+
+    def put(self, raw) -> None:
+        import psycopg2.extensions as ext
+        reusable = (not raw.closed and raw.autocommit
+                    and raw.info.transaction_status == ext.TRANSACTION_STATUS_IDLE)
+        if reusable:
+            with self._lock:
+                if len(self._idle) < self.max_idle:
+                    self._idle.append((raw, time.monotonic()))
+                    return
+        try:
+            raw.close()
+        except Exception:
+            pass
+
+
+class _PooledConn:
+    """Wraps a pooled psycopg2 connection: ``close()`` returns it to the pool."""
+
+    __slots__ = ("_pool", "_raw")
+
+    def __init__(self, pool: _PgPool, raw):
+        self._pool = pool
+        self._raw = raw
+
+    def close(self) -> None:
+        raw, self._raw = self._raw, None
+        if raw is not None:
+            self._pool.put(raw)
+
+    def __getattr__(self, name):
+        if self._raw is None:
+            raise AttributeError(f"connection already returned to the pool ({name})")
+        return getattr(self._raw, name)
+
+    def __setattr__(self, name, value):
+        if name in _PooledConn.__slots__:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._raw, name, value)
 
 
 def _now() -> str:
@@ -80,6 +210,7 @@ class Database:
             self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
         self._niches_cache: list[dict] = []
         self._blocked_domains: list[str] = []
+        self._result_cache: dict = {}
         self._init_schema()
 
     # ── connection helpers ────────────────────────────────────────────────
@@ -94,14 +225,22 @@ class Database:
         return bool(row)
 
     def _connect(self):
+        """A database connection; callers always ``close()`` it when done.
+
+        PostgreSQL connections come from a small pool: ``close()`` hands them
+        back instead of tearing them down, so a page load no longer pays a new
+        TCP + auth handshake for each of its queries."""
         if self.is_postgres:
-            import psycopg2
-            conn = psycopg2.connect(self.db_url)
-            conn.autocommit = True
-            return conn
+            return self._pg_pool().get()
         conn = sqlite3.connect(_SQLITE_PATH)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _pg_pool(self) -> "_PgPool":
+        pool = getattr(self, "_pool", None)
+        if pool is None or pool.url != self.db_url:
+            pool = self._pool = _PgPool(self.db_url)
+        return pool
 
     def _init_schema(self) -> None:
         try:
@@ -445,6 +584,26 @@ class Database:
             if self.is_postgres:
                 conn.rollback()
 
+        # Precomputed product summary for the default grouped view (see
+        # get_ad_groups). Derived data only: it can be dropped at any time.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS product_groups (
+            product_key TEXT PRIMARY KEY,
+            ads_count INTEGER,
+            active INTEGER,
+            first_launch TEXT,
+            last_launch TEXT,
+            texts INTEGER,
+            max_days INTEGER,
+            last_collected TEXT,
+            page_id TEXT,
+            hunter INTEGER
+        )
+        """)
+        for col in ("last_collected", "last_launch", "max_days", "ads_count", "hunter"):
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_product_groups_{col} ON product_groups ({col})")
+        conn.commit()
+
         # Ad <-> keyword tags: one ad can be discovered by many keywords. This
         # keeps every keyword that matched an ad, so re-scraping the same ad
         # with another keyword never overwrites the earlier tag.
@@ -594,6 +753,69 @@ class Database:
                 logger.info("purged %s non-Arabic ads", purged)
         except Exception as exc:  # noqa: BLE001
             logger.warning("blocked-domain purge notice: %s", exc)
+        if os.environ.get("DB_SPEED_INDEXES", "1").strip().lower() not in ("0", "false", "no"):
+            if self.is_postgres:
+                threading.Thread(target=self.ensure_speed_indexes, name="db-indexes", daemon=True).start()
+            else:  # SQLite (local/tests): instant, and no concurrent writer
+                self.ensure_speed_indexes()
+
+    # Indexes behind the ads listing: sort columns (so "newest / longest /
+    # hunter … LIMIT 60" reads 60 index entries instead of sorting 100k rows)
+    # and the selective filters (page, target, launch date).
+    _SPEED_INDEXES = (
+        ("idx_meta_ads_collected", "meta_ads (collected_at)"),
+        ("idx_meta_ads_start", "meta_ads (start_date)"),
+        ("idx_meta_ads_days", "meta_ads (days_active)"),
+        ("idx_meta_ads_hunter", "meta_ads (hunter_score)"),
+        ("idx_meta_ads_page", "meta_ads (page_id)"),
+        ("idx_meta_ads_target", "meta_ads (target_id)"),
+    )
+    # PostgreSQL only: trigram indexes make the text search (LIKE '%…%')
+    # use an index instead of reading every ad body.
+    _TRGM_INDEXES = (
+        ("idx_meta_ads_body_trgm", "meta_ads USING gin (body gin_trgm_ops)"),
+        ("idx_meta_ads_pname_trgm", "meta_ads USING gin (page_name gin_trgm_ops)"),
+        ("idx_meta_ads_domain_trgm", "meta_ads USING gin (store_domain gin_trgm_ops)"),
+    )
+
+    def ensure_speed_indexes(self) -> None:
+        """Create the listing indexes if missing. Runs in a background thread
+        at startup; on PostgreSQL the build is CONCURRENTLY, so scraping and
+        the dashboard keep working while a big table is indexed."""
+        t0 = time.perf_counter()
+        made = []
+        if not self.is_postgres:
+            for name, target in self._SPEED_INDEXES:
+                try:
+                    self._execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("index %s notice: %s", name, exc)
+            return
+        wanted = list(self._SPEED_INDEXES)
+        try:
+            self._execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            wanted += list(self._TRGM_INDEXES)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pg_trgm unavailable, text search stays unindexed: %s", exc)
+        for name, target in wanted:
+            try:
+                row = self._query_one(
+                    "SELECT i.indisvalid AS ok FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid "
+                    "WHERE c.relname = %s", (name,))
+                if row and row.get("ok"):
+                    continue
+                if row:  # left invalid by an interrupted concurrent build
+                    self._execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
+                self._execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {target}")
+                made.append(name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("index %s notice: %s", name, exc)
+        if made:
+            try:
+                self._execute("ANALYZE meta_ads")
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info("speed indexes built in %.1fs: %s", time.perf_counter() - t0, ", ".join(made))
 
     def _backfill_product_keys(self, cur, conn, batch: int = 2000) -> None:
         """Compute product_key for ads stored before grouping existed."""
@@ -862,6 +1084,7 @@ class Database:
 
     # ── low-level helpers ─────────────────────────────────────────────────
     def _execute(self, sql: str, params: tuple = ()) -> None:
+        t0 = time.perf_counter()
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -869,8 +1092,10 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+            _log_if_slow(sql, t0)
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
+        t0 = time.perf_counter()
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -882,6 +1107,33 @@ class Database:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+            _log_if_slow(sql, t0)
+
+    # ── short-lived result cache (counters only) ──────────────────────────
+    # Totals and filter-bar counters scan the whole ads table. They are asked
+    # for on every page change and by several timers, but nobody needs them to
+    # the second: they are reused for CACHE_TTL seconds and dropped at once
+    # when ads are deleted or a user's scope / a filter setting changes.
+    CACHE_TTL = float(os.environ.get("DB_CACHE_TTL", "30"))
+
+    def _cached(self, key: tuple, compute):
+        if self.CACHE_TTL <= 0:
+            return compute()
+        now = time.monotonic()
+        with _CACHE_LOCK:
+            hit = self._result_cache.get(key)
+            if hit and now - hit[0] < self.CACHE_TTL:
+                return hit[1]
+        val = compute()
+        with _CACHE_LOCK:
+            if len(self._result_cache) > 2000:
+                self._result_cache.clear()
+            self._result_cache[key] = (now, val)
+        return val
+
+    def invalidate_cache(self) -> None:
+        with _CACHE_LOCK:
+            self._result_cache.clear()
 
     def _query_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
         rows = self._query(sql, params)
@@ -907,6 +1159,7 @@ class Database:
     def _user_scope_params(user_id: int) -> list:
         return [int(user_id)] * 4
 
+    @_invalidates_cache
     def link_user_ad(self, user_id: int, ad_id: str) -> None:
         aid = str(ad_id or "").strip()
         if not user_id or not aid:
@@ -916,6 +1169,7 @@ class Database:
         self._execute(f"INSERT INTO user_ads (user_id, ad_id, saved_at) VALUES ({p},{p},{p}) {conflict}",
                       (int(user_id), aid, _now()))
 
+    @_invalidates_cache
     def link_user_page(self, user_id: int, page_id: str) -> None:
         pid = str(page_id or "").strip()
         if not user_id or not pid:
@@ -925,6 +1179,7 @@ class Database:
         self._execute(f"INSERT INTO user_pages (user_id, page_id, tracked_at) VALUES ({p},{p},{p}) {conflict}",
                       (int(user_id), pid, _now()))
 
+    @_invalidates_cache
     def unlink_user_page(self, user_id: int, page_id: str) -> int:
         """Remove one user's tracking of a page. Returns how many users still track it."""
         pid = str(page_id or "").strip()
@@ -981,6 +1236,7 @@ class Database:
             f"WHERE is_active = 1 AND (market IS NULL OR market = 'dz') "
             f"AND page_id IN ({', '.join([p] * len(page_ids))})", tuple(page_ids))
 
+    @_changes_ads
     def apply_status_check(self, confirmed: dict[str, str], stopped: list[str]) -> None:
         """confirmed = {ad_id: collation_id or ''} seen running now; stopped =
         ad_ids gone from Meta. A stopped ad keeps last_seen_active (its last
@@ -1042,6 +1298,7 @@ class Database:
         return (f"({mcond}) AND (query = {p} OR ad_id IN "
                 f"(SELECT ad_id FROM ad_keywords WHERE keyword = {p}))", [val, val])
 
+    @_changes_ads
     def reconcile_target_ads(self, target: dict, seen_ids: list[str],
                              seen_collations: Optional[list[str]] = None,
                              seen_product_keys: Optional[list[str]] = None) -> dict:
@@ -1071,6 +1328,7 @@ class Database:
             self.apply_status_check(confirmed, stopped)
         return {"checked": len(rows), "confirmed": len(confirmed), "stopped": len(stopped)}
 
+    @_changes_ads
     def refresh_days_active(self) -> int:
         """Recompute days_active for every ad (run once a day). Returns rows changed."""
         p = self._ph()
@@ -1276,6 +1534,7 @@ class Database:
             except Exception as score_err:  # noqa: BLE001
                 logger.debug("hunter score failed: %s", score_err)
             conn.commit()
+            self.mark_groups_dirty(pkey, old_pkey)
             return is_new
         except Exception as exc:
             logger.error("save_ad failed: %s", exc)
@@ -1320,6 +1579,7 @@ class Database:
         })
         return int(result["score"]), count
 
+    @_changes_ads
     def backfill_hunter_scores(self, force: bool = False, batch: int = 500) -> int:
         """(Re)compute ``meta_ads.hunter_score`` for every product group.
 
@@ -1614,6 +1874,7 @@ class Database:
         allow = self.cta_allowlist()
         return bool(allow) and cta not in allow
 
+    @_changes_ads
     def purge_blocked_ads(self) -> int:
         """Permanently delete ads of big marketplaces (and their tags/links)."""
         domains = [d for d in (list(BIG_MARKETPLACES) + list(self._blocked_domains))
@@ -1636,6 +1897,7 @@ class Database:
         rows = self._query(f"SELECT ad_id FROM meta_ads WHERE {' OR '.join(conds)}", tuple(params))
         return self._delete_ads([str(r["ad_id"]) for r in rows])
 
+    @_changes_ads
     def purge_junk_ads(self) -> int:
         """Permanently delete drama-app and foreign-site ads (see junk_reason)."""
         p = self._ph()
@@ -1654,6 +1916,7 @@ class Database:
         rows = self._query("SELECT ad_id, body FROM meta_ads WHERE (market IS NULL OR market = 'dz')")
         return self._delete_ads([str(r["ad_id"]) for r in rows if is_non_arabic(r.get("body") or "")])
 
+    @_changes_ads
     def _delete_ads(self, ids: list[str]) -> int:
         p = self._ph()
         if not ids:
@@ -1751,11 +2014,11 @@ class Database:
         p = self._ph()
         clause, params = self._build_ads_filter(user_id=user_id)
         sub = f"SELECT ad_id FROM meta_ads {clause}"
-        return self._query(
+        return self._cached(("niche_counts", user_id), lambda: self._query(
             f"SELECT n.slug, n.name_ar, COUNT(DISTINCT an.ad_id) AS total_ads "
             f"FROM ad_niches an JOIN niches n ON n.id = an.niche_id "
             f"WHERE an.confidence >= 40 AND an.ad_id IN ({sub}) "
-            f"GROUP BY n.slug, n.name_ar ORDER BY total_ads DESC", tuple(params))
+            f"GROUP BY n.slug, n.name_ar ORDER BY total_ads DESC", tuple(params)))
 
     def classify_pending(self, limit: int = 500) -> int:
         """Classify ads that were never classified (backfill + new scrapes)."""
@@ -1780,6 +2043,7 @@ class Database:
             conn.close()
         return len(rows)
 
+    @_invalidates_cache
     def set_manual_niche(self, ad_id: str, slug: str, add: bool = True) -> bool:
         p = self._ph()
         row = self._query_one(f"SELECT id FROM niches WHERE slug = {p}", (slug,))
@@ -1887,9 +2151,175 @@ class Database:
         "most_collated": "ads_count DESC, active DESC",
         "collected_at": "last_collected DESC",
         "biggest_page": "page_ads DESC, ads_count DESC",
+        "hunter": "hunter DESC, active DESC",
     }
     _PAGE_STATS_JOIN = ("LEFT JOIN entity_stats es ON es.ent_kind = 'page' "
                         "AND es.ent_key = meta_ads.page_id")
+
+    # ── precomputed product summary (the default grouped view) ────────────
+    # One row per product with the same numbers get_ad_groups computes, over
+    # the ads the default view shows (Algerian bank, allowed CTA, has a store).
+    # Saving an ad refreshes its product row on the next read; bulk changes
+    # (status check, purge, CTA setting…) rebuild the table in the background,
+    # and until that finishes the view falls back to the live GROUP BY, so the
+    # numbers shown are never older than the ads table.
+    _SUMMARY_ORDER = {
+        "longest_running": "pg.max_days DESC, pg.active DESC",
+        "newest_launch": "pg.last_launch DESC",
+        "most_collated": "pg.ads_count DESC, pg.active DESC",
+        "collected_at": "pg.last_collected DESC",
+        "biggest_page": "page_ads DESC, pg.ads_count DESC",
+        "hunter": "pg.hunter DESC, pg.active DESC",
+    }
+    _SUMMARY_COLS = ("product_key, ads_count, active, first_launch, last_launch, texts, "
+                     "max_days, last_collected, page_id, hunter")
+    _SUMMARY_SELECT = (
+        "SELECT product_key, COUNT(*), SUM(is_active), MIN(start_date), MAX(start_date), "
+        "COUNT(DISTINCT body), MAX(days_active), MAX(collected_at), MAX(page_id), "
+        "MAX(COALESCE(hunter_score, 0)) FROM meta_ads ")
+    SUMMARY_MAX_AGE_S = float(os.environ.get("GROUP_SUMMARY_MAX_AGE", "900"))
+    _groups_lock = threading.Lock()
+
+    def _summary_state(self) -> dict:
+        st = getattr(self, "_gs", None)
+        if st is None:
+            # Fresh process: whatever the table holds may predate this run.
+            st = self._gs = {"stale": True, "gen": 0, "dirty": set(), "built": 0.0,
+                             "building": False}
+        return st
+
+    def mark_groups_dirty(self, *keys) -> None:
+        """These products changed (an ad was saved): refresh them on next read."""
+        st = self._summary_state()
+        with self._groups_lock:
+            st["dirty"].update(k for k in keys if k)
+
+    def mark_groups_stale(self) -> None:
+        """Many ads changed: the whole summary needs a rebuild."""
+        st = self._summary_state()
+        with self._groups_lock:
+            st["stale"] = True
+            st["gen"] += 1
+
+    @staticmethod
+    def _is_default_view(filters: dict) -> bool:
+        """Only the default listing (stores only, no other filter) is summarised."""
+        if not filters.get("stores_only"):
+            return False
+        if str(filters.get("market") or "dz").lower() != "dz":
+            return False
+        return not any(v for k, v in filters.items() if k not in ("stores_only", "market"))
+
+    def can_use_group_summary(self, filters: dict) -> bool:
+        return self._is_default_view(filters) and not self._summary_state()["stale"]
+
+    def _summary_ready(self, filters: dict) -> bool:
+        """True when the summary can answer this request (refreshing the
+        products saved since the last read first). Kicks off a background
+        rebuild when the summary is stale or old."""
+        if not self._is_default_view(filters):
+            return False
+        st = self._summary_state()
+        if st["stale"] or time.monotonic() - st["built"] > self.SUMMARY_MAX_AGE_S:
+            self._start_group_rebuild()
+        if st["stale"]:
+            return False
+        with self._groups_lock:
+            keys, st["dirty"] = st["dirty"], set()
+        if len(keys) > 5000:          # a huge burst: cheaper to rebuild everything
+            self.mark_groups_stale()
+            self._start_group_rebuild()
+            return False
+        if keys:
+            try:
+                self._refresh_group_keys(sorted(keys))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("product summary refresh failed: %s", exc)
+                with self._groups_lock:
+                    st["dirty"].update(keys)
+                return False
+        return True
+
+    def _summary_write(self, delete_sql: str, insert_sql: str, params: tuple) -> None:
+        """Replace summary rows in one transaction (readers see old or new, never half)."""
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute("BEGIN")
+            try:
+                cur.execute(delete_sql, params[:delete_sql.count(self._ph())])
+                cur.execute(insert_sql, params[delete_sql.count(self._ph()):])
+                cur.execute("COMMIT") if self.is_postgres else conn.commit()
+            except Exception:
+                cur.execute("ROLLBACK") if self.is_postgres else conn.rollback()
+                raise
+        finally:
+            conn.close()
+
+    def _refresh_group_keys(self, keys: list[str]) -> None:
+        p = self._ph()
+        base, base_params = self._build_ads_filter(stores_only=True)
+        for i in range(0, len(keys), 400):
+            chunk = keys[i:i + 400]
+            in_list = ", ".join([p] * len(chunk))
+            with self._groups_lock_rw():
+                self._summary_write(
+                    f"DELETE FROM product_groups WHERE product_key IN ({in_list})",
+                    f"INSERT INTO product_groups ({self._SUMMARY_COLS}) {self._SUMMARY_SELECT}"
+                    f"{base} AND product_key IN ({in_list}) GROUP BY product_key",
+                    tuple(chunk) + tuple(base_params) + tuple(chunk))
+
+    def rebuild_group_summary(self) -> bool:
+        """Recompute the whole summary. Returns True when it is now current."""
+        st = self._summary_state()
+        with self._groups_lock:
+            gen = st["gen"]
+            st["dirty"] = set()       # a full rebuild covers everything saved so far
+        t0 = time.perf_counter()
+        base, base_params = self._build_ads_filter(stores_only=True)
+        with self._groups_lock_rw():
+            self._summary_write(
+                "DELETE FROM product_groups",
+                f"INSERT INTO product_groups ({self._SUMMARY_COLS}) {self._SUMMARY_SELECT}"
+                f"{base} AND product_key IS NOT NULL GROUP BY product_key",
+                tuple(base_params))
+        with self._groups_lock:
+            st["built"] = time.monotonic()
+            if st["gen"] == gen:      # nothing went stale while we were building
+                st["stale"] = False
+                current = True
+            else:
+                current = False
+        logger.info("product summary rebuilt in %.0f ms (current=%s)",
+                    (time.perf_counter() - t0) * 1000, current)
+        return current
+
+    def _groups_lock_rw(self):
+        """Serialises summary writers in this process (full rebuild vs per-key refresh)."""
+        lock = getattr(self, "_gw_lock", None)
+        if lock is None:
+            lock = self._gw_lock = threading.Lock()
+        return lock
+
+    def _start_group_rebuild(self) -> None:
+        st = self._summary_state()
+        with self._groups_lock:
+            if st["building"]:
+                return
+            st["building"] = True
+
+        def run():
+            try:
+                for _ in range(3):    # retry if ads went stale mid-build
+                    if self.rebuild_group_summary():
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("product summary rebuild failed: %s", exc)
+            finally:
+                with self._groups_lock:
+                    st["building"] = False
+        threading.Thread(target=run, name="group-summary", daemon=True).start()
 
     def get_ad_groups(self, limit: int = 60, offset: int = 0, sort_by: str = "collected_at",
                       **filters) -> list[dict]:
@@ -1900,15 +2330,25 @@ class Database:
         """
         p = self._ph()
         clause, params = self._build_ads_filter(**filters)
-        order = self._GROUP_ORDER.get(sort_by, self._GROUP_ORDER["collected_at"])
-        groups = self._query(
-            f"SELECT product_key, COUNT(*) AS ads_count, SUM(is_active) AS active, "
-            f"MIN(start_date) AS first_launch, MAX(start_date) AS last_launch, "
-            f"COUNT(DISTINCT body) AS texts, MAX(days_active) AS max_days, "
-            f"MAX(collected_at) AS last_collected, MAX(COALESCE(es.ent_ads, -1)) AS page_ads "
-            f"FROM meta_ads {self._PAGE_STATS_JOIN} {clause} GROUP BY product_key "
-            f"ORDER BY {order}, product_key LIMIT {p} OFFSET {p}",
-            tuple(params) + (limit, offset))
+        if self._summary_ready(filters):
+            # Default view: read the precomputed product summary (an indexed
+            # ORDER BY … LIMIT) instead of grouping the whole ads table.
+            order = self._SUMMARY_ORDER.get(sort_by, self._SUMMARY_ORDER["collected_at"])
+            groups = self._query(
+                f"SELECT pg.*, COALESCE(es.ent_ads, -1) AS page_ads FROM product_groups pg "
+                f"LEFT JOIN entity_stats es ON es.ent_kind = 'page' AND es.ent_key = pg.page_id "
+                f"ORDER BY {order}, pg.product_key LIMIT {p} OFFSET {p}", (limit, offset))
+        else:
+            order = self._GROUP_ORDER.get(sort_by, self._GROUP_ORDER["collected_at"])
+            groups = self._query(
+                f"SELECT product_key, COUNT(*) AS ads_count, SUM(is_active) AS active, "
+                f"MIN(start_date) AS first_launch, MAX(start_date) AS last_launch, "
+                f"COUNT(DISTINCT body) AS texts, MAX(days_active) AS max_days, "
+                f"MAX(collected_at) AS last_collected, MAX(COALESCE(es.ent_ads, -1)) AS page_ads, "
+                f"MAX(COALESCE(hunter_score, 0)) AS hunter "
+                f"FROM meta_ads {self._PAGE_STATS_JOIN} {clause} GROUP BY product_key "
+                f"ORDER BY {order}, product_key LIMIT {p} OFFSET {p}",
+                tuple(params) + (limit, offset))
         if not groups:
             return []
         keys = [g["product_key"] for g in groups]
@@ -1962,10 +2402,16 @@ class Database:
         return self.attach_niches(out)
 
     def count_ad_groups(self, **filters) -> int:
-        clause, params = self._build_ads_filter(**filters)
-        row = self._query_one(
-            f"SELECT COUNT(DISTINCT product_key) AS c FROM meta_ads {clause}", tuple(params))
-        return int(row["c"]) if row else 0
+        if self._summary_ready(filters):
+            sql, params = "SELECT COUNT(*) AS c FROM product_groups", []
+        else:
+            clause, params = self._build_ads_filter(**filters)
+            sql = f"SELECT COUNT(DISTINCT product_key) AS c FROM meta_ads {clause}"
+
+        def run() -> int:
+            row = self._query_one(sql, tuple(params))
+            return int(row["c"]) if row else 0
+        return self._cached(("count", sql, tuple(params)), run)
 
     def get_group_ads(self, product_key: str, user_id: Optional[int] = None,
                       limit: int = 500, market: str = "dz") -> list[dict]:
@@ -2000,8 +2446,24 @@ class Database:
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
             keywords=keywords, niches=niches, market=market,
         )
-        row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
-        return int(row["c"]) if row else 0
+        filters = dict(search=search, stores_only=stores_only, query=query,
+                       store_domain=store_domain, page_id=page_id, preset=preset,
+                       active_only=active_only, start_date_min=start_date_min,
+                       start_date_max=start_date_max, min_days_active=min_days_active,
+                       target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
+                       keywords=keywords, niches=niches, market=market)
+        if self._summary_ready(filters):
+            # Default view: the summary already counts every grouped ad; only
+            # ads without a product key (none normally) are counted live.
+            sql = (f"SELECT (SELECT COALESCE(SUM(ads_count), 0) FROM product_groups) + "
+                   f"(SELECT COUNT(*) FROM meta_ads {clause} AND product_key IS NULL) AS c")
+        else:
+            sql = f"SELECT COUNT(*) AS c FROM meta_ads {clause}"
+
+        def run() -> int:
+            row = self._query_one(sql, tuple(params))
+            return int(row["c"]) if row else 0
+        return self._cached(("count", sql, tuple(params)), run)
 
     def get_queries(self) -> list[dict]:
         sql = ("SELECT query, COUNT(*) AS total_ads, "
@@ -2031,7 +2493,8 @@ class Database:
             f"FROM ad_keywords ak JOIN meta_ads m ON m.ad_id = ak.ad_id {clause} "
             f"GROUP BY ak.keyword ORDER BY total_ads DESC, ak.keyword LIMIT {int(limit)}"
         )
-        return self._query(sql, tuple(params))
+        return self._cached(("keywords", sql, tuple(params)),
+                            lambda: self._query(sql, tuple(params)))
 
     def get_stores(self, search: str = "", user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
@@ -2069,6 +2532,9 @@ class Database:
             f"GROUP BY store_domain ORDER BY total_ads DESC LIMIT {int(limit)}", tuple(params))
 
     def get_stats(self, user_id: Optional[int] = None) -> dict:
+        return self._cached(("stats", user_id), lambda: self._get_stats(user_id))
+
+    def _get_stats(self, user_id: Optional[int] = None) -> dict:
         p = self._ph()
         total = self.count_ads(user_id=user_id)
         scope, scope_params = "", ()
@@ -2096,6 +2562,7 @@ class Database:
             "last_collection": last["t"] if last else None,
         }
 
+    @_changes_ads
     def clear_ads(self) -> None:
         """Reset the Algerian bank only; the foreign side tab is separate."""
         self._execute("DELETE FROM ad_events WHERE (market IS NULL OR market = 'dz')")
@@ -2123,6 +2590,7 @@ class Database:
         rows = self._query(sql, tuple(params))
         return [r["ad_id"] for r in rows if r.get("ad_id")]
 
+    @_changes_ads
     def mark_page_inactive_ads(self, page_id: str, active_ad_ids: list[str]) -> int:
         """Mark ads that disappeared from a monitored page as inactive."""
         if not page_id or not active_ad_ids:
@@ -2217,6 +2685,7 @@ class Database:
             job["known_ad_ids"] = self.get_known_ad_ids(query=q, limit=150)
         return job
 
+    @_invalidates_cache
     def finish_job(self, job_id: int, status: str = "done", result_count: int = 0,
                    error: str = "", checkpoint: Optional[str] = None,
                    scanned_count: Optional[int] = None, completed: Optional[bool] = None,
@@ -2471,6 +2940,7 @@ class Database:
             self._execute(f"UPDATE targets SET enabled={p}, interval_hours={p} WHERE id={p}",
                           (int(row["en"] or 0), float(row["iv"] or 12.0), int(target_id)))
 
+    @_invalidates_cache
     def add_user_target(self, user_id: int, type: str, target_value: str, label: str = "",
                         country: str = "DZ", interval_hours: float = 12.0,
                         source: str = "dashboard", market: str = "dz") -> tuple[int, bool]:
@@ -2655,6 +3125,7 @@ class Database:
             f"SELECT COUNT(*) AS c FROM meta_ads WHERE product_key={self._ph()} AND is_active = 1", (pkey,))
         return int((row or {}).get("c") or 0)
 
+    @_invalidates_cache
     def delete_target_everywhere(self, target_id: int) -> None:
         """Remove a competitor for everyone (and its page history)."""
         t = self.get_target(target_id)
@@ -2664,6 +3135,7 @@ class Database:
         if t and t.get("type") == "page":
             self.untrack_page(t.get("target_value"))
 
+    @_invalidates_cache
     def remove_user_target(self, user_id: int, target_id: int) -> None:
         """One user stops tracking; the competitor is dropped when nobody follows it."""
         t = self.get_target(target_id)
@@ -2679,6 +3151,7 @@ class Database:
         else:
             self._sync_target_from_links(target_id)
 
+    @_invalidates_cache
     def set_user_target_enabled(self, user_id: Optional[int], target_id: int, enabled: bool) -> None:
         """Per user, or for the shared target itself when user_id is None (admin)."""
         p = self._ph()
@@ -2750,6 +3223,7 @@ class Database:
             t["tracked_by"] = [o["email"] for o in owners]
         return rows
 
+    @_invalidates_cache
     def migrate_user_targets(self) -> int:
         """One-time move to per-user competitors: extension pages go to the
         users tracking them, the remaining (admin-made) targets to the admins."""
@@ -3105,6 +3579,7 @@ class Database:
     def update_user_login(self, user_id: int) -> None:
         self._execute(f"UPDATE users SET last_login_at = {self._ph()} WHERE id = {self._ph()}", (_now(), int(user_id)))
 
+    @_invalidates_cache
     def delete_user(self, user_id: int) -> None:
         p = self._ph()
         self._execute(f"DELETE FROM user_ads WHERE user_id = {p}", (int(user_id),))
@@ -3120,9 +3595,11 @@ class Database:
         rows = self._query("SELECT key, value FROM settings")
         return {r["key"]: r["value"] for r in rows}
 
+    @_invalidates_cache
     def set_setting(self, key: str, value: str) -> None:
         if key in ("cta_filter_enabled", "cta_allowlist"):
             self._cta_cache = (0.0, None)
+            self.mark_groups_stale()  # the summary only counts allowed CTAs
         if key == "arabic_only":
             self._arabic_cache = (0.0, None)
         p = self._ph()
@@ -3140,6 +3617,9 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+        if key in ("cta_filter_enabled", "cta_allowlist"):
+            self._cta_cache = (0.0, None)
+            self.mark_groups_stale()  # again: a rebuild may have raced the write
 
 
 db = Database()

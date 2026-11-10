@@ -6,3 +6,11 @@
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
   .num { font-variant-numeric: tabular-nums; }
+
+  /* Ads grid: the browser skips layout/paint of cards that are off screen. */
+  #ads > article { content-visibility: auto; contain-intrinsic-size: auto 430px; }
+  /* While a page is loading: keep the old cards, dimmed, instead of a blank grid. */
+  #ads.ads-loading > article { opacity: .45; pointer-events: none; transition: opacity .15s; }
+  .ads-skeleton > div, .ads-skeleton .rounded { animation: ads-pulse 1.2s ease-in-out infinite; }
+  @keyframes ads-pulse { 50% { opacity: .5; } }
+  @media (prefers-reduced-motion: reduce) { .ads-skeleton > div, .ads-skeleton .rounded { animation: none; } }

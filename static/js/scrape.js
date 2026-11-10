@@ -370,8 +370,10 @@ function setState(run) {
   document.getElementById('btn-start').disabled = run;
 }
 
-// Poll engine status periodically
+// Poll engine status periodically (not while the tab is hidden: it resumes,
+// and reconciles a finished scrape, as soon as the tab is shown again).
 setInterval(async () => {
+  if (document.hidden) return;
   try {
     const r = await fetch('/api/status');
     if (!r.ok) return;  // signed out / not allowed: not a scrape error

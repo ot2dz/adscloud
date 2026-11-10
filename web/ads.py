@@ -71,9 +71,10 @@ def api_ads():
     if request.args.get("group", "0") == "1":
         # One card per product (same advertiser + same product link); paging
         # and ``total`` count products, ``total_ads`` the ads behind them.
-        if sort_by == "hunter":
-            # Rank by Hunter Score: score the most recent candidates, then
-            # sort in Python (the score needs keyword/age maths SQL lacks).
+        if sort_by == "hunter" and not db.can_use_group_summary(filters):
+            # Filtered view: rank the most recent candidates by Hunter Score in
+            # Python. (The default view ranks every product straight from the
+            # precomputed summary, below.)
             pool = min(600, max(limit * 8, 200))
             rows = scoring.attach(db.attach_entity_stats(
                 db.get_ad_groups(limit=pool, offset=0, sort_by="collected_at", **filters)))
