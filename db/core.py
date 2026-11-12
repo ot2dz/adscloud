@@ -685,6 +685,34 @@ class Database:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_winning_pkey ON winning_products (product_key)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_events_pkey ON ad_events (product_key)")
+        # AI competitor reports: one store's ads summarised into a dossier and
+        # analysed by the configured LLM. Kept with their date for later reading.
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS ai_reports (
+            id {idcol},
+            user_id INTEGER,
+            store_domain TEXT,
+            platform TEXT,
+            status TEXT DEFAULT 'running',
+            provider TEXT,
+            model TEXT,
+            lang TEXT,
+            note TEXT DEFAULT '',
+            ads_count INTEGER DEFAULT 0,
+            unique_texts INTEGER DEFAULT 0,
+            tokens_est INTEGER DEFAULT 0,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            cost REAL,
+            dossier TEXT,
+            report TEXT,
+            error TEXT,
+            created_at TEXT,
+            finished_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_reports_user ON ai_reports (user_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_reports_domain ON ai_reports (store_domain)")
         # Seed/refresh the taxonomy from code (idempotent by slug).
         try:
             p = "%s" if self.is_postgres else "?"
@@ -3620,6 +3648,130 @@ class Database:
         if key in ("cta_filter_enabled", "cta_allowlist"):
             self._cta_cache = (0.0, None)
             self.mark_groups_stale()  # again: a rebuild may have raced the write
+
+    # ── AI competitor reports ─────────────────────────────────────────────
+    # A report still "running" after this long died with its process.
+    AI_REPORT_STALE_MIN = 20
+
+    def store_ads_for_analysis(self, domains: list[str], user_id: Optional[int] = None,
+                               limit: int = 5000) -> list[dict]:
+        """Every ad whose store_domain is one of ``domains`` (exact match),
+        newest launch first. ``user_id`` limits it to what that user may see."""
+        doms = [d for d in dict.fromkeys(str(x or "").strip().lower() for x in domains) if d]
+        if not doms:
+            return []
+        p = self._ph()
+        where = [f"store_domain IN ({', '.join([p] * len(doms))})"]
+        params: list = list(doms)
+        if user_id is not None:
+            where.append(self._user_scope_sql())
+            params.extend(self._user_scope_params(user_id))
+        return self._query(
+            "SELECT ad_id, page_id, page_name, store_domain, platform, link_url, body, cta_text, "
+            "is_active, start_date, stopped_at, days_active, collation_count, publisher_platforms, "
+            "product_key, primary_niche, first_seen "
+            f"FROM meta_ads WHERE {' AND '.join(where)} "
+            f"ORDER BY start_date DESC LIMIT {int(limit)}", tuple(params))
+
+    def store_domains_under(self, host: str, limit: int = 50) -> list[dict]:
+        """Distinct store domains equal to ``host`` or one of its subdomains,
+        with their ad counts."""
+        h = str(host or "").strip().lower()
+        if not h:
+            return []
+        p = self._ph()
+        return self._query(
+            f"SELECT store_domain, COUNT(*) AS ads FROM meta_ads "
+            f"WHERE store_domain = {p} OR store_domain LIKE {p} "
+            f"GROUP BY store_domain ORDER BY ads DESC LIMIT {int(limit)}",
+            (h, "%." + h.replace("%", "")))
+
+    def similar_store_domains(self, label: str, limit: int = 8) -> list[dict]:
+        """Store domains containing ``label`` (suggestions when nothing matched)."""
+        lab = str(label or "").strip().lower().replace("%", "").replace("_", "")
+        if len(lab) < 3:
+            return []
+        p = self._ph()
+        return self._query(
+            f"SELECT store_domain, COUNT(*) AS ads FROM meta_ads WHERE store_domain LIKE {p} "
+            f"GROUP BY store_domain ORDER BY ads DESC LIMIT {int(limit)}", ("%" + lab + "%",))
+
+    def create_ai_report(self, **fields) -> int:
+        cols = ("user_id", "store_domain", "platform", "status", "provider", "model", "lang",
+                "note", "ads_count", "unique_texts", "tokens_est", "dossier", "created_at")
+        row = dict(fields, status="running", created_at=_now())
+        vals = tuple(row.get(c) for c in cols)
+        p = self._ph()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            sql = f"INSERT INTO ai_reports ({', '.join(cols)}) VALUES ({', '.join([p] * len(cols))})"
+            if self.is_postgres:
+                cur.execute(sql + " RETURNING id", vals)
+                new_id = cur.fetchone()[0]
+            else:
+                cur.execute(sql, vals)
+                new_id = cur.lastrowid
+            conn.commit()
+            return int(new_id)
+        finally:
+            conn.close()
+
+    def finish_ai_report(self, rid: int, report: str = "", error: str = "",
+                         prompt_tokens: Optional[int] = None,
+                         completion_tokens: Optional[int] = None,
+                         cost: Optional[float] = None) -> None:
+        p = self._ph()
+        self._execute(
+            f"UPDATE ai_reports SET status={p}, report={p}, error={p}, prompt_tokens={p}, "
+            f"completion_tokens={p}, cost={p}, finished_at={p} WHERE id={p}",
+            ("error" if error else "done", report or "", (error or "")[:2000],
+             prompt_tokens, completion_tokens, cost, _now(), int(rid)))
+
+    def _ai_report_fresh(self, row: Optional[dict]) -> Optional[dict]:
+        """Mark a long-dead "running" report as failed (on read)."""
+        if row and row.get("status") == "running":
+            try:
+                started = datetime.fromisoformat(str(row.get("created_at")))
+                age_min = (datetime.now(timezone.utc) - started).total_seconds() / 60
+            except Exception:
+                age_min = 0
+            if age_min > self.AI_REPORT_STALE_MIN:
+                self.finish_ai_report(int(row["id"]), error="interrupted (server restarted?)")
+                row = dict(row, status="error", error="interrupted (server restarted?)")
+        return row
+
+    def get_ai_report(self, rid: int) -> Optional[dict]:
+        row = self._query_one(f"SELECT * FROM ai_reports WHERE id={self._ph()}", (int(rid),))
+        return self._ai_report_fresh(row)
+
+    def list_ai_reports(self, user_id: Optional[int] = None, domain: str = "",
+                        limit: int = 100) -> list[dict]:
+        p = self._ph()
+        where, params = [], []
+        if user_id is not None:
+            where.append(f"user_id={p}")
+            params.append(int(user_id))
+        if domain:
+            where.append(f"store_domain={p}")
+            params.append(domain)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = self._query(
+            "SELECT id, user_id, store_domain, platform, status, provider, model, lang, note, "
+            "ads_count, unique_texts, tokens_est, prompt_tokens, completion_tokens, cost, error, "
+            f"created_at, finished_at FROM ai_reports {clause} ORDER BY id DESC LIMIT {int(limit)}",
+            tuple(params))
+        return [self._ai_report_fresh(r) for r in rows]
+
+    def count_ai_reports_since(self, user_id: int, since_iso: str) -> int:
+        p = self._ph()
+        row = self._query_one(
+            f"SELECT COUNT(*) AS n FROM ai_reports WHERE user_id={p} AND created_at >= {p}",
+            (int(user_id), since_iso))
+        return int((row or {}).get("n") or 0)
+
+    def delete_ai_report(self, rid: int) -> None:
+        self._execute(f"DELETE FROM ai_reports WHERE id={self._ph()}", (int(rid),))
 
 
 db = Database()

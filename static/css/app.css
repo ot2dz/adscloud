@@ -14,3 +14,23 @@
   .ads-skeleton > div, .ads-skeleton .rounded { animation: ads-pulse 1.2s ease-in-out infinite; }
   @keyframes ads-pulse { 50% { opacity: .5; } }
   @media (prefers-reduced-motion: reduce) { .ads-skeleton > div, .ads-skeleton .rounded { animation: none; } }
+
+/* AI competitor report (Markdown rendered by analysis.js) */
+.an-md h2 { font-size: 1.05rem; font-weight: 800; color: #102a56; margin: 1.1rem 0 .5rem; }
+.an-md h3 { font-size: .95rem; font-weight: 800; color: #174ea6; margin: 1rem 0 .4rem; }
+.an-md h4 { font-size: .88rem; font-weight: 700; color: #102a56; margin: .8rem 0 .3rem; }
+.an-md p { margin: .45rem 0; }
+.an-md ul, .an-md ol { margin: .4rem 0; padding-inline-start: 1.3rem; }
+.an-md ul { list-style: disc; } .an-md ol { list-style: decimal; }
+.an-md li { margin: .2rem 0; }
+.an-md blockquote { border-inline-start: 3px solid #9fbbe0; background: #f0f7ff; padding: .5rem .8rem; border-radius: .5rem; margin: .6rem 0; color: #334155; }
+.an-md code { background: #eef2f7; padding: 0 .3rem; border-radius: .3rem; font-size: .85em; }
+.an-md pre { background: #0f172a; color: #e2e8f0; padding: .8rem; border-radius: .6rem; overflow-x: auto; font-size: .8rem; direction: ltr; }
+.an-md hr { border: 0; border-top: 1px solid #e2e8f0; margin: 1rem 0; }
+.an-md .an-table { overflow-x: auto; margin: .6rem 0; }
+.an-md table { border-collapse: collapse; font-size: .8rem; min-width: 60%; }
+.an-md th, .an-md td { border: 1px solid #d7e3f4; padding: .35rem .6rem; text-align: start; vertical-align: top; }
+.an-md th { background: #f0f7ff; font-weight: 700; color: #102a56; }
+.an-ref { display: inline-block; font-family: ui-monospace, monospace; font-size: .72rem; font-weight: 700; color: #6d28d9; background: #f3e8ff; border-radius: .35rem; padding: 0 .3rem; direction: ltr; }
+.an-spin { width: 14px; height: 14px; border: 2px solid #c7d7ee; border-top-color: #174ea6; border-radius: 50%; display: inline-block; animation: an-spin .8s linear infinite; }
+@keyframes an-spin { to { transform: rotate(360deg); } }

@@ -215,5 +215,61 @@
         <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ وحذف</button>
       </div>
 
+      <!-- AI competitor analysis -->
+      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
+        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
+          <span class="text-2xl">🤖</span>
+          <div>
+            <h3 class="font-bold text-[#102a56] text-sm">الذكاء الاصطناعي — تحليل المنافسين</h3>
+            <p class="text-xs text-slate-500">مزوّد متوافق مع OpenAI (OpenRouter أو OpenCode Zen أو رابط مخصص). المفتاح يُحفظ مشفّراً ولا يُعرض أبداً.</p>
+          </div>
+        </div>
+        <div class="grid md:grid-cols-2 gap-4 text-xs">
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">المزوّد (Provider):</label>
+            <select id="ai-provider" onchange="aiProviderChanged()" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 font-bold text-xs">
+              <option value="openrouter">OpenRouter</option>
+              <option value="opencode">OpenCode Zen</option>
+              <option value="custom">Custom (OpenAI-compatible)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">Base URL:</label>
+            <input id="ai-base-url" type="text" dir="ltr" placeholder="https://openrouter.ai/api/v1" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs">
+            <span class="text-[10px] text-slate-400 mt-1 block">اتركه فارغاً لاستخدام رابط المزوّد الافتراضي.</span>
+          </div>
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">مفتاح API:</label>
+            <input id="ai-api-key" type="password" dir="ltr" autocomplete="new-password" placeholder="sk-or-..." class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs">
+            <span id="ai-key-status" class="text-[10px] text-slate-400 mt-1 block"></span>
+          </div>
+          <div>
+            <label class="block text-slate-700 font-bold mb-1">الموديل (Model):</label>
+            <div class="flex gap-2">
+              <input id="ai-model" type="text" dir="ltr" list="ai-model-list" placeholder="anthropic/claude-sonnet-5.5" class="flex-1 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs">
+              <button onclick="aiLoadModels(this)" class="shrink-0 bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 font-bold text-xs">📥 جلب القائمة</button>
+            </div>
+            <datalist id="ai-model-list"></datalist>
+            <span id="ai-model-info" class="text-[10px] text-slate-400 mt-1 block"></span>
+          </div>
+          <div class="grid grid-cols-2 gap-3 md:col-span-2">
+            <label class="block"><span class="block text-slate-700 font-bold mb-1">أقصى توكنات للرد</span>
+              <input id="ai-max-out" type="number" min="500" max="32000" step="500" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
+            <label class="block"><span class="block text-slate-700 font-bold mb-1">أقصى نصوص فريدة تُرسل</span>
+              <input id="ai-max-texts" type="number" min="10" max="600" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
+            <label class="block"><span class="block text-slate-700 font-bold mb-1">Temperature</span>
+              <input id="ai-temperature" type="number" min="0" max="1.5" step="0.1" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
+            <label class="block"><span class="block text-slate-700 font-bold mb-1">حد يومي لكل مستخدم (0 = بلا حد)</span>
+              <input id="ai-daily-limit" type="number" min="0" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
+          </div>
+        </div>
+        <div class="flex gap-2.5 flex-wrap">
+          <button onclick="aiTest(this)" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-5 py-2.5 font-bold transition text-xs shadow-sm">🧪 اختبار الاتصال</button>
+          <button onclick="aiSave()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ إعدادات الذكاء الاصطناعي</button>
+          <button onclick="aiClearKey()" class="ms-auto bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-2.5 font-bold transition text-xs">حذف المفتاح</button>
+        </div>
+        <div id="ai-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold" dir="auto"></div>
+      </div>
+
     </div>
   </section>

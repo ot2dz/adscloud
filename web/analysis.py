@@ -1,0 +1,296 @@
+"""AI competitor analysis: store link → dossier → LLM report (saved with its date).
+
+The model call runs in a background thread so a long answer never holds a
+request (or a gunicorn thread) open: the browser polls the saved report.
+"""
+import json
+import logging
+import threading
+from datetime import datetime, timedelta, timezone
+
+from flask import Blueprint, g, jsonify, request
+
+import ai_client
+import competitor
+from db import db
+from web.common import _audit, _scope_user_id, admin_required, login_required
+
+logger = logging.getLogger("web_app")
+
+bp = Blueprint("analysis", __name__)
+
+# At most this many reports are generated at the same time (whole app).
+_SLOTS = threading.BoundedSemaphore(3)
+LANGS = ("auto", "ar", "dz", "fr", "en")
+STORE_ERRORS = {
+    "invalid_link": "رابط غير صالح — الصق رابط المتجر أو الدومين.",
+    "not_a_store": "هذا الرابط ليس متجراً (فيسبوك / واتساب / إنستغرام …).",
+    "platform_root": "هذا دومين المنصة نفسها — الصق رابط المتجر كاملاً مثل name.youcan.shop",
+}
+
+
+def _is_admin() -> bool:
+    return (g.user or {}).get("role") == "admin"
+
+
+def _cfg() -> dict:
+    return ai_client.load_config(db.get_settings())
+
+
+# ── AI settings (admin) ──────────────────────────────────────────────────
+@bp.route("/api/ai/config", methods=["GET"])
+@admin_required
+def api_ai_config():
+    cfg = _cfg()
+    s = db.get_settings()
+    return jsonify({
+        "providers": {k: v for k, v in ai_client.PROVIDERS.items()},
+        "provider": cfg["provider"],
+        "base_url": str(s.get("ai_base_url") or ""),
+        "effective_base_url": cfg["base_url"],
+        "model": cfg["model"],
+        "key_set": cfg["key_set"],
+        "key_unreadable": cfg["key_unreadable"],
+        "key_hint": ai_client.mask(cfg["api_key"]),
+        "max_output_tokens": cfg["max_output_tokens"],
+        "max_texts": cfg["max_texts"],
+        "temperature": cfg["temperature"],
+        "daily_limit": cfg["daily_limit"],
+    })
+
+
+@bp.route("/api/ai/config", methods=["POST"])
+@admin_required
+def api_ai_config_save():
+    c = request.get_json(force=True, silent=True) or {}
+    if "provider" in c:
+        prov = str(c["provider"]).strip()
+        db.set_setting("ai_provider", prov if prov in ai_client.PROVIDERS else "custom")
+    if "base_url" in c:
+        url = str(c["base_url"] or "").strip().rstrip("/")
+        if url and not url.startswith(("https://", "http://")):
+            return jsonify({"error": "Base URL must start with https://"}), 400
+        db.set_setting("ai_base_url", url)
+    if "model" in c:
+        db.set_setting("ai_model", str(c["model"] or "").strip()[:200])
+    for k in ("max_output_tokens", "max_texts", "temperature", "daily_limit"):
+        if k in c and str(c[k]).strip() != "":
+            db.set_setting("ai_" + k, str(c[k]).strip()[:20])
+    changed_key = False
+    if c.get("clear_key"):
+        db.set_setting("ai_api_key", "")
+        changed_key = True
+    elif str(c.get("api_key") or "").strip():
+        db.set_setting("ai_api_key", ai_client.encrypt_secret(str(c["api_key"])))
+        changed_key = True
+    _audit("ai_settings_changed", ",".join(sorted(k for k in c if k != "api_key"))
+           + (",api_key" if changed_key else ""))
+    return jsonify({"ok": True})
+
+
+def _cfg_with_overrides(c: dict) -> dict:
+    """Saved config, with unsaved form values (provider/url/key/model) on top."""
+    cfg = _cfg()
+    prov = str(c.get("provider") or "").strip()
+    if prov in ai_client.PROVIDERS:
+        cfg["provider"] = prov
+        cfg["base_url"] = (str(c.get("base_url") or "").strip().rstrip("/")
+                           or ai_client.PROVIDERS[prov]["base_url"])
+    elif str(c.get("base_url") or "").strip():
+        cfg["base_url"] = str(c["base_url"]).strip().rstrip("/")
+    if str(c.get("api_key") or "").strip():
+        cfg["api_key"] = str(c["api_key"]).strip()
+        cfg["key_unreadable"] = False
+    if str(c.get("model") or "").strip():
+        cfg["model"] = str(c["model"]).strip()
+    return cfg
+
+
+@bp.route("/api/ai/models", methods=["POST"])
+@admin_required
+def api_ai_models():
+    cfg = _cfg_with_overrides(request.get_json(force=True, silent=True) or {})
+    if not cfg["base_url"]:
+        return jsonify({"error": "Base URL is not set"}), 400
+    try:
+        return jsonify({"models": ai_client.list_models(cfg, ttl=0)})
+    except ai_client.AIError as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@bp.route("/api/ai/test", methods=["POST"])
+@admin_required
+def api_ai_test():
+    cfg = _cfg_with_overrides(request.get_json(force=True, silent=True) or {})
+    why = ai_client.ready(cfg)
+    if why:
+        return jsonify({"ok": False, "error": why})
+    try:
+        r = ai_client.chat(cfg, [{"role": "user", "content": "Reply with the single word: OK"}],
+                           max_tokens=20, timeout=60)
+        return jsonify({"ok": True, "reply": r["text"][:100], "model": r["model"]})
+    except ai_client.AIError as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+# ── analysis ─────────────────────────────────────────────────────────────
+def _prepare(payload: dict) -> tuple[dict, dict | None, list | None, dict]:
+    """Resolve the store, load its ads, build dossier + prompt.
+
+    Returns (store, dossier, messages, cfg); dossier is None when nothing to analyse."""
+    cfg = _cfg()
+    store = competitor.resolve_store(str(payload.get("store") or ""), db)
+    if not _is_admin():
+        store["suggestions"] = []  # do not reveal other stores of the bank
+    if store["error"] or not store["domains"]:
+        return store, None, None, cfg
+    ads = db.store_ads_for_analysis(store["domains"], user_id=_scope_user_id())
+    if not ads:
+        return store, None, None, cfg
+    dossier = competitor.build_dossier(ads, store, max_texts=cfg["max_texts"])
+    lang = payload.get("lang") if payload.get("lang") in LANGS else "auto"
+    messages = competitor.build_messages(dossier, lang=lang, note=str(payload.get("note") or "")[:2000])
+    return store, dossier, messages, cfg
+
+
+def _store_json(store: dict) -> dict:
+    out = {k: store[k] for k in ("host", "platform", "domains", "notes", "error", "suggestions")}
+    if store["error"]:
+        out["error_text"] = STORE_ERRORS.get(store["error"], store["error"])
+    return out
+
+
+def _quota_left(cfg: dict):
+    if _is_admin() or not cfg["daily_limit"]:
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    return max(0, cfg["daily_limit"] - db.count_ai_reports_since(int(g.user["id"]), since))
+
+
+@bp.route("/api/analysis/preview", methods=["POST"])
+@login_required
+def api_analysis_preview():
+    payload = request.get_json(force=True, silent=True) or {}
+    store, dossier, messages, cfg = _prepare(payload)
+    out = {"store": _store_json(store), "ready_error": ai_client.ready(cfg),
+           "model": cfg["model"], "provider": cfg["provider"], "quota_left": _quota_left(cfg)}
+    if dossier is None:
+        out["ads_found"] = 0
+        return jsonify(out)
+    tok_in = competitor.estimate_messages(messages)
+    info = ai_client.model_info(cfg) if not out["ready_error"] else None
+    cost = None
+    if info and info.get("price_in") is not None and info.get("price_out") is not None:
+        cost = {"input": round(tok_in * info["price_in"] / 1e6, 4),
+                "max": round((tok_in * info["price_in"] + cfg["max_output_tokens"] * info["price_out"]) / 1e6, 4)}
+    t = dossier["totals"]
+    out.update({
+        "ads_found": t["ads"], "active": t["active"], "unique_texts": t["unique_texts"],
+        "duplicate_ads": t["duplicate_ads"], "texts_sent": len(dossier["texts"]),
+        "texts_omitted": dossier["omitted_texts"]["count"],
+        "first_launch": t["first_launch"], "last_launch": t["last_launch"],
+        "tokens_in": tok_in, "max_output_tokens": cfg["max_output_tokens"],
+        "context": (info or {}).get("context"), "cost_usd": cost,
+        "top_texts": [{"id": x["id"], "ads": x["ads"], "active": x["active"],
+                       "max_days": x["max_days"], "text": x["text"][:160]}
+                      for x in dossier["texts"][:8]],
+    })
+    return jsonify(out)
+
+
+def _run_report(rid: int, cfg: dict, messages: list) -> None:
+    try:
+        r = ai_client.chat(cfg, messages, timeout=600)
+        text = r["text"]
+        if not text:
+            raise ai_client.AIError("The model returned an empty answer")
+        if r.get("finish_reason") == "length":
+            text += "\n\n> ⚠️ The report was cut at the output-token limit (raise it in Settings → AI)."
+        db.finish_ai_report(rid, report=text, prompt_tokens=r.get("prompt_tokens"),
+                            completion_tokens=r.get("completion_tokens"), cost=r.get("cost"))
+    except ai_client.AIError as e:
+        db.finish_ai_report(rid, error=str(e))
+    except Exception as e:  # never leave a report "running"
+        logger.exception("AI report %s failed", rid)
+        db.finish_ai_report(rid, error=f"internal error: {e}")
+    finally:
+        _SLOTS.release()
+
+
+@bp.route("/api/analysis/run", methods=["POST"])
+@login_required
+def api_analysis_run():
+    payload = request.get_json(force=True, silent=True) or {}
+    store, dossier, messages, cfg = _prepare(payload)
+    if store["error"]:
+        return jsonify({"error": STORE_ERRORS.get(store["error"], store["error"])}), 400
+    if dossier is None:
+        return jsonify({"error": "لا توجد إعلانات لهذا المتجر في القاعدة."}), 404
+    why = ai_client.ready(cfg)
+    if why:
+        return jsonify({"error": why}), 400
+    left = _quota_left(cfg)
+    if left is not None and left <= 0:
+        return jsonify({"error": "وصلت للحد اليومي من التحليلات."}), 429
+    if not _SLOTS.acquire(blocking=False):
+        return jsonify({"error": "تحليلات أخرى قيد التشغيل — أعد المحاولة بعد قليل."}), 429
+    try:
+        t = dossier["totals"]
+        rid = db.create_ai_report(
+            user_id=int(g.user["id"]), store_domain=store["host"], platform=store["platform"],
+            provider=cfg["provider"], model=cfg["model"],
+            lang=payload.get("lang") if payload.get("lang") in LANGS else "auto",
+            note=str(payload.get("note") or "")[:2000], ads_count=t["ads"],
+            unique_texts=t["unique_texts"], tokens_est=competitor.estimate_messages(messages),
+            dossier=json.dumps(dossier, ensure_ascii=False))
+        threading.Thread(target=_run_report, args=(rid, cfg, messages),
+                         name=f"ai-report-{rid}", daemon=True).start()
+    except Exception:
+        _SLOTS.release()
+        raise
+    _audit("ai_report_started", f"{store['host']} #{rid}")
+    return jsonify({"ok": True, "id": rid})
+
+
+def _own_report(rid: int):
+    row = db.get_ai_report(rid)
+    if not row or (not _is_admin() and int(row.get("user_id") or 0) != int(g.user["id"])):
+        return None
+    return row
+
+
+@bp.route("/api/analysis/reports")
+@login_required
+def api_analysis_reports():
+    uid = None if _is_admin() else int(g.user["id"])
+    domain = competitor.clean_store_host(request.args.get("domain") or "")
+    return jsonify({"reports": db.list_ai_reports(user_id=uid, domain=domain)})
+
+
+@bp.route("/api/analysis/reports/<int:rid>")
+@login_required
+def api_analysis_report(rid: int):
+    row = _own_report(rid)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    row = dict(row)
+    try:
+        d = json.loads(row.pop("dossier") or "{}")
+    except ValueError:
+        d = {}
+    # The full dossier is big; the UI only needs its summary parts.
+    row["dossier"] = {k: d.get(k) for k in ("store", "today", "totals", "ctas", "products",
+                                             "days_active_buckets", "signals_in_texts", "prices_dzd")}
+    return jsonify(row)
+
+
+@bp.route("/api/analysis/reports/<int:rid>", methods=["DELETE"])
+@login_required
+def api_analysis_report_delete(rid: int):
+    row = _own_report(rid)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    if row.get("status") == "running":
+        return jsonify({"error": "still running"}), 409
+    db.delete_ai_report(rid)
+    return jsonify({"ok": True})

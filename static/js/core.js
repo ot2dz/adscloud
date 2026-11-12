@@ -386,7 +386,7 @@ function escT(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&am
 // ── Tab switcher ──
 function showTab(t) {
   if (t === 'tracked') t = 'targets';  // old tab merged into competitors
-  const views = ['ads','targets','winning','stores','global','jobs','settings','users'];
+  const views = ['ads','targets','winning','stores','analysis','global','jobs','settings','users'];
   views.forEach(v => {
     const el = document.getElementById('view-'+v);
     if (el) el.classList.toggle('hidden', t!==v);
@@ -406,6 +406,7 @@ function showTab(t) {
   if (t === 'targets') loadTargets();
   if (t === 'winning') loadWinning();
   if (t === 'stores') loadStores();
+  if (t === 'analysis') loadAnalysis();
   if (t === 'global') loadGlobal();
   if (t === 'jobs') loadJobs();
   if (t === 'settings') loadSettings();
