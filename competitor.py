@@ -397,3 +397,44 @@ def estimate_tokens(text: str) -> int:
 
 def estimate_messages(messages: list[dict]) -> int:
     return sum(estimate_tokens(m["content"]) + 4 for m in messages)
+
+
+# ── export for an external chat (Google AI Studio / Gemini) ──────────────
+def product_links(ads: list[dict]) -> dict:
+    """landing path → one clean full link (tracking parameters dropped)."""
+    out: dict[str, str] = {}
+    for a in ads:
+        raw = str(a.get("link_url") or "").strip()
+        path = product_path(raw)
+        if not path or path in out:
+            continue
+        try:
+            parts = urlsplit(raw)
+        except ValueError:
+            continue
+        if parts.scheme in ("http", "https") and parts.netloc:
+            out[path] = f"{parts.scheme}://{parts.netloc}{'' if path == '/' else path}"
+    return out
+
+
+EXPORT_ASK = """=== المطلوب ===
+حلّل كل منتجات هذا المتجر بالمحرك الكامل الموجود في تعليمات النظام:
+1. ابحث في Google عن كل منتج (Reddit / Amazon / AliExpress / 1688) وافتح روابط المنتجات إن استطعت.
+2. نفّذ الحسابات ببايثون (Code Execution) بالثوابت الجزائرية.
+3. أعطني أولاً جدول القرارات المختصر (منتج في كل سطر)، ثم التفاصيل لكل منتج، ثم الخلاصة.
+اكتب بالعربية."""
+
+
+def export_text(dossier: dict, ads: list[dict], note: str = "") -> str:
+    """The whole dossier + full product links + the ask, ready to paste."""
+    links = product_links(ads)
+    L = ["=== DOSSIER START ===", dossier_text(dossier), "",
+         "PRODUCT LINKS (path → full link to open):"]
+    for p in dossier.get("products") or []:
+        if p["path"] in links:
+            L.append(f"- {p['path']} → {links[p['path']]}")
+    L += ["=== DOSSIER END ===", ""]
+    if note.strip():
+        L += ["=== ملاحظة المستخدم ===", note.strip(), ""]
+    L.append(EXPORT_ASK)
+    return "\n".join(L)

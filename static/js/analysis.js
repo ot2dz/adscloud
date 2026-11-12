@@ -140,8 +140,95 @@ function anPreviewHtml(d) {
       <button id="an-audit-btn" onclick="anRun(this, 'audit')" ${d.ready_error ? 'disabled' : ''}
         class="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">🧪 تدقيق المنتجات + القرار والتسعير</button>
     </div>
+    ${anGeminiHtml()}
     <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">🧪 التدقيق: يستخرج حتى <b>${anFmt(d.audit_max_products)}</b> منتجات، يبحث عن كل منتج ${d.web_search ? '<b>في الويب</b> (Reddit / Amazon / AliExpress)' : '<span class="text-amber-700">بدون بحث ويب (يتطلب OpenRouter)</span>'}، ثم يحسب الأسعار الثلاثة والنقاط ببايثون ويعطي جدول قرارات. استدعاء واحد للموديل لكل منتج — التكلفة أعلى من التقرير العادي.</div>
   </div>`;
+}
+
+// ── Free route: Google AI Studio (Gemini) — copy, paste there, paste the answer back ──
+let anGem = null;  // {store, system, data, filename, ads, unique_texts, tokens_est}
+
+function anGeminiHtml() {
+  const btn = 'bg-white hover:bg-sky-100 border border-sky-300 text-sky-800 rounded-xl px-3 py-2 font-bold text-xs transition';
+  return `<div class="rounded-xl border border-sky-200 bg-sky-50/60 p-3 space-y-2.5">
+    <div class="font-extrabold text-sky-900">✨ مجاناً عبر Google AI Studio (Gemini)</div>
+    <ol class="list-decimal ps-5 space-y-0.5 text-slate-700 font-semibold leading-relaxed">
+      <li>افتح AI Studio وأنشئ محادثة جديدة.</li>
+      <li>انسخ <b>تعليمات النظام</b> والصقها في خانة <span dir="ltr">System instructions</span> (مرة واحدة، تبقى محفوظة).</li>
+      <li>فعّل من الأدوات: <span dir="ltr">Grounding with Google Search</span> و <span dir="ltr">Code execution</span> (و <span dir="ltr">URL context</span> إن وُجد).</li>
+      <li>انسخ <b>بيانات المتجر</b> والصقها كرسالة (أو حمّلها كملف وارفعه) ثم أرسل.</li>
+      <li>الصق جواب Gemini في الخانة أسفله واحفظه ليبقى في تقاريرك.</li>
+    </ol>
+    <div class="flex flex-wrap gap-2">
+      <a href="https://aistudio.google.com/prompts/new_chat" target="_blank" rel="noopener" class="${btn}">🌐 فتح AI Studio</a>
+      <button type="button" onclick="anGemCopy('system', this)" class="${btn}">📋 نسخ تعليمات النظام</button>
+      <button type="button" onclick="anGemCopy('data', this)" class="${btn}">📋 نسخ بيانات المتجر</button>
+      <button type="button" onclick="anGemDownload(this)" class="${btn}">⬇️ تحميل البيانات (.txt)</button>
+    </div>
+    <div id="an-gem-info" class="text-[11px] text-slate-500 font-semibold"></div>
+    <textarea id="an-gem-result" rows="3" dir="auto" placeholder="الصق هنا جواب Gemini كاملاً..."
+      class="w-full bg-white border border-sky-200 rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-1 focus:ring-sky-500"></textarea>
+    <button type="button" onclick="anGemSave(this)" class="bg-sky-700 hover:bg-sky-800 text-white rounded-xl px-4 py-2 font-bold text-xs">💾 حفظ النتيجة في التقارير</button>
+  </div>`;
+}
+
+async function anGemLoad() {
+  const store = anStoreValue();
+  const note = document.getElementById('an-note').value;
+  if (anGem && anGem.store_input === store && anGem.note === note) return anGem;
+  const r = await fetch('/api/analysis/export', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({store, note})
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'فشل تجهيز البيانات');
+  anGem = Object.assign(d, {store_input: store, note});
+  const info = document.getElementById('an-gem-info');
+  if (info) info.innerHTML = `${anFmt(d.ads)} إعلان · ${anFmt(d.unique_texts)} نص فريد (كلها، بلا حد) · ≈ ${anFmt(d.tokens_est)} توكن`;
+  return anGem;
+}
+
+async function anGemCopy(which, btn) {
+  const label = btn.textContent;
+  try {
+    const d = await anGemLoad();
+    await navigator.clipboard.writeText(which === 'system' ? d.system : d.data);
+    btn.textContent = '✅ تم النسخ';
+  } catch (e) {
+    alert('خطأ: ' + e.message);
+  }
+  setTimeout(() => { btn.textContent = label; }, 2000);
+}
+
+async function anGemDownload(btn) {
+  try {
+    const d = await anGemLoad();
+    const blob = new Blob([d.data], {type: 'text/plain;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = d.filename || 'store.txt';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    alert('خطأ: ' + e.message);
+  }
+}
+
+async function anGemSave(btn) {
+  const text = document.getElementById('an-gem-result').value.trim();
+  if (text.length < 20) { alert('الصق جواب Gemini أولاً.'); return; }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/analysis/import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({store: anStoreValue(), report: text, note: document.getElementById('an-note').value,
+                            ads: anGem ? anGem.ads : 0, unique_texts: anGem ? anGem.unique_texts : 0})
+    });
+    const d = await r.json();
+    if (!r.ok || !d.id) { alert(d.error || 'فشل الحفظ'); return; }
+    document.getElementById('an-gem-result').value = '';
+    anOpen(d.id);
+    anLoadReports();
+  } finally { btn.disabled = false; }
 }
 
 async function anRun(btn, kind) {
@@ -221,7 +308,8 @@ async function anLoadReports() {
   box.innerHTML = rows.map(x => `<div class="flex items-center gap-2 flex-wrap border border-[#e3ecf8] rounded-xl px-3 py-2 hover:bg-[#f8fbff]">
       <button onclick="anOpen(${x.id})" class="font-mono font-bold text-blue-700 hover:underline" dir="ltr">${escT(x.store_domain)}</button>
       ${badge(x.status)}
-      ${x.kind === 'audit' ? '<span class="px-2 py-0.5 rounded-lg bg-violet-50 text-violet-700 font-bold">🧪 تدقيق</span>' : ''}
+      ${x.provider === 'manual' ? '<span class="px-2 py-0.5 rounded-lg bg-sky-50 text-sky-700 font-bold">✨ Gemini</span>'
+        : x.kind === 'audit' ? '<span class="px-2 py-0.5 rounded-lg bg-violet-50 text-violet-700 font-bold">🧪 تدقيق</span>' : ''}
       <span class="text-slate-500 font-semibold num">${escT((x.created_at || '').slice(0, 16).replace('T', ' '))}</span>
       <span class="text-slate-500 font-semibold">${anFmt(x.ads_count)} إعلان · ${anFmt(x.unique_texts)} نص</span>
       <span class="text-slate-400 font-mono truncate max-w-[220px]" dir="ltr">${escT(x.model || '')}</span>

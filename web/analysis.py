@@ -5,6 +5,7 @@ request (or a gunicorn thread) open: the browser polls the saved report.
 """
 import json
 import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -347,6 +348,60 @@ def api_analysis_run():
         raise
     _audit(f"ai_{kind}_started", f"{store['host']} #{rid}")
     return jsonify({"ok": True, "id": rid, "kind": kind})
+
+
+GEMINI_SYSTEM_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "prompts", "gemini_audit_system.md")
+EXPORT_MAX_TEXTS = 100000  # AI Studio has a huge context: send every unique text
+
+
+def _gemini_system() -> str:
+    with open(GEMINI_SYSTEM_PATH, encoding="utf-8") as f:
+        return f.read()
+
+
+@bp.route("/api/analysis/export", methods=["POST"])
+@login_required
+def api_analysis_export():
+    """System instructions + the store's full data, to paste in Google AI Studio."""
+    payload = request.get_json(force=True, silent=True) or {}
+    store = competitor.resolve_store(str(payload.get("store") or ""), db)
+    if store["error"]:
+        return jsonify({"error": STORE_ERRORS.get(store["error"], store["error"])}), 400
+    ads = db.store_ads_for_analysis(store["domains"], user_id=_scope_user_id()) if store["domains"] else []
+    if not ads:
+        return jsonify({"error": "لا توجد إعلانات لهذا المتجر في القاعدة."}), 404
+    dossier = competitor.build_dossier(ads, store, max_texts=EXPORT_MAX_TEXTS)
+    data = competitor.export_text(dossier, ads, note=str(payload.get("note") or "")[:2000])
+    system = _gemini_system()
+    _audit("ai_export", store["host"])
+    return jsonify({
+        "store": store["host"], "system": system, "data": data,
+        "filename": f"{store['host']}-{datetime.now(timezone.utc).date().isoformat()}.txt",
+        "ads": dossier["totals"]["ads"], "unique_texts": dossier["totals"]["unique_texts"],
+        "tokens_est": competitor.estimate_tokens(system) + competitor.estimate_tokens(data),
+    })
+
+
+@bp.route("/api/analysis/import", methods=["POST"])
+@login_required
+def api_analysis_import():
+    """Save an answer pasted back from AI Studio as a report of this store."""
+    payload = request.get_json(force=True, silent=True) or {}
+    text = str(payload.get("report") or "").strip()
+    if len(text) < 20:
+        return jsonify({"error": "الصق نتيجة Gemini أولاً."}), 400
+    store = competitor.resolve_store(str(payload.get("store") or ""), db)
+    if store["error"]:
+        return jsonify({"error": STORE_ERRORS.get(store["error"], store["error"])}), 400
+    rid = db.create_ai_report(
+        user_id=int(g.user["id"]), store_domain=store["host"], platform=store["platform"],
+        provider="manual", model="Google AI Studio (Gemini)", lang="auto",
+        note=str(payload.get("note") or "")[:2000], ads_count=int(payload.get("ads") or 0),
+        unique_texts=int(payload.get("unique_texts") or 0), tokens_est=0, dossier="{}", kind="audit")
+    db.finish_ai_report(rid, report=text[:400000])
+    _audit("ai_import", f"{store['host']} #{rid}")
+    return jsonify({"ok": True, "id": rid})
 
 
 def _own_report(rid: int):

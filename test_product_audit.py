@@ -155,5 +155,48 @@ class AuditApiTest(unittest.TestCase):
         self.assertEqual(listed[0]["kind"], "audit")
 
 
+class GeminiExportTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import app as app_module
+        cls.app = app_module.app
+
+    def setUp(self):
+        tc._clean()
+        from werkzeug.security import generate_password_hash
+        db.create_user("admin@test.dz", generate_password_hash("pass-12345"), role="admin")
+        for i in range(130):  # more than the API max_texts default (120)
+            db.save_ad(tc._ad(f"g{i}", "shiba.youcan.store", f"منتج رقم {i} بـ 2900 دج",
+                              link_path=f"/products/p{i % 3}"), query="q", country="DZ")
+        self.c = self.app.test_client()
+        self.c.post("/api/auth/login", json={"email": "admin@test.dz", "password": "pass-12345"})
+
+    def test_export_has_system_all_texts_and_links_without_ai_key(self):
+        d = self.c.post("/api/analysis/export", json={"store": "shiba.youcan.store", "note": "ركز على المطبخ"}).get_json()
+        self.assertIn("COD ALGERIA MASTER RISK", d["system"])
+        self.assertIn("جدول القرارات", d["system"])
+        self.assertEqual(d["unique_texts"], 130)
+        self.assertIn("[T130]", d["data"])  # nothing cut
+        self.assertIn("https://shiba.youcan.store/products/p1", d["data"])
+        self.assertNotIn("utm_source", d["data"])
+        self.assertIn("ركز على المطبخ", d["data"])
+        self.assertTrue(d["filename"].startswith("shiba.youcan.store-"))
+
+    def test_export_unknown_store(self):
+        r = self.c.post("/api/analysis/export", json={"store": "nothing-here.youcan.store"})
+        self.assertEqual(r.status_code, 404)
+
+    def test_import_saves_report_and_is_not_counted_in_quota(self):
+        r = self.c.post("/api/analysis/import", json={"store": "https://shiba.youcan.store/x",
+                                                       "report": "| # | المنتج |\n|---|---|\n| 1 | مصباح |"}).get_json()
+        row = self.c.get(f"/api/analysis/reports/{r['id']}").get_json()
+        self.assertEqual((row["status"], row["kind"], row["provider"]), ("done", "audit", "manual"))
+        self.assertIn("مصباح", row["report"])
+        uid = db.get_ai_report(r["id"])["user_id"]
+        self.assertEqual(db.count_ai_reports_since(uid, "2000-01-01"), 0)
+        self.assertEqual(self.c.post("/api/analysis/import", json={"store": "shiba.youcan.store",
+                                                                  "report": "x"}).status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

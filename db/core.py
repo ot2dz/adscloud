@@ -3788,7 +3788,8 @@ class Database:
     def count_ai_reports_since(self, user_id: int, since_iso: str) -> int:
         p = self._ph()
         row = self._query_one(
-            f"SELECT COUNT(*) AS n FROM ai_reports WHERE user_id={p} AND created_at >= {p}",
+            f"SELECT COUNT(*) AS n FROM ai_reports WHERE user_id={p} AND created_at >= {p} "
+            "AND COALESCE(provider, '') <> 'manual'",  # pasted AI Studio answers are free
             (int(user_id), since_iso))
         return int((row or {}).get("n") or 0)
 
