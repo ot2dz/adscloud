@@ -33,6 +33,8 @@ DEFAULTS = {
     "ai_max_texts": "120",
     "ai_temperature": "0.3",
     "ai_daily_limit": "20",
+    "ai_web_search": "1",
+    "ai_audit_max_products": "8",
 }
 
 _ENC_PREFIX = "enc:v1:"
@@ -110,6 +112,8 @@ def load_config(settings: dict) -> dict:
         "max_texts": _num("ai_max_texts", int, 10, 600),
         "temperature": _num("ai_temperature", float, 0.0, 1.5),
         "daily_limit": _num("ai_daily_limit", int, 0, 10000),
+        "web_search": _get("ai_web_search") not in ("0", "false", "off", ""),
+        "audit_max_products": _num("ai_audit_max_products", int, 1, 25),
     }
 
 
@@ -159,9 +163,12 @@ def _request(cfg: dict, path: str, payload: Optional[dict] = None, timeout: floa
 
 
 def chat(cfg: dict, messages: list[dict], max_tokens: Optional[int] = None,
-         timeout: float = 300) -> dict:
+         timeout: float = 300, web_search: int = 0) -> dict:
     """One chat completion. Returns {text, prompt_tokens, completion_tokens,
-    cost, finish_reason, model}."""
+    cost, finish_reason, model, citations}.
+
+    ``web_search`` > 0 asks OpenRouter's "web" plugin for that many search
+    results (ignored by other providers: see supports_web_search)."""
     payload = {
         "model": cfg["model"],
         "messages": messages,
@@ -170,6 +177,8 @@ def chat(cfg: dict, messages: list[dict], max_tokens: Optional[int] = None,
     }
     if cfg.get("provider") == "openrouter":
         payload["usage"] = {"include": True}  # cost in the answer
+        if web_search > 0:
+            payload["plugins"] = [{"id": "web", "max_results": int(web_search)}]
     t0 = time.time()
     j = _request(cfg, "/chat/completions", payload, timeout=timeout)
     if j.get("error"):
@@ -183,6 +192,11 @@ def chat(cfg: dict, messages: list[dict], max_tokens: Optional[int] = None,
     if isinstance(text, list):  # some providers return content parts
         text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
     usage = j.get("usage") or {}
+    citations = []
+    for a in msg.get("annotations") or []:
+        u = (a.get("url_citation") or {}).get("url") if isinstance(a, dict) else None
+        if u and u not in citations:
+            citations.append(u)
     logger.info("AI chat model=%s in=%s out=%s %.1fs", cfg.get("model"),
                 usage.get("prompt_tokens"), usage.get("completion_tokens"), time.time() - t0)
     return {
@@ -192,7 +206,12 @@ def chat(cfg: dict, messages: list[dict], max_tokens: Optional[int] = None,
         "cost": usage.get("cost"),
         "finish_reason": choices[0].get("finish_reason"),
         "model": j.get("model") or cfg.get("model"),
+        "citations": citations,
     }
+
+
+def supports_web_search(cfg: dict) -> bool:
+    return cfg.get("provider") == "openrouter" and bool(cfg.get("web_search"))
 
 
 _MODELS_CACHE: dict = {}

@@ -261,6 +261,13 @@
               <input id="ai-temperature" type="number" min="0" max="1.5" step="0.1" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
             <label class="block"><span class="block text-slate-700 font-bold mb-1">حد يومي لكل مستخدم (0 = بلا حد)</span>
               <input id="ai-daily-limit" type="number" min="0" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
+            <label class="block"><span class="block text-slate-700 font-bold mb-1">بحث الويب في تدقيق المنتجات (OpenRouter فقط)</span>
+              <select id="ai-web-search" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs font-bold">
+                <option value="1">مفعّل (~0.02$ إضافية لكل منتج)</option>
+                <option value="0">معطّل (معرفة الموديل فقط)</option>
+              </select></label>
+            <label class="block"><span class="block text-slate-700 font-bold mb-1">أقصى منتجات في التدقيق الواحد</span>
+              <input id="ai-audit-max" type="number" min="1" max="25" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
           </div>
         </div>
         <div class="flex gap-2.5 flex-wrap">

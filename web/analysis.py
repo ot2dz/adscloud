@@ -6,12 +6,14 @@ request (or a gunicorn thread) open: the browser polls the saved report.
 import json
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, g, jsonify, request
 
 import ai_client
 import competitor
+import product_audit
 from db import db
 from web.common import _audit, _scope_user_id, admin_required, login_required
 
@@ -56,6 +58,8 @@ def api_ai_config():
         "max_texts": cfg["max_texts"],
         "temperature": cfg["temperature"],
         "daily_limit": cfg["daily_limit"],
+        "web_search": cfg["web_search"],
+        "audit_max_products": cfg["audit_max_products"],
     })
 
 
@@ -73,7 +77,9 @@ def api_ai_config_save():
         db.set_setting("ai_base_url", url)
     if "model" in c:
         db.set_setting("ai_model", str(c["model"] or "").strip()[:200])
-    for k in ("max_output_tokens", "max_texts", "temperature", "daily_limit"):
+    if "web_search" in c:
+        db.set_setting("ai_web_search", "1" if c["web_search"] in (True, 1, "1", "true", "on") else "0")
+    for k in ("max_output_tokens", "max_texts", "temperature", "daily_limit", "audit_max_products"):
         if k in c and str(c[k]).strip() != "":
             db.set_setting("ai_" + k, str(c[k]).strip()[:20])
     changed_key = False
@@ -173,7 +179,9 @@ def api_analysis_preview():
     payload = request.get_json(force=True, silent=True) or {}
     store, dossier, messages, cfg = _prepare(payload)
     out = {"store": _store_json(store), "ready_error": ai_client.ready(cfg),
-           "model": cfg["model"], "provider": cfg["provider"], "quota_left": _quota_left(cfg)}
+           "model": cfg["model"], "provider": cfg["provider"], "quota_left": _quota_left(cfg),
+           "web_search": ai_client.supports_web_search(cfg),
+           "audit_max_products": cfg["audit_max_products"]}
     if dossier is None:
         out["ads_found"] = 0
         return jsonify(out)
@@ -217,6 +225,93 @@ def _run_report(rid: int, cfg: dict, messages: list) -> None:
         _SLOTS.release()
 
 
+AUDIT_WORKERS = 3      # product audits running at the same time inside one audit
+AUDIT_WEB_RESULTS = 6  # web search results per product (OpenRouter web plugin)
+
+
+def _run_audit(rid: int, cfg: dict, dossier: dict, host: str) -> None:
+    """identify products → audit each one (parallel, web search) → Python math → table."""
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "cost_known": True}
+    lock = threading.Lock()
+
+    def _add(r: dict) -> None:
+        with lock:
+            usage["prompt_tokens"] += int(r.get("prompt_tokens") or 0)
+            usage["completion_tokens"] += int(r.get("completion_tokens") or 0)
+            if r.get("cost") is None:
+                usage["cost_known"] = False
+            else:
+                usage["cost"] += float(r["cost"])
+
+    def _finish(**kw):
+        db.finish_ai_report(rid, prompt_tokens=usage["prompt_tokens"] or None,
+                            completion_tokens=usage["completion_tokens"] or None,
+                            cost=round(usage["cost"], 6) if usage["cost_known"] and usage["cost"] else None,
+                            **kw)
+
+    try:
+        web = ai_client.supports_web_search(cfg)
+        r = ai_client.chat(cfg, product_audit.identify_messages(
+            competitor.dossier_text(dossier), cfg["audit_max_products"]),
+            max_tokens=min(4000, max(1500, cfg["max_output_tokens"])), timeout=300)
+        _add(r)
+        products = [p for p in (product_audit.parse_json(r["text"]).get("products") or [])
+                    if isinstance(p, dict) and (p.get("name_ar") or p.get("name_en"))]
+        products = products[:cfg["audit_max_products"]]
+        if not products:
+            raise ai_client.AIError("The model found no product in this store's ads")
+
+        rows = [{"product": p} for p in products]
+
+        def _save_progress():
+            with lock:
+                pending = sum(1 for x in rows if not x.get("calc") and not x.get("error"))
+                md = product_audit.render(host, rows, web, pending=pending)
+                js = json.dumps(rows, ensure_ascii=False, default=str)
+            db.progress_ai_report(rid, md, js)
+
+        _save_progress()
+
+        def _one(row: dict) -> None:
+            try:
+                a = ai_client.chat(cfg, product_audit.audit_messages(row["product"], dossier, web),
+                                   max_tokens=min(4000, max(2000, cfg["max_output_tokens"])),
+                                   timeout=420, web_search=AUDIT_WEB_RESULTS if web else 0)
+                _add(a)
+                facts = product_audit.parse_json(a["text"])
+                if not facts.get("competitor_price_dzd"):
+                    facts["competitor_price_dzd"] = row["product"].get("competitor_price_dzd")
+                calc = product_audit.evaluate(facts)
+                with lock:
+                    row.update(facts=facts, calc=calc, citations=a.get("citations") or [])
+            except (ai_client.AIError, ValueError) as e:
+                with lock:
+                    row["error"] = str(e)[:300]
+            except Exception as e:  # one product must not kill the audit
+                logger.exception("audit %s product failed", rid)
+                with lock:
+                    row["error"] = f"internal error: {e}"[:300]
+            _save_progress()
+
+        with ThreadPoolExecutor(max_workers=AUDIT_WORKERS) as ex:
+            list(ex.map(_one, rows))
+
+        md = product_audit.render(host, rows, web)
+        js = json.dumps(rows, ensure_ascii=False, default=str)
+        if not any(x.get("calc") for x in rows):
+            _finish(error="Every product audit failed: " + "; ".join(
+                x.get("error", "") for x in rows)[:1500], report=md, audit=js)
+        else:
+            _finish(report=md, audit=js)
+    except (ai_client.AIError, ValueError) as e:
+        _finish(error=str(e))
+    except Exception as e:  # never leave a report "running"
+        logger.exception("AI audit %s failed", rid)
+        _finish(error=f"internal error: {e}")
+    finally:
+        _SLOTS.release()
+
+
 @bp.route("/api/analysis/run", methods=["POST"])
 @login_required
 def api_analysis_run():
@@ -234,6 +329,7 @@ def api_analysis_run():
         return jsonify({"error": "وصلت للحد اليومي من التحليلات."}), 429
     if not _SLOTS.acquire(blocking=False):
         return jsonify({"error": "تحليلات أخرى قيد التشغيل — أعد المحاولة بعد قليل."}), 429
+    kind = "audit" if payload.get("kind") == "audit" else "report"
     try:
         t = dossier["totals"]
         rid = db.create_ai_report(
@@ -242,14 +338,15 @@ def api_analysis_run():
             lang=payload.get("lang") if payload.get("lang") in LANGS else "auto",
             note=str(payload.get("note") or "")[:2000], ads_count=t["ads"],
             unique_texts=t["unique_texts"], tokens_est=competitor.estimate_messages(messages),
-            dossier=json.dumps(dossier, ensure_ascii=False))
-        threading.Thread(target=_run_report, args=(rid, cfg, messages),
-                         name=f"ai-report-{rid}", daemon=True).start()
+            dossier=json.dumps(dossier, ensure_ascii=False), kind=kind)
+        target = _run_audit if kind == "audit" else _run_report
+        args = (rid, cfg, dossier, store["host"]) if kind == "audit" else (rid, cfg, messages)
+        threading.Thread(target=target, args=args, name=f"ai-{kind}-{rid}", daemon=True).start()
     except Exception:
         _SLOTS.release()
         raise
-    _audit("ai_report_started", f"{store['host']} #{rid}")
-    return jsonify({"ok": True, "id": rid})
+    _audit(f"ai_{kind}_started", f"{store['host']} #{rid}")
+    return jsonify({"ok": True, "id": rid, "kind": kind})
 
 
 def _own_report(rid: int):
@@ -274,6 +371,7 @@ def api_analysis_report(rid: int):
     if not row:
         return jsonify({"error": "not found"}), 404
     row = dict(row)
+    row.pop("audit", None)  # the Markdown report already holds the table
     try:
         d = json.loads(row.pop("dossier") or "{}")
     except ValueError:

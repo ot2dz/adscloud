@@ -713,6 +713,18 @@ class Database:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_reports_user ON ai_reports (user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_reports_domain ON ai_reports (store_domain)")
+        # kind: 'report' (strategy report) or 'audit' (per-product decision table);
+        # audit: the audit rows as JSON.
+        for col, ddl in (("kind", "TEXT DEFAULT 'report'"), ("audit", "TEXT")):
+            try:
+                if self.is_postgres:
+                    cur.execute(f"ALTER TABLE ai_reports ADD COLUMN IF NOT EXISTS {col} {ddl}")
+                else:
+                    cols = [r[1] for r in cur.execute("PRAGMA table_info(ai_reports)").fetchall()]
+                    if col not in cols:
+                        cur.execute(f"ALTER TABLE ai_reports ADD COLUMN {col} {ddl}")
+            except Exception:
+                pass
         # Seed/refresh the taxonomy from code (idempotent by slug).
         try:
             p = "%s" if self.is_postgres else "?"
@@ -3652,6 +3664,7 @@ class Database:
     # ── AI competitor reports ─────────────────────────────────────────────
     # A report still "running" after this long died with its process.
     AI_REPORT_STALE_MIN = 20
+    AI_AUDIT_STALE_MIN = 60  # an audit makes one model call per product
 
     def store_ads_for_analysis(self, domains: list[str], user_id: Optional[int] = None,
                                limit: int = 5000) -> list[dict]:
@@ -3698,8 +3711,9 @@ class Database:
 
     def create_ai_report(self, **fields) -> int:
         cols = ("user_id", "store_domain", "platform", "status", "provider", "model", "lang",
-                "note", "ads_count", "unique_texts", "tokens_est", "dossier", "created_at")
+                "note", "ads_count", "unique_texts", "tokens_est", "dossier", "created_at", "kind")
         row = dict(fields, status="running", created_at=_now())
+        row.setdefault("kind", "report")
         vals = tuple(row.get(c) for c in cols)
         p = self._ph()
         conn = self._connect()
@@ -3720,13 +3734,20 @@ class Database:
     def finish_ai_report(self, rid: int, report: str = "", error: str = "",
                          prompt_tokens: Optional[int] = None,
                          completion_tokens: Optional[int] = None,
-                         cost: Optional[float] = None) -> None:
+                         cost: Optional[float] = None, audit: Optional[str] = None) -> None:
         p = self._ph()
         self._execute(
             f"UPDATE ai_reports SET status={p}, report={p}, error={p}, prompt_tokens={p}, "
-            f"completion_tokens={p}, cost={p}, finished_at={p} WHERE id={p}",
+            f"completion_tokens={p}, cost={p}, finished_at={p}, audit=COALESCE({p}, audit) WHERE id={p}",
             ("error" if error else "done", report or "", (error or "")[:2000],
-             prompt_tokens, completion_tokens, cost, _now(), int(rid)))
+             prompt_tokens, completion_tokens, cost, _now(), audit, int(rid)))
+
+    def progress_ai_report(self, rid: int, report: str, audit: Optional[str] = None) -> None:
+        """Partial result of a running report (status stays 'running')."""
+        p = self._ph()
+        self._execute(
+            f"UPDATE ai_reports SET report={p}, audit=COALESCE({p}, audit) "
+            f"WHERE id={p} AND status='running'", (report or "", audit, int(rid)))
 
     def _ai_report_fresh(self, row: Optional[dict]) -> Optional[dict]:
         """Mark a long-dead "running" report as failed (on read)."""
@@ -3736,7 +3757,8 @@ class Database:
                 age_min = (datetime.now(timezone.utc) - started).total_seconds() / 60
             except Exception:
                 age_min = 0
-            if age_min > self.AI_REPORT_STALE_MIN:
+            limit = self.AI_AUDIT_STALE_MIN if row.get("kind") == "audit" else self.AI_REPORT_STALE_MIN
+            if age_min > limit:
                 self.finish_ai_report(int(row["id"]), error="interrupted (server restarted?)")
                 row = dict(row, status="error", error="interrupted (server restarted?)")
         return row
@@ -3757,7 +3779,7 @@ class Database:
             params.append(domain)
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         rows = self._query(
-            "SELECT id, user_id, store_domain, platform, status, provider, model, lang, note, "
+            "SELECT id, user_id, store_domain, platform, status, kind, provider, model, lang, note, "
             "ads_count, unique_texts, tokens_est, prompt_tokens, completion_tokens, cost, error, "
             f"created_at, finished_at FROM ai_reports {clause} ORDER BY id DESC LIMIT {int(limit)}",
             tuple(params))

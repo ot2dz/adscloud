@@ -134,26 +134,32 @@ function anPreviewHtml(d) {
     ${notes.map(n => `<div class="text-slate-600">ℹ️ ${n}</div>`).join('')}
     ${top ? `<div class="rounded-xl border border-[#d7e3f4] px-3 py-1">${top}</div>` : ''}
     ${blocked}
-    <button id="an-run-btn" onclick="anRun(this)" ${d.ready_error ? 'disabled' : ''}
-      class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">🤖 حلّل الآن</button>
+    <div class="flex gap-2.5 flex-wrap items-center">
+      <button id="an-run-btn" onclick="anRun(this, 'report')" ${d.ready_error ? 'disabled' : ''}
+        class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">🤖 حلّل الآن</button>
+      <button id="an-audit-btn" onclick="anRun(this, 'audit')" ${d.ready_error ? 'disabled' : ''}
+        class="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">🧪 تدقيق المنتجات + القرار والتسعير</button>
+    </div>
+    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">🧪 التدقيق: يستخرج حتى <b>${anFmt(d.audit_max_products)}</b> منتجات، يبحث عن كل منتج ${d.web_search ? '<b>في الويب</b> (Reddit / Amazon / AliExpress)' : '<span class="text-amber-700">بدون بحث ويب (يتطلب OpenRouter)</span>'}، ثم يحسب الأسعار الثلاثة والنقاط ببايثون ويعطي جدول قرارات. استدعاء واحد للموديل لكل منتج — التكلفة أعلى من التقرير العادي.</div>
   </div>`;
 }
 
-async function anRun(btn) {
+async function anRun(btn, kind) {
+  const label = btn.textContent;
   btn.disabled = true; btn.textContent = '⏳ جاري الإرسال...';
   try {
     const r = await fetch('/api/analysis/run', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({store: anStoreValue(), lang: document.getElementById('an-lang').value,
-                            note: document.getElementById('an-note').value})
+                            note: document.getElementById('an-note').value, kind: kind || 'report'})
     });
     const d = await r.json();
-    if (!r.ok || !d.id) { alert(d.error || 'فشل التحليل'); btn.disabled = false; btn.textContent = '🤖 حلّل الآن'; return; }
+    if (!r.ok || !d.id) { alert(d.error || 'فشل التحليل'); btn.disabled = false; btn.textContent = label; return; }
     btn.textContent = '✅ بدأ التحليل';
     anOpen(d.id);
     anLoadReports();
   } catch (e) {
-    alert('خطأ: ' + e.message); btn.disabled = false; btn.textContent = '🤖 حلّل الآن';
+    alert('خطأ: ' + e.message); btn.disabled = false; btn.textContent = label;
   }
 }
 
@@ -170,7 +176,7 @@ async function anOpen(id) {
   const usage = d.prompt_tokens != null
     ? ` · ${anFmt(d.prompt_tokens)} + ${anFmt(d.completion_tokens)} توكن` + (d.cost != null ? ` · $${Number(d.cost).toFixed(4)}` : '') : '';
   head.innerHTML = `<div>
-      <div class="font-extrabold text-[#102a56]">تقرير: <span class="font-mono" dir="ltr">${escT(d.store_domain)}</span></div>
+      <div class="font-extrabold text-[#102a56]">${d.kind === 'audit' ? '🧪 تدقيق المنتجات' : 'تقرير'}: <span class="font-mono" dir="ltr">${escT(d.store_domain)}</span></div>
       <div class="text-[11px] text-slate-500 font-semibold mt-0.5">${escT(when)} UTC · ${anFmt(d.ads_count)} إعلان · ${anFmt(d.unique_texts)} نص فريد · <span class="font-mono" dir="ltr">${escT(d.model || '')}</span>${usage}</div>
       ${d.note ? `<div class="text-[11px] text-slate-600 mt-1" dir="auto">📝 ${escT(d.note)}</div>` : ''}
     </div>
@@ -179,12 +185,17 @@ async function anOpen(id) {
       <button onclick="document.getElementById('an-report-wrap').classList.add('hidden')" class="text-xs px-3 py-1.5 rounded-lg border border-[#b7c9e2] font-bold text-slate-700 hover:bg-slate-50">✕</button>
     </div>`;
   if (d.status === 'running') {
-    body.innerHTML = '<div class="flex items-center gap-2 text-slate-500 font-bold"><span class="an-spin"></span> الذكاء الاصطناعي يحلل الإعلانات... قد يستغرق دقيقة أو دقيقتين. يمكنك مغادرة الصفحة، التقرير يُحفظ تلقائياً.</div>';
+    const wait = d.kind === 'audit'
+      ? 'جاري تدقيق المنتجات (بحث + حسابات) — عدة دقائق حسب عدد المنتجات. يظهر الجدول تدريجياً، ويمكنك مغادرة الصفحة.'
+      : 'الذكاء الاصطناعي يحلل الإعلانات... قد يستغرق دقيقة أو دقيقتين. يمكنك مغادرة الصفحة، التقرير يُحفظ تلقائياً.';
+    body.innerHTML = `<div class="flex items-center gap-2 text-slate-500 font-bold"><span class="an-spin"></span> ${wait}</div>`
+      + (d.report ? `<div class="mt-4">${mdToHtml(d.report)}</div>` : '');
     anPollTimer = setTimeout(() => { if (!document.getElementById('view-analysis').classList.contains('hidden')) anOpen(id); else anOpen._pending = id; }, 4000);
     return;
   }
   if (d.status === 'error') {
-    body.innerHTML = `<div class="p-3 rounded-xl bg-rose-50 text-rose-700 text-xs font-bold" dir="auto">❌ فشل التحليل: ${escT(d.error)}</div>`;
+    body.innerHTML = `<div class="p-3 rounded-xl bg-rose-50 text-rose-700 text-xs font-bold" dir="auto">❌ فشل التحليل: ${escT(d.error)}</div>`
+      + (d.report ? `<div class="mt-4">${mdToHtml(d.report)}</div>` : '');
     anLoadReports();
     return;
   }
@@ -210,6 +221,7 @@ async function anLoadReports() {
   box.innerHTML = rows.map(x => `<div class="flex items-center gap-2 flex-wrap border border-[#e3ecf8] rounded-xl px-3 py-2 hover:bg-[#f8fbff]">
       <button onclick="anOpen(${x.id})" class="font-mono font-bold text-blue-700 hover:underline" dir="ltr">${escT(x.store_domain)}</button>
       ${badge(x.status)}
+      ${x.kind === 'audit' ? '<span class="px-2 py-0.5 rounded-lg bg-violet-50 text-violet-700 font-bold">🧪 تدقيق</span>' : ''}
       <span class="text-slate-500 font-semibold num">${escT((x.created_at || '').slice(0, 16).replace('T', ' '))}</span>
       <span class="text-slate-500 font-semibold">${anFmt(x.ads_count)} إعلان · ${anFmt(x.unique_texts)} نص</span>
       <span class="text-slate-400 font-mono truncate max-w-[220px]" dir="ltr">${escT(x.model || '')}</span>
@@ -249,6 +261,8 @@ async function aiLoadConfig() {
   document.getElementById('ai-max-texts').value = c.max_texts;
   document.getElementById('ai-temperature').value = c.temperature;
   document.getElementById('ai-daily-limit').value = c.daily_limit;
+  document.getElementById('ai-web-search').value = c.web_search ? '1' : '0';
+  document.getElementById('ai-audit-max').value = c.audit_max_products;
   const ks = document.getElementById('ai-key-status');
   ks.innerHTML = c.key_unreadable ? '<span class="text-rose-600 font-bold">⚠️ المفتاح المحفوظ لا يمكن فك تشفيره (تغيّر SECRET_KEY) — أدخله من جديد.</span>'
     : c.key_set ? `✅ مفتاح محفوظ (مشفّر): <span class="font-mono" dir="ltr">${escT(c.key_hint)}</span> — اتركه فارغاً للإبقاء عليه.`
@@ -271,6 +285,8 @@ function aiForm() {
     max_texts: document.getElementById('ai-max-texts').value,
     temperature: document.getElementById('ai-temperature').value,
     daily_limit: document.getElementById('ai-daily-limit').value,
+    web_search: document.getElementById('ai-web-search').value === '1',
+    audit_max_products: document.getElementById('ai-audit-max').value,
   };
 }
 
