@@ -37,6 +37,12 @@ _TAG_RE = re.compile(r"<script.*?</script>|<style.*?</style>|<[^>]+>", re.S | re
 _DZD_RE = re.compile(
     r"(?<![\d.,])(\d{1,3}(?:[ .,  ]\d{3})+|\d{3,6})(?:[.,]\d{2})?\s*"
     r"(?:دج|د\.ج|دينار|da\b|dzd\b|dz\b|dinars?)", re.I)
+# Currency written BEFORE the number: "DZ 5,200", "DA 5200", "دج 5200" (Lightfunnels...)
+_DZD_PREFIX_RE = re.compile(
+    r"(?:\bDZD?\b|\bDA\b|دج|د\.ج)\s*(\d{1,3}(?:[ .,\u00a0\u202f]\d{3})+|\d{3,6})(?:[.,]\d{2})?(?![\d])",
+    re.I)
+# Store platforms embed their product JSON in the page: "price": 5200
+_JSON_PRICE_RE = re.compile(r'"(?:price|sale_price|final_price)"\s*:\s*"?(\d{3,6}(?:\.\d{1,2})?)"?', re.I)
 _CHALLENGE = ("just a moment", "cf-chl", "challenge-platform", "attention required",
               "enable javascript and cookies", "cf_chl_opt")
 LO, HI = 200, 500_000  # plausible product price range in DZD
@@ -89,8 +95,18 @@ def _from_ld(html: str) -> Optional[int]:
 
 
 def _from_text(html: str) -> Optional[int]:
-    text = _TAG_RE.sub(" ", html)
-    found = [v for v in (_num(m.group(1)) for m in _DZD_RE.finditer(text)) if v]
+    """Most common DZD price in the visible text (currency after or before)."""
+    text = _TAG_RE.sub(" ", html).replace("&nbsp;", " ")
+    found = [v for rx in (_DZD_RE, _DZD_PREFIX_RE)
+             for v in (_num(m.group(1)) for m in rx.finditer(text)) if v]
+    if not found:
+        return None
+    return Counter(found).most_common(1)[0][0]
+
+
+def _from_embedded_json(html: str) -> Optional[int]:
+    """Most common non-zero "price" in the platform's embedded product JSON."""
+    found = [v for v in (_num(m.group(1).split(".")[0]) for m in _JSON_PRICE_RE.finditer(html)) if v]
     if not found:
         return None
     return Counter(found).most_common(1)[0][0]
@@ -108,7 +124,10 @@ def extract_price(html: str) -> tuple[Optional[int], str]:
         if m and _num(m.group(1)):
             return _num(m.group(1)), "meta"
     v = _from_text(html)
-    return (v, "text") if v else (None, "")
+    if v:
+        return v, "text"
+    v = _from_embedded_json(html)
+    return (v, "page-json") if v else (None, "")
 
 
 USER_AGENT = "AdsCloud-PriceCheck/1.0 (+product price lookup)"

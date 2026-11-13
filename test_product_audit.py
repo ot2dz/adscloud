@@ -205,6 +205,17 @@ class PriceExtractTest(unittest.TestCase):
             '<b>3 900 دج</b> <s>5 900 دج</s> <span>3 900 DA</span>'), (3900, "text"))
         self.assertEqual(price_fetch.extract_price("<p>nothing</p>"), (None, ""))
 
+    def test_lightfunnels_currency_first_and_embedded_json(self):
+        # Shape of a real Lightfunnels page (bxrrt.com): JSON-LD without offers,
+        # "DZ 5,200" with the currency first, and the product JSON in a script.
+        page = ('<script type="application/ld+json">{"@type":"Product","name":"Screen"}</script>'
+                '<span>DZ 5,200.00</span> <p>DZ&nbsp;5,200</p>'
+                '<script>w={"price":5200,"compare_at_price":0,"order_bump":{"price":0}}</script>')
+        self.assertEqual(price_fetch.extract_price(page), (5200, "text"))
+        self.assertEqual(price_fetch.extract_price(
+            '<script>p={"price":"3900.00","compare_at_price":0}</script>'), (3900, "page-json"))
+        self.assertEqual(price_fetch.extract_price("<p>Total DA 2500</p>"), (2500, "text"))
+
     def test_challenge_page_is_blocked_not_bypassed(self):
         page = price_fetch._Resp(403, "<title>Just a moment...</title>")
         with mock.patch.object(price_fetch, "_get", return_value=page) as get:
