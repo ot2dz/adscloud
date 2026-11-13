@@ -176,10 +176,103 @@ def _platforms(raw) -> list[str]:
         return [x.strip().upper() for x in str(raw or "").split(",") if x.strip()]
 
 
+# ── product lifecycle (market proof) ─────────────────────────────────────
+# In Algerian COD a STOPPED ad is not a failed ad: winners stop when stock runs
+# out, while the next shipment arrives (usually 7-10 days), or at season end.
+RELAUNCH_GAP_DAYS = 5        # a pause at least this long, then new ads = relaunch
+RESTOCK_WAIT_DAYS = 14       # a strong test that stopped this recently may come back
+STAGES = {
+    # stage: (label, market score /40, meaning)
+    "relaunched": ("🔁 عاد بعد التوقف", 40, "توقف ثم أعاد الإطلاق: نجح وعاد بمخزون جديد — أقوى دليل"),
+    "scaling": ("🔥 يسكايل الآن", 38, "إعلانات نشطة كثيرة وإطلاقات جديدة حديثة"),
+    "running_winner": ("✅ رابح مستمر", 35, "نشط منذ 30 يوماً أو أكثر"),
+    "finished_winner": ("🏁 رابح انتهى", 32, "استمر طويلاً ثم توقف: باع كثيراً ونفد المخزون أو انتهى الموسم"),
+    "test_success_waiting": ("🧪 تست ناجح محتمل", 26, "تست قوي توقف مؤخراً: غالباً ينتظر المخزون — تابع عودته"),
+    "running": ("▶️ نشط", 22, "نشط بين 7 و29 يوماً"),
+    "finished_small": ("🏁 رابح صغير انتهى", 22, "استمر طويلاً ثم توقف لكن بإعلان أو اثنين فقط"),
+    "new_test_strong": ("🆕 تست جارٍ بقوة", 15, "بدأ منذ أقل من 7 أيام بعدة إعلانات نشطة"),
+    "mid": ("🌗 متوسط ثم توقف", 15, "استمر 1-3 أسابيع ثم توقف"),
+    "new_test": ("🆕 تست جارٍ", 10, "بدأ منذ أقل من 7 أيام — مبكر للحكم"),
+    "test_no_return": ("❔ تست قوي لم يعد", 10, "تست قوي توقف منذ أكثر من أسبوعين ولم يُعِد الإطلاق"),
+    "failed_test": ("❌ تست فاشل", 0, "إعلان أو اثنان توقفا خلال أيام"),
+}
+
+
+def _ad_end(a: dict, today: date) -> Optional[date]:
+    if int(a.get("is_active") or 0) == 1:
+        return today
+    end = _d(a.get("stopped_at"))
+    start = _d(a.get("start_date"))
+    if end is None and start is not None:
+        end = start + timedelta(days=max(1, int(a.get("days_active") or 1)) - 1)
+    return end
+
+
+def product_lifecycle(ads: list[dict], today: Optional[date] = None) -> dict:
+    """Where one product stands in its life, from its ads only. Pure function."""
+    today = today or date.today()
+    rows = []
+    for a in ads:
+        st = _d(a.get("start_date"))
+        if st is None:
+            continue
+        en = _ad_end(a, today) or st
+        rows.append((st, max(en, st), int(a.get("is_active") or 0) == 1,
+                     max(1, int(a.get("collation_count") or 1))))
+    if not rows:
+        return {"stage": "failed_test", "label": STAGES["failed_test"][0], "market_score": 0,
+                "meaning": "لا توجد تواريخ", "ads": len(ads), "active": 0}
+    rows.sort()
+    first = rows[0][0]
+    last_end = max(r[1] for r in rows)
+    n = len(rows)
+    active = sum(1 for r in rows if r[2])
+    variants = sum(r[3] for r in rows)
+    life = (last_end - first).days + 1
+    test_ads = sum(1 for r in rows if r[0] <= first + timedelta(days=6))
+    recent14 = sum(1 for r in rows if r[0] >= today - timedelta(days=13))
+    stopped_ago = None if active else (today - last_end).days
+    # relaunch: an ad starts after every earlier ad had been stopped for a while
+    relaunch_gap = 0
+    run_end = rows[0][1]
+    for st, en, _, _ in rows[1:]:
+        if (st - run_end).days >= RELAUNCH_GAP_DAYS:
+            relaunch_gap = max(relaunch_gap, (st - run_end).days)
+        run_end = max(run_end, en)
+    strong_test = n >= 4 or variants >= 4
+
+    if relaunch_gap and (active or (today - last_end).days <= RESTOCK_WAIT_DAYS) and n >= 2:
+        stage = "relaunched"
+    elif active and first >= today - timedelta(days=6):
+        stage = "new_test_strong" if active >= 3 else "new_test"
+    elif active >= 5 and recent14 >= 2:
+        stage = "scaling"
+    elif active and life >= 30:
+        stage = "running_winner"
+    elif active:
+        stage = "running"
+    elif life >= 21 or (life >= 14 and n >= 5):
+        stage = "finished_winner" if (n >= 3 or variants >= 5) else "finished_small"
+    elif life <= 10 and strong_test:
+        stage = "test_success_waiting" if stopped_ago <= RESTOCK_WAIT_DAYS else "test_no_return"
+    elif n <= 2 and life <= 5:
+        stage = "failed_test"
+    else:
+        stage = "mid"
+    label, score, meaning = STAGES[stage]
+    return {"stage": stage, "label": label, "market_score": score, "meaning": meaning,
+            "ads": n, "active": active, "variants": variants, "life_days": life,
+            "test_ads_first_week": test_ads, "launched_last_14d": recent14,
+            "stopped_days_ago": stopped_ago, "relaunch_gap_days": relaunch_gap or None,
+            "first": first.isoformat(), "last_seen": last_end.isoformat()}
+
+
 # ── dossier ──────────────────────────────────────────────────────────────
 def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
-                  today: Optional[date] = None) -> dict:
-    """Summarise one store's ads. Pure function (testable without a DB)."""
+                  today: Optional[date] = None, prices: Optional[dict] = None) -> dict:
+    """Summarise one store's ads. Pure function (testable without a DB).
+
+    ``prices`` = {landing path: {"price": DZD, "source": "page"|"manual"}}."""
     today = today or date.today()
     total = len(ads)
     active = sum(1 for a in ads if int(a.get("is_active") or 0) == 1)
@@ -219,7 +312,9 @@ def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
     # products (landing paths)
     prods: dict[str, dict] = defaultdict(lambda: {"ads": 0, "active": 0, "max_days": 0,
                                                   "first": None, "last": None, "texts": []})
+    ads_by_path: dict[str, list] = defaultdict(list)
     for a in ads:
+        ads_by_path[product_path(a.get("link_url") or "")].append(a)
         p = prods[product_path(a.get("link_url") or "")]
         p["ads"] += 1
         p["active"] += 1 if int(a.get("is_active") or 0) == 1 else 0
@@ -233,6 +328,11 @@ def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
         for path in g["products"]:
             if len(prods[path]["texts"]) < 6:
                 prods[path]["texts"].append(g["id"])
+    for path, p in prods.items():
+        p["lifecycle"] = product_lifecycle(ads_by_path[path], today)
+        pr = (prices or {}).get(path) or {}
+        p["price_dzd"] = int(pr["price"]) if pr.get("price") else None
+        p["price_source"] = pr.get("source") if pr.get("price") else None
 
     # launch cadence: last 16 weeks
     week0 = today - timedelta(days=today.weekday())
@@ -281,7 +381,8 @@ def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
         "products": sorted(
             ({"path": k, **{kk: (vv.isoformat() if isinstance(vv, date) else vv) for kk, vv in v.items()}}
              for k, v in prods.items()),
-            key=lambda x: (x["active"], x["max_days"], x["ads"]), reverse=True)[:40],
+            key=lambda x: (x["lifecycle"]["market_score"], x["active"], x["max_days"], x["ads"]),
+            reverse=True)[:40],
         "signals_in_texts": dict(signals.most_common()),
         "prices_dzd": [{"price": p, "texts": c} for p, c in prices.most_common(15)],
         "texts": [{
@@ -319,11 +420,23 @@ def dossier_text(d: dict) -> str:
         "SIGNALS (unique texts mentioning): " + (", ".join(f"{k}={v}" for k, v in d["signals_in_texts"].items()) or "none"),
         "PRICES FOUND (DZD: texts): " + (", ".join(f"{p['price']}:{p['texts']}" for p in d["prices_dzd"]) or "none"),
         "",
-        "PRODUCTS / LANDING PATHS (path | ads | active | max_days | first..last | texts):",
+        "PRODUCTS / LANDING PATHS (path | ads | active | max_days | first..last | texts | "
+        "LIFECYCLE computed by the server | MARKET PROOF /40 | COMPETITOR PRICE DZD):",
     ]
     for p in d["products"]:
+        lc = p.get("lifecycle") or {}
+        extra = []
+        if lc.get("stopped_days_ago") is not None:
+            extra.append(f"stopped {lc['stopped_days_ago']}d ago")
+        if lc.get("relaunch_gap_days"):
+            extra.append(f"relaunched after a {lc['relaunch_gap_days']}d pause")
+        if lc.get("life_days"):
+            extra.append(f"life {lc['life_days']}d, {lc.get('test_ads_first_week')} ads in first week")
+        price = (f"{p['price_dzd']} ({p['price_source']})" if p.get("price_dzd") else "unknown")
         L.append(f"- {p['path']} | {p['ads']} | {p['active']} | {p['max_days']} | "
-                 f"{p['first']}..{p['last']} | {','.join(p['texts'])}")
+                 f"{p['first']}..{p['last']} | {','.join(p['texts'])} | "
+                 f"{lc.get('label', '?')} — {lc.get('meaning', '')} ({'; '.join(extra)}) | "
+                 f"{lc.get('market_score', '?')}/40 | {price}")
     L += ["", "UNIQUE AD TEXTS (id | ads using it | active | max_days | Meta variants | first..last | path | cta):"]
     for x in d["texts"]:
         L.append(f"[{x['id']}] ads={x['ads']} active={x['active']} max_days={x['max_days']} "

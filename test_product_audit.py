@@ -7,12 +7,17 @@ Run with:  python -m unittest -v test_product_audit
 import json
 import time
 import unittest
+from datetime import date, timedelta
 from unittest import mock
 
 import test_competitor as tc  # sets the test DB env before db is imported
 import ai_client
+import competitor
+import price_fetch
 import product_audit as pa
 from db import db
+
+WINNER = {"lifecycle": {"stage": "running_winner", "label": "✅ رابح مستمر", "market_score": 35}}
 
 FACTS = {
     "name_ar": "مصباح ليلي", "name_en": "motion sensor night light", "niche": "حل مشكلة يومية",
@@ -42,9 +47,9 @@ class MathTest(unittest.TestCase):
         self.assertEqual(log["shipping_dzd"], 7800)  # 1.2 × 6500
 
     def test_scenarios_reach_their_targets(self):
-        for track in ("imported", "local"):
-            sc = pa.scenarios(800 if track == "local" else 2500, track)
-            for key, target in zip(("economic", "balanced", "high"), pa.TARGETS[track]):
+        for track, tier in (("imported", "high"), ("local", "low"), ("imported", "low")):
+            sc = pa.scenarios(800 if tier == "low" else 2500, track, tier)
+            for key, target in zip(("economic", "balanced", "high"), pa.TARGETS[tier]):
                 self.assertGreaterEqual(sc[key]["profit"], target, (track, key))
                 self.assertEqual(sc[key]["price"] % 100, 0)
             self.assertLess(sc["economic"]["price"], sc["balanced"]["price"])
@@ -63,14 +68,40 @@ class MathTest(unittest.TestCase):
         self.assertEqual(c["scenarios"]["costs"]["dr"], 0.70)
 
     def test_green_decision(self):
-        c = pa.evaluate(FACTS)
-        self.assertEqual(c["scores"], {"pain": 25, "authenticity": 25, "logistics": 25, "margin": 25})
+        c = pa.evaluate(FACTS, WINNER)
+        self.assertEqual(c["scores"], {"market": 35, "margin": 20, "pain": 15, "quality": 15, "logistics": 10})
         self.assertEqual(c["decision"], "green")
 
+    def test_market_proof_carries_an_average_product(self):
+        """A gadget with doubtful reviews that the market bought for weeks is not red."""
+        gadget = dict(FACTS, pain_score=8, research=dict(FACTS["research"], authenticity="doubtful"),
+                      weight_g=600, dims_cm=[28, 22, 6], competitor_price_dzd=None)
+        finished = {"lifecycle": {"stage": "finished_winner", "label": "🏁 رابح انتهى", "market_score": 32}}
+        c = pa.evaluate(gadget, finished)
+        self.assertIn(c["decision"], ("yellow", "green"), c["scores"])
+        failed = {"lifecycle": {"stage": "failed_test", "label": "❌", "market_score": 0}}
+        self.assertIn(pa.evaluate(gadget, failed)["decision"], ("orange", "red"))
+
+    def test_low_ticket_tier_from_market_price(self):
+        pen = dict(FACTS, purchase_price={"amount": 1.2, "currency": "USD"}, weight_g=60,
+                   dims_cm=[16, 3, 3], competitor_price_dzd=None)
+        c = pa.evaluate(pen, {"price": 2500, "lifecycle": {"market_score": 26}})
+        self.assertEqual(c["tier"], "low")
+        self.assertLess(c["scenarios"]["balanced"]["price"], 3000)
+        self.assertGreater(c["market"]["profit"], 400)  # 2,500 DZD pays at air freight
+        self.assertEqual(c["market_price_source"], "page/manual")
+
+    def test_cheaper_local_source_wins(self):
+        heavy = dict(FACTS, weight_g=450, sensitive_cargo=True, local_wholesale_dzd=700)
+        c = pa.evaluate(heavy)
+        self.assertEqual(c["source"], "local")
+        self.assertEqual(c["landed_dzd"], 700)
+        self.assertGreater(c["routes"]["imported"], 3000)  # 450 g × 6,500 + 1,250
+
     def test_kill_gate_forces_red(self):
-        c = pa.evaluate(dict(FACTS, kill_gate="وهم كيميائي: بخاخ خدوش"))
+        c = pa.evaluate(dict(FACTS, kill_gate="وهم كيميائي: بخاخ خدوش"), WINNER)
         self.assertEqual(c["decision"], "red")
-        self.assertLessEqual(c["total"], 59)
+        self.assertLessEqual(c["total"], 39)
         c = pa.evaluate(dict(FACTS, research=dict(FACTS["research"], authenticity="fake")))
         self.assertEqual(c["decision"], "red")
         self.assertTrue(c["kill_gate"])
@@ -87,13 +118,100 @@ class MathTest(unittest.TestCase):
             pa.parse_json("no json")
 
     def test_render_table(self):
-        rows = [{"product": {"name_ar": "مصباح"}, "facts": FACTS, "calc": pa.evaluate(FACTS)},
+        rows = [{"product": {"name_ar": "مصباح"}, "facts": FACTS, "calc": pa.evaluate(FACTS, WINNER)},
                 {"product": {"name_ar": "بخاخ"}, "error": "HTTP 500"}]
         md = pa.render("shop.youcan.store", rows, web=True)
-        self.assertIn("| # | المنتج | القرار", md)
+        self.assertIn("| # | المنتج | حالة السوق | القرار", md)
+        self.assertIn("✅ رابح مستمر", md)
         self.assertIn("🟢 اختبر فوراً", md)
         self.assertIn("تعذر التدقيق", md)
         self.assertIn("متوازن ⭐", md)
+
+
+TODAY = date(2026, 11, 13)
+
+
+def _lad(start_days_ago, run_days, active=False, variants=1):
+    st = TODAY - timedelta(days=start_days_ago)
+    end = st + timedelta(days=run_days - 1)
+    return {"start_date": st.isoformat(), "days_active": run_days, "is_active": 1 if active else 0,
+            "stopped_at": None if active else end.isoformat(), "collation_count": variants}
+
+
+class LifecycleTest(unittest.TestCase):
+    """Cases from a real store (bxrrt.com) checked against the owner's live data."""
+
+    def stage(self, ads):
+        return competitor.product_lifecycle(ads, TODAY)["stage"]
+
+    def test_pen_short_strong_test_is_a_likely_success(self):
+        # 7 ads in 3 days, stopped 3 days ago: tested OK, waiting for stock.
+        ads = [_lad(5, 3) for _ in range(7)]
+        lc = competitor.product_lifecycle(ads, TODAY)
+        self.assertEqual(lc["stage"], "test_success_waiting")
+        self.assertEqual(lc["stopped_days_ago"], 3)  # ran T-5..T-3
+        self.assertGreater(lc["market_score"], 20)
+
+    def test_same_test_without_return_after_weeks(self):
+        self.assertEqual(self.stage([_lad(40, 3) for _ in range(7)]), "test_no_return")
+
+    def test_screen_long_run_then_stop_is_a_finished_winner(self):
+        self.assertEqual(self.stage([_lad(90, 77 - i) for i in range(8)]), "finished_winner")
+
+    def test_many_ads_29_days_is_a_finished_winner(self):
+        self.assertEqual(self.stage([_lad(40, 29, variants=2) for _ in range(18)]), "finished_winner")
+
+    def test_one_ad_long_run_is_small(self):
+        self.assertEqual(self.stage([_lad(60, 29)]), "finished_small")
+
+    def test_failed_test(self):
+        self.assertEqual(self.stage([_lad(30, 2), _lad(30, 3)]), "failed_test")
+
+    def test_relaunch_after_restock(self):
+        ads = [_lad(20, 3) for _ in range(5)] + [_lad(6, 6, active=True) for _ in range(3)]
+        lc = competitor.product_lifecycle(ads, TODAY)
+        self.assertEqual(lc["stage"], "relaunched")
+        self.assertGreaterEqual(lc["relaunch_gap_days"], 5)
+        self.assertEqual(lc["market_score"], 40)
+
+    def test_scaling_running_and_new(self):
+        self.assertEqual(self.stage([_lad(19, 19, active=True) for _ in range(10)]
+                                    + [_lad(3, 3, active=True) for _ in range(5)]), "scaling")
+        self.assertEqual(self.stage([_lad(83, 83, active=True), _lad(40, 40, active=True)]), "running_winner")
+        self.assertEqual(self.stage([_lad(2, 2, active=True)]), "new_test")
+
+    def test_dossier_ranks_products_by_market_proof_and_keeps_prices(self):
+        ads = []
+        for i in range(7):
+            ads.append(dict(_lad(5, 3), ad_id=f"p{i}", body=f"قلم {i}", link_url="https://s.com/pen"))
+        ads.append(dict(_lad(30, 2), ad_id="x", body="فاشل", link_url="https://s.com/bad"))
+        d = competitor.build_dossier(ads, {"host": "s.com", "domains": ["s.com"]}, today=TODAY,
+                                     prices={"/pen": {"price": 2500, "source": "manual"}})
+        self.assertEqual(d["products"][0]["path"], "/pen")
+        self.assertEqual(d["products"][0]["price_dzd"], 2500)
+        txt = competitor.dossier_text(d)
+        self.assertIn("🧪 تست ناجح محتمل", txt)
+        self.assertIn("2500 (manual)", txt)
+
+
+class PriceExtractTest(unittest.TestCase):
+    def test_sources(self):
+        self.assertEqual(price_fetch.extract_price(
+            '<script type="application/ld+json">{"@type":"Product","offers":[{"price":"2900.00"}]}</script>'),
+            (2900, "json-ld"))
+        self.assertEqual(price_fetch.extract_price('<meta property="og:price:amount" content="4,500">'),
+                         (4500, "meta"))
+        self.assertEqual(price_fetch.extract_price(
+            '<b>3 900 دج</b> <s>5 900 دج</s> <span>3 900 DA</span>'), (3900, "text"))
+        self.assertEqual(price_fetch.extract_price("<p>nothing</p>"), (None, ""))
+
+    def test_challenge_page_is_blocked_not_bypassed(self):
+        page = price_fetch._Resp(403, "<title>Just a moment...</title>")
+        with mock.patch.object(price_fetch, "_get", return_value=page) as get:
+            r = price_fetch.fetch_price("https://protected.example/x")
+        self.assertEqual(r["status"], "blocked")
+        self.assertIsNone(r["price"])
+        self.assertEqual(get.call_count, 1)  # no retries, no other tricks
 
 
 class AuditApiTest(unittest.TestCase):
@@ -180,7 +298,28 @@ class GeminiExportTest(unittest.TestCase):
         self.assertIn("https://shiba.youcan.store/products/p1", d["data"])
         self.assertNotIn("utm_source", d["data"])
         self.assertIn("ركز على المطبخ", d["data"])
+        self.assertIn("MARKET PROOF", d["data"])
+        self.assertIn("الإعلان المتوقف ليس منتجاً فاشلاً", d["system"])
+        d2 = self.c.post("/api/analysis/export", json={
+            "store": "shiba.youcan.store", "prices": {"/products/p1": {"price": 2900, "source": "manual"}}}).get_json()
+        self.assertIn("2900 (manual)", d2["data"])
         self.assertTrue(d["filename"].startswith("shiba.youcan.store-"))
+
+    def test_prices_endpoint_reports_each_path(self):
+        fake = [{"url": "https://shiba.youcan.store/products/p0", "price": 2900, "status": "ok", "how": "meta"},
+                {"url": "https://shiba.youcan.store/products/p1", "price": None, "status": "blocked"}]
+        with mock.patch.object(price_fetch, "fetch_prices", return_value=fake):
+            d = self.c.post("/api/analysis/prices", json={"store": "shiba.youcan.store",
+                                                          "paths": ["/products/p0", "/products/p1"]}).get_json()
+        by = {x["path"]: x for x in d["prices"]}
+        self.assertEqual(by["/products/p0"]["price"], 2900)
+        self.assertEqual(by["/products/p1"]["status"], "blocked")
+
+    def test_preview_lists_products_with_lifecycle(self):
+        with mock.patch.object(ai_client, "model_info", return_value=None):
+            p = self.c.post("/api/analysis/preview", json={"store": "shiba.youcan.store"}).get_json()
+        self.assertEqual(len(p["products"]), 3)
+        self.assertTrue(all(x["label"] and x["url"].startswith("https://") for x in p["products"]))
 
     def test_export_unknown_store(self):
         r = self.c.post("/api/analysis/export", json={"store": "nothing-here.youcan.store"})

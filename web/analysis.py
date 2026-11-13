@@ -14,6 +14,7 @@ from flask import Blueprint, g, jsonify, request
 
 import ai_client
 import competitor
+import price_fetch
 import product_audit
 from db import db
 from web.common import _audit, _scope_user_id, admin_required, login_required
@@ -141,6 +142,26 @@ def api_ai_test():
 
 
 # ── analysis ─────────────────────────────────────────────────────────────
+def _payload_prices(payload: dict) -> dict:
+    """{path: {"price", "source"}} from the browser (page-fetched or typed)."""
+    out = {}
+    raw = payload.get("prices") or {}
+    if not isinstance(raw, dict):
+        return out
+    for path, v in list(raw.items())[:200]:
+        if isinstance(v, dict):
+            price, src = v.get("price"), v.get("source")
+        else:
+            price, src = v, "manual"
+        try:
+            price = int(float(str(price).replace(",", "").replace(" ", "")))
+        except (TypeError, ValueError):
+            continue
+        if 100 <= price <= 1_000_000:
+            out[str(path)[:500]] = {"price": price, "source": "page" if src == "page" else "manual"}
+    return out
+
+
 def _prepare(payload: dict) -> tuple[dict, dict | None, list | None, dict]:
     """Resolve the store, load its ads, build dossier + prompt.
 
@@ -154,10 +175,31 @@ def _prepare(payload: dict) -> tuple[dict, dict | None, list | None, dict]:
     ads = db.store_ads_for_analysis(store["domains"], user_id=_scope_user_id())
     if not ads:
         return store, None, None, cfg
-    dossier = competitor.build_dossier(ads, store, max_texts=cfg["max_texts"])
+    _links_cache[store["host"]] = competitor.product_links(ads)
+    if len(_links_cache) > 200:
+        _links_cache.pop(next(iter(_links_cache)))
+    dossier = competitor.build_dossier(ads, store, max_texts=cfg["max_texts"],
+                                       prices=_payload_prices(payload))
     lang = payload.get("lang") if payload.get("lang") in LANGS else "auto"
     messages = competitor.build_messages(dossier, lang=lang, note=str(payload.get("note") or "")[:2000])
     return store, dossier, messages, cfg
+
+
+def _products_json(dossier: dict, store: dict, limit: int = 30) -> list[dict]:
+    """Landing paths with their lifecycle and a full link, for the prices panel."""
+    links = _links_cache.get(store["host"]) or {}
+    out = []
+    for p in dossier["products"][:limit]:
+        lc = p.get("lifecycle") or {}
+        out.append({"path": p["path"], "url": links.get(p["path"], ""), "ads": p["ads"],
+                    "active": p["active"], "max_days": p["max_days"],
+                    "stage": lc.get("stage"), "label": lc.get("label"),
+                    "market_score": lc.get("market_score"), "meaning": lc.get("meaning"),
+                    "price": p.get("price_dzd"), "price_source": p.get("price_source")})
+    return out
+
+
+_links_cache: dict = {}
 
 
 def _store_json(store: dict) -> dict:
@@ -200,6 +242,7 @@ def api_analysis_preview():
         "first_launch": t["first_launch"], "last_launch": t["last_launch"],
         "tokens_in": tok_in, "max_output_tokens": cfg["max_output_tokens"],
         "context": (info or {}).get("context"), "cost_usd": cost,
+        "products": _products_json(dossier, store),
         "top_texts": [{"id": x["id"], "ads": x["ads"], "active": x["active"],
                        "max_days": x["max_days"], "text": x["text"][:160]}
                       for x in dossier["texts"][:8]],
@@ -282,7 +325,7 @@ def _run_audit(rid: int, cfg: dict, dossier: dict, host: str) -> None:
                 facts = product_audit.parse_json(a["text"])
                 if not facts.get("competitor_price_dzd"):
                     facts["competitor_price_dzd"] = row["product"].get("competitor_price_dzd")
-                calc = product_audit.evaluate(facts)
+                calc = product_audit.evaluate(facts, product_audit.market_for(row["product"], dossier))
                 with lock:
                     row.update(facts=facts, calc=calc, citations=a.get("citations") or [])
             except (ai_client.AIError, ValueError) as e:
@@ -371,7 +414,8 @@ def api_analysis_export():
     ads = db.store_ads_for_analysis(store["domains"], user_id=_scope_user_id()) if store["domains"] else []
     if not ads:
         return jsonify({"error": "لا توجد إعلانات لهذا المتجر في القاعدة."}), 404
-    dossier = competitor.build_dossier(ads, store, max_texts=EXPORT_MAX_TEXTS)
+    dossier = competitor.build_dossier(ads, store, max_texts=EXPORT_MAX_TEXTS,
+                                       prices=_payload_prices(payload))
     data = competitor.export_text(dossier, ads, note=str(payload.get("note") or "")[:2000])
     system = _gemini_system()
     _audit("ai_export", store["host"])
@@ -402,6 +446,23 @@ def api_analysis_import():
     db.finish_ai_report(rid, report=text[:400000])
     _audit("ai_import", f"{store['host']} #{rid}")
     return jsonify({"ok": True, "id": rid})
+
+
+@bp.route("/api/analysis/prices", methods=["POST"])
+@login_required
+def api_analysis_prices():
+    """Read each product's price from its landing page (no bot-check bypass:
+    protected pages come back as 'blocked' and are typed by hand)."""
+    payload = request.get_json(force=True, silent=True) or {}
+    store = competitor.resolve_store(str(payload.get("store") or ""), db)
+    if store["error"] or not store["domains"]:
+        return jsonify({"error": STORE_ERRORS.get(store["error"], "لا توجد إعلانات لهذا المتجر.")}), 400
+    ads = db.store_ads_for_analysis(store["domains"], user_id=_scope_user_id())
+    links = competitor.product_links(ads)
+    wanted = [str(x) for x in (payload.get("paths") or [])][:30] or list(links)[:30]
+    pairs = [(p, links[p]) for p in wanted if links.get(p)]
+    results = {r["url"]: r for r in price_fetch.fetch_prices([u for _, u in pairs])}
+    return jsonify({"prices": [dict(results.get(u) or {}, path=p) for p, u in pairs]})
 
 
 def _own_report(rid: int):
