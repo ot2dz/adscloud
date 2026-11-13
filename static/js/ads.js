@@ -577,6 +577,87 @@ function fmtDayAr(d) {
   return m ? `${parseInt(m[3], 10)} ${AR_MONTHS[parseInt(m[2], 10) - 1]}` : '';
 }
 
+// ── Timeline of the ads of one product: launch → stop of each ad ──
+function adEndDate(a) {
+  const st = new Date(String(a.start_date || '').slice(0, 10) + 'T00:00:00');
+  if (isNaN(st)) return null;
+  if (a.is_active) return new Date(new Date().toDateString());
+  const d = new Date(st); d.setDate(d.getDate() + Math.max(1, a.days_active || 1) - 1);
+  return d;
+}
+
+function fmtShortDay(d) {
+  return d ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(2)}` : '—';
+}
+
+// Summary line + one bar per ad on a shared time axis.
+function adTimelineHtml(ads) {
+  const rows = (ads || []).map(a => ({a, st: new Date(String(a.start_date || '').slice(0, 10) + 'T00:00:00'), en: adEndDate(a)}))
+    .filter(x => !isNaN(x.st) && x.en).sort((x, y) => x.st - y.st);
+  if (!rows.length) return '<div class="text-[11px] text-slate-400">لا توجد تواريخ.</div>';
+  const t0 = rows[0].st, t1 = new Date(Math.max(...rows.map(r => r.en)));
+  const span = Math.max(1, (t1 - t0) / 864e5 + 1);
+  const active = rows.filter(r => r.a.is_active).length;
+  const longest = Math.max(...rows.map(r => r.a.days_active || 1));
+  const bars = rows.slice(0, 40).map(r => {
+    const left = ((r.st - t0) / 864e5) / span * 100;
+    const width = Math.max(1.5, (((r.en - r.st) / 864e5) + 1) / span * 100);
+    const d = r.a.days_active || 1;
+    const label = `${fmtShortDay(r.st)} ← ${r.a.is_active ? 'الآن' : fmtShortDay(r.en)} · ${d} يوم`;
+    return `<div title="${escT(label)}">
+        <div class="text-[10.5px] num ${r.a.is_active ? 'text-emerald-700 font-bold' : 'text-slate-600'}">${escT(label)}</div>
+        <div class="relative h-2.5 bg-slate-100 rounded" dir="ltr">
+          <div class="absolute top-0 h-2.5 rounded ${r.a.is_active ? 'bg-emerald-500' : 'bg-slate-400'}" style="left:${left.toFixed(2)}%;width:${Math.min(100 - left, width).toFixed(2)}%"></div>
+        </div>
+      </div>`;
+  }).join('');
+  return `<div class="space-y-1.5 rounded-lg border border-[#e3ecf8] p-2">
+      <div class="text-[11px] font-semibold text-slate-600 leading-relaxed">
+        <b class="num">${rows.length}</b> إعلان · <b class="num text-emerald-700">${active}</b> نشط ·
+        أول إطلاق <b class="num">${fmtShortDay(t0)}</b> · آخر إطلاق <b class="num">${fmtShortDay(rows[rows.length - 1].st)}</b> ·
+        أطولها <b class="num">${longest}</b> يوم</div>
+      <div class="flex justify-between text-[10px] text-slate-400 num" dir="ltr"><span>${fmtShortDay(t0)}</span><span>${fmtShortDay(t1)}</span></div>
+      <div class="space-y-1 max-h-56 overflow-y-auto">${bars}</div>
+      ${rows.length > 40 ? `<div class="text-[10px] text-slate-400">+${rows.length - 40} إعلان آخر في «عرض كل الإعلانات».</div>` : ''}
+    </div>`;
+}
+
+// Written story of one product's ads, oldest first: launch → run → stop.
+function adStoryHtml(ads) {
+  const rows = (ads || []).map(a => ({a, st: String(a.start_date || '').slice(0, 10), en: adEndDate(a)}))
+    .filter(x => x.st && x.en).sort((x, y) => x.st.localeCompare(y.st));
+  if (!rows.length) return '';
+  let prevEnd = null;
+  const lines = rows.map((r, i) => {
+    const gap = (prevEnd && new Date(r.st) > prevEnd) ? Math.round((new Date(r.st) - prevEnd) / 864e5) : null;
+    if (r.a.is_active) prevEnd = new Date(8.64e15); else if (!prevEnd || r.en > prevEnd) prevEnd = r.en;
+    const d = r.a.days_active || 1;
+    const verb = i === 0 ? 'أطلق إعلاناً' : (gap && gap >= 3 ? `بعد <b class="num">${gap}</b> يوم توقف، أطلق إعلاناً جديداً` : 'أطلق إعلاناً آخر');
+    const body = String(r.a.body || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const run = r.a.is_active
+      ? `<span class="text-emerald-700 font-bold">ما زال يعمل منذ <b class="num">${d}</b> يوم</span>`
+      : `اشتغل <b class="num">${d}</b> يوم ثم <span class="text-rose-700 font-bold">توقف في ${fmtShortDay(r.en)}</span>`;
+    return `<li class="leading-relaxed"><span class="num text-slate-500">${fmtShortDay(new Date(r.st + 'T00:00:00'))}</span> — ${verb}${body ? ` «${escT(body)}…»` : ''} — ${run}.</li>`;
+  }).join('');
+  return `<ol class="text-[12px] text-slate-700 space-y-1 list-none">${lines}</ol>`;
+}
+
+async function toggleCardTimeline(btn) {
+  const box = btn.nextElementSibling;
+  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  if (box.dataset.loaded) return;
+  box.innerHTML = '<div class="text-[11px] text-slate-400">⏳ جاري التحميل...</div>';
+  try {
+    const r = await fetch('/api/ads/group?key=' + encodeURIComponent(btn.dataset.key) + (typeof adminUserParam === 'function' ? adminUserParam('&') : ''));
+    const d = await r.json();
+    box.innerHTML = adTimelineHtml(d.ads || []);
+    box.dataset.loaded = '1';
+  } catch (e) {
+    box.innerHTML = `<div class="text-[11px] text-rose-600">خطأ: ${escT(e.message)}</div>`;
+  }
+}
+
 // Compact ad card: media, who, three numbers, two lines of copy, actions.
 // Everything else (keywords, niches, CTA, group stats…) lives in the details modal.
 function adCardHtml(raw, opts = {}) {
@@ -635,6 +716,12 @@ function adCardHtml(raw, opts = {}) {
         </div>
 
         ${a.body ? `<p class="text-[12.5px] text-slate-700 leading-relaxed line-clamp-2">${escT((raw.body || '').slice(0, 220))}</p>` : ''}
+
+        ${g ? `<div>
+          <button type="button" data-key="${escT(g.key)}" onclick="toggleCardTimeline(this)"
+            class="w-full text-[11.5px] font-bold text-[#174ea6] bg-[#f3f8ff] hover:bg-[#e8f1ff] border border-[#d7e3f4] rounded-lg py-1.5">⏱️ مدة كل إعلان (${g.count})</button>
+          <div class="ad-timeline hidden mt-2"></div>
+        </div>` : ''}
 
         <div class="flex items-center gap-1.5 mt-auto pt-1">
           <button type="button" onclick="openAdDetails('${a.ad_id}')"

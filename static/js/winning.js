@@ -197,12 +197,19 @@ async function toggleWinTimeline(id, btn) {
   if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
   box.innerHTML = '<div class="text-xs text-slate-400 py-2">جاري التحميل…</div>';
-  const d = await (await fetch('/api/winning/' + id + '/events')).json();
+  const key = btn.closest('article, div[data-win]')?.querySelector('[data-key]')?.dataset.key || '';
+  const [d, g] = await Promise.all([
+    fetch('/api/winning/' + id + '/events').then(r => r.json()),
+    key ? fetch('/api/ads/group?key=' + encodeURIComponent(key) + adminUserParam('&')).then(r => r.json()).catch(() => ({})) : Promise.resolve({}),
+  ]);
   const ev = (d.events || []);
-  box.innerHTML = ev.length
+  const story = (g.ads || []).length
+    ? `<div class="space-y-2 py-2"><div class="text-[11px] font-bold text-slate-600">📝 ماذا فعل المعلن بهذا المنتج</div>
+        ${adStoryHtml(g.ads)}${adTimelineHtml(g.ads)}</div>` : '';
+  box.innerHTML = story + (ev.length
     ? `<ol class="border-s-2 border-[#cfe0f5] ms-2 space-y-1.5 py-1">${ev.map(e => `
         <li class="ps-3 text-[12px] text-slate-700"><span class="text-slate-400 font-mono text-[11px]">${winDateTime(e.event_at)}</span> · ${winEventText(e)}</li>`).join('')}</ol>`
-    : '<div class="text-xs text-slate-400 py-2">لا أحداث مسجلة بعد لهذا المنتج.</div>';
+    : '<div class="text-xs text-slate-400 py-2">لا أحداث مسجلة بعد لهذا المنتج.</div>');
 }
 
 async function checkWinningNow(btn) {

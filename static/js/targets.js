@@ -275,10 +275,83 @@ function _actEvent(e) {
     </div>
   </div>`;
 }
+// ── Written report: what the advertiser did, product by product ──
+function _actShort(d) {
+  const x = new Date(String(d || '').slice(0, 10) + 'T00:00:00');
+  return isNaN(x) ? '—' : `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
+}
+function _actProductName(a) {
+  try {
+    const u = new URL(a.link_url);
+    const path = decodeURIComponent(u.pathname).replace(/\/+$/, '').split('/').pop();
+    if (path) return path.replace(/[-_]+/g, ' ').slice(0, 60);
+  } catch (_e) { /* no link */ }
+  return a.store_domain || 'منتج بدون رابط';
+}
+function _actReportHtml(ads) {
+  if (!ads.length) return '<div class="text-[12px] text-slate-500 font-semibold">لا يوجد نشاط مسجل بعد.</div>';
+  // Every running period of every ad, grouped by product.
+  const prods = {};
+  ads.forEach(a => {
+    const key = a.product_key || a.link_url || a.ad_id;
+    const pr = prods[key] = prods[key] || {name: _actProductName(a), link: a.link_url, runs: [], ads: new Set()};
+    pr.ads.add(a.ad_id);
+    (a.periods || []).forEach(p => pr.runs.push({a, p, st: String(p.start || '').slice(0, 10)}));
+  });
+  const list = Object.values(prods).filter(p => p.runs.length);
+  list.forEach(p => {
+    p.runs.sort((x, y) => x.st.localeCompare(y.st));
+    p.last = p.runs.reduce((m, r) => (r.p.open ? '9999' : String(r.p.end || '').slice(0, 10)) > m ? (r.p.open ? '9999' : String(r.p.end || '').slice(0, 10)) : m, '');
+    p.active = p.runs.some(r => r.p.open);
+  });
+  list.sort((a, b) => (b.active - a.active) || b.last.localeCompare(a.last));
+
+  const since = new Date(); since.setDate(since.getDate() - 30);
+  const s30 = since.toISOString().slice(0, 10);
+  const runs = list.flatMap(p => p.runs);
+  const launched30 = runs.filter(r => r.st >= s30).length;
+  const stopped30 = runs.filter(r => !r.p.open && String(r.p.end || '').slice(0, 10) >= s30).length;
+  const head = `<div class="text-[12.5px] text-slate-700 font-semibold leading-relaxed rounded-xl bg-slate-50 border border-slate-200 p-3">
+      خلال آخر 30 يوماً: أطلق <b class="num">${launched30}</b> إعلاناً وأوقف <b class="num">${stopped30}</b>.
+      يعمل الآن على <b class="num">${list.filter(p => p.active).length}</b> منتج من أصل <b class="num">${list.length}</b>.</div>`;
+
+  const blocks = list.slice(0, 30).map(p => {
+    let prevEnd = null;
+    const lines = p.runs.map((r, i) => {
+      const body = String(r.a.body || '').replace(/\s+/g, ' ').trim().slice(0, 70);
+      const gap = (prevEnd && r.st > prevEnd)
+        ? Math.round((new Date(r.st) - new Date(prevEnd)) / 864e5) : null;
+      if (!r.p.open) {
+        const e = String(r.p.end || '').slice(0, 10);
+        if (!prevEnd || e > prevEnd) prevEnd = e;
+      } else prevEnd = '9999';
+      const verb = i === 0 ? 'أطلق إعلاناً' : (gap && gap >= 3 ? `بعد <b class="num">${gap}</b> يوم توقف، أطلق إعلاناً جديداً` : 'أطلق إعلاناً آخر');
+      const run = r.p.open
+        ? `<span class="text-emerald-700 font-bold">ما زال يعمل منذ <b class="num">${r.p.days || 1}</b> يوم</span>`
+        : `اشتغل <b class="num">${r.p.days || 1}</b> يوم ثم <span class="text-rose-700 font-bold">توقف في ${_actShort(r.p.end)}</span>`;
+      return `<li class="leading-relaxed"><span class="num text-slate-500">${_actShort(r.st)}</span> — ${verb}${body ? ` «${escT(body)}${(r.a.body || '').length > 70 ? '…' : ''}»` : ''} — ${run}.</li>`;
+    }).join('');
+    const timeline = typeof adTimelineHtml === 'function'
+      ? adTimelineHtml(p.runs.map(r => ({start_date: r.st, days_active: r.p.days || 1, is_active: !!r.p.open}))) : '';
+    return `<div class="rounded-xl border ${p.active ? 'border-emerald-200' : 'border-slate-200'} p-3 space-y-2">
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div class="font-bold text-[#102a56] text-[13px]">${p.active ? '🟢' : '⚫'} ${escT(p.name)}</div>
+          <div class="text-[10.5px] text-slate-500 font-bold"><b class="num">${p.ads.size}</b> إعلان · <b class="num">${p.runs.length}</b> فترة تشغيل
+            ${p.link ? ` · <a href="${escT(p.link)}" target="_blank" rel="noopener" class="text-blue-700 hover:underline">رابط المنتج</a>` : ''}</div>
+        </div>
+        <ol class="text-[12px] text-slate-700 space-y-1 list-none">${lines}</ol>
+        ${timeline}
+      </div>`;
+  }).join('');
+  return head + blocks + (list.length > 30 ? `<div class="text-[11px] text-slate-400">+${list.length - 30} منتج آخر في القائمة أدناه.</div>` : '');
+}
+
 async function openActivity(url, title) {
   const modal = document.getElementById('activity-modal');
   document.getElementById('activity-modal-title').innerText = title;
   document.getElementById('activity-summary').innerHTML = '';
+  document.getElementById('activity-report').innerHTML =
+    '<div class="py-4 text-center text-slate-500 font-bold text-sm">… جاري التحميل</div>';
   document.getElementById('activity-ads').innerHTML =
     '<div class="py-6 text-center text-slate-500 font-bold text-sm">… جاري التحميل</div>';
   document.getElementById('activity-timeline').innerHTML =
@@ -297,6 +370,7 @@ async function openActivity(url, title) {
       _actChip('توقف 7 أيام', s.stopped_7d, 'border-amber-200 bg-amber-50 text-amber-800') +
       _actChip('عاد للعمل 7 أيام', s.resumed_7d, 'border-slate-200 bg-slate-50 text-slate-700');
     const ads = d.ads || [];
+    document.getElementById('activity-report').innerHTML = _actReportHtml(ads);
     document.getElementById('activity-ads').innerHTML = ads.length
       ? ads.map(_actAdRow).join('')
       : '<div class="py-6 text-center text-slate-500 font-bold text-sm">لا توجد إعلانات مسجلة بعد.</div>';
@@ -316,6 +390,7 @@ async function openActivity(url, title) {
          </div>`).join('');
   } catch (e) {
     const msg = '<div class="py-10 text-center text-rose-600 font-bold text-sm">' + escT(e.message || 'تعذر تحميل السجل') + '</div>';
+    document.getElementById('activity-report').innerHTML = msg;
     document.getElementById('activity-ads').innerHTML = msg;
     document.getElementById('activity-timeline').innerHTML = msg;
   }

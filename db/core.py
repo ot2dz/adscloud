@@ -1407,7 +1407,15 @@ class Database:
         now = _now()
         first_seen = existing["first_seen"] if existing and existing.get("first_seen") else now
         start_date = str(ad.get("start_date") or (existing.get("start_date") if existing else "") or "")
-        days_active = self._calc_days_active(start_date, first_seen)
+        incoming_active = bool(ad.get("is_active", True))
+        # A stopped ad ran until Meta's stop date, not until today: count its
+        # days up to that date (or the last day we saw it running).
+        stop_date = str(ad.get("stop_date") or "")[:10]
+        if incoming_active:
+            last_seen = now
+        else:
+            last_seen = (stop_date or (existing or {}).get("last_seen_active") or now)
+        days_active = self._calc_days_active(start_date, first_seen, incoming_active, last_seen)
 
         # Links are rendered in the dashboard: only plain web URLs are kept
         # (no javascript:/data: tricks coming from ads or the extension).
@@ -1434,7 +1442,7 @@ class Database:
             ad.get("page_name") or "",
             str(ad.get("page_id") or ""),
             start_date,
-            1 if ad.get("is_active", True) else 0,
+            1 if incoming_active else 0,
             ad.get("link_url") or "",
             ad.get("store_domain") or "",
             ad.get("platform") or "",
@@ -1446,7 +1454,7 @@ class Database:
             country,
             now,
             first_seen,
-            now,  # last_seen_active
+            last_seen,  # last_seen_active
             days_active,
             target_id,
             preview_img,
@@ -1479,6 +1487,10 @@ class Database:
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT(ad_id) DO UPDATE SET {updates}")
             cur.execute(sql, values)
+            if not incoming_active:
+                # Meta's own stop date wins; else keep a known one, else the last day seen.
+                cur.execute(f"UPDATE meta_ads SET stopped_at = COALESCE({p}, stopped_at, {p}) WHERE ad_id = {p}",
+                            (stop_date or None, last_seen, ad_id))
             # Tag the ad with the keyword that found it (many per ad, kept).
             kw = (query or "").strip()
             if kw:

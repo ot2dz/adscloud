@@ -41,6 +41,7 @@ class Ad:
     page_name: str = ""
     page_id: str = ""
     start_date: str = ""
+    stop_date: str = ""  # Meta's last delivery day for a stopped ad
     is_active: bool = False
     link_url: str = ""
     store_domain: str = ""
@@ -440,13 +441,18 @@ def _adapt(m) -> Ad:
     link = (getattr(cr, "link_url", "") if cr else "") or ""
     page = getattr(m, "page", None)
     start = getattr(m, "delivery_start_time", None)
+    stop = getattr(m, "delivery_stop_time", None)
+    active = getattr(m, "is_active", None)
+    if active is None:  # status missing from the search result: a stop date means stopped
+        active = stop is None
     domain, platform = extract_store_domain(link)
     return Ad(
         ad_id=str(getattr(m, "id", "") or ""),
         page_name=(getattr(page, "name", "") if page else "") or "",
         page_id=str((getattr(page, "id", "") if page else "") or ""),
         start_date=(start.date().isoformat() if start else ""),
-        is_active=bool(getattr(m, "is_active", False)),
+        stop_date=(stop.date().isoformat() if (stop and not active) else ""),
+        is_active=bool(active),
         link_url=link,
         store_domain=domain or "",
         platform=platform or "",

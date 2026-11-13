@@ -95,5 +95,30 @@ class ResetTest(unittest.TestCase):
         self.assertEqual(len(self.ids()), 6)
 
 
+
+class StopDateTest(unittest.TestCase):
+    """An ad that arrives already stopped is not counted as running until today."""
+
+    def setUp(self):
+        tc._clean()
+
+    def test_meta_stop_date_is_kept(self):
+        a = _ad("old1", body="عرض قديم")
+        a.update(start_date="2025-01-01", is_active=False, stop_date="2025-01-10")
+        db.save_ad(a, query="", country="DZ")
+        row = db._query_one("SELECT is_active, days_active, stopped_at, last_seen_active FROM meta_ads WHERE ad_id='old1'")
+        self.assertEqual(row["is_active"], 0)
+        self.assertEqual(row["days_active"], 10)
+        self.assertTrue(str(row["stopped_at"]).startswith("2025-01-10"))
+
+    def test_running_ad_counts_to_today(self):
+        a = _ad("live1", body="عرض نشط")
+        a.update(start_date="2025-01-01", is_active=True)
+        db.save_ad(a, query="", country="DZ")
+        row = db._query_one("SELECT days_active, stopped_at FROM meta_ads WHERE ad_id='live1'")
+        self.assertGreater(row["days_active"], 300)
+        self.assertIsNone(row["stopped_at"])
+
+
 if __name__ == "__main__":
     unittest.main()
