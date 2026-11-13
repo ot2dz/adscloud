@@ -167,9 +167,43 @@ function anProductsHtml(products) {
       <div class="font-extrabold text-[#102a56]">📦 منتجات المتجر: حالة السوق وسعر المنافس</div>
       <button type="button" onclick="anFetchPrices(this)" class="ms-auto bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-lg px-3 py-1.5 font-bold text-xs">🏷️ جلب الأسعار من صفحات المنتجات</button>
     </div>
-    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">حالة السوق محسوبة من تواريخ الإعلانات: الإعلان المتوقف بعد مدة طويلة = رابح انتهى مخزونه، وتست قوي توقف مؤخراً = غالباً ينتظر الاستيراد. السعر يُستعمل في التدقيق وفي بيانات Gemini — المواقع المحمية (Cloudflare) لا تُفتح آلياً: افتح الرابط واكتب السعر بيدك.</div>
+    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">حالة السوق محسوبة من تواريخ الإعلانات: الإعلان المتوقف بعد مدة طويلة = رابح انتهى مخزونه، وتست قوي توقف مؤخراً = غالباً ينتظر الاستيراد. السعر يُستعمل في التدقيق وفي بيانات Gemini. ${anExt ? `<span class="text-emerald-700">🧩 إضافة Chrome متصلة (v${escT(anExt.version || '')}): الأسعار تُجلب من متصفحك.</span>` : 'بدون إضافة Chrome تُجلب من الخادم، وبعض المتاجر تحجبه — ثبّت الإضافة أو اكتب السعر بيدك.'}</div>
     <div class="overflow-x-auto"><table class="w-full text-xs"><tbody id="an-products">${rows}</tbody></table></div>
   </div>`;
+}
+
+// The AdsCloud Chrome extension (adlibrary/) announces itself on this page and
+// can read prices from the user's own browser, where stores that refuse the
+// server's IP open normally. Without it, the server fetches.
+let anExt = null;  // {version} once the extension answered
+const anExtWaiters = {};
+window.addEventListener('message', ev => {
+  if (ev.source !== window || ev.origin !== window.location.origin) return;
+  const m = ev.data;
+  if (!m || m.source !== 'adscloud-ext') return;
+  if (m.type === 'ready' && (m.features || []).includes('prices')) anExt = {version: m.version};
+  if (m.type === 'prices' && anExtWaiters[m.id]) { anExtWaiters[m.id](m); delete anExtWaiters[m.id]; }
+});
+window.postMessage({source: 'adscloud-page', type: 'ping'}, window.location.origin);
+
+function anExtFetchPrices(urls) {
+  return new Promise((resolve, reject) => {
+    const id = 'p' + Date.now() + Math.random().toString(36).slice(2, 7);
+    const timer = setTimeout(() => { delete anExtWaiters[id]; reject(new Error('الإضافة لم ترد')); },
+                             30000 + urls.length * 17000);
+    anExtWaiters[id] = m => { clearTimeout(timer); m.ok ? resolve(m.results || []) : reject(new Error(m.error || 'فشل')); };
+    window.postMessage({source: 'adscloud-page', type: 'fetch-prices', id, urls}, window.location.origin);
+  });
+}
+
+async function anServerFetchPrices(trs) {
+  const r = await fetch('/api/analysis/prices', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({store: anStoreValue(), paths: trs.map(tr => tr.dataset.path)})
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'فشل الجلب');
+  return d.prices || [];
 }
 
 function anCollectPrices() {
@@ -187,14 +221,19 @@ async function anFetchPrices(btn) {
   btn.disabled = true; btn.textContent = '⏳ جاري الجلب...';
   const trs = [...document.querySelectorAll('#an-products tr[data-path]')];
   trs.forEach(tr => { tr.querySelector('.an-price-status').textContent = '⏳'; });
+  const viaExt = !!anExt;
   try {
-    const r = await fetch('/api/analysis/prices', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({store: anStoreValue(), paths: trs.map(tr => tr.dataset.path)})
-    });
-    const d = await r.json();
-    if (!r.ok) { alert(d.error || 'فشل الجلب'); return; }
-    const byPath = Object.fromEntries((d.prices || []).map(x => [x.path, x]));
+    let list;
+    if (viaExt) {
+      btn.textContent = '⏳ متصفحك يجلب الأسعار...';
+      const withUrl = trs.map(tr => ({path: tr.dataset.path, a: tr.querySelector('a[href]')})).filter(x => x.a);
+      const res = await anExtFetchPrices(withUrl.map(x => x.a.href));
+      const byUrl = Object.fromEntries(res.map(x => [x.url, x]));
+      list = withUrl.map(x => Object.assign({}, byUrl[x.a.href] || {status: 'error'}, {path: x.path}));
+    } else {
+      list = await anServerFetchPrices(trs);
+    }
+    const byPath = Object.fromEntries(list.map(x => [x.path, x]));
     let ok = 0, blocked = 0;
     trs.forEach(tr => {
       const x = byPath[tr.dataset.path];
@@ -203,14 +242,15 @@ async function anFetchPrices(btn) {
       if (!x) { st.textContent = 'بلا رابط'; return; }
       if (x.status === 'ok' && x.price) {
         if (!inp.value || inp.dataset.src !== 'manual') { inp.value = x.price; inp.dataset.src = 'page'; }
-        st.textContent = '✅ من الصفحة'; st.className = 'py-1.5 ps-2 an-price-status text-[10px] font-bold text-emerald-700 whitespace-nowrap'; ok++;
+        st.textContent = viaExt ? '✅ من متصفحك' : '✅ من الصفحة'; st.className = 'py-1.5 ps-2 an-price-status text-[10px] font-bold text-emerald-700 whitespace-nowrap'; ok++;
       } else if (x.status === 'blocked') {
-        st.textContent = '🔒 محجوب — اكتبه يدوياً'; st.className = 'py-1.5 ps-2 an-price-status text-[10px] font-bold text-amber-700 whitespace-nowrap'; blocked++;
+        st.textContent = viaExt ? '🔒 محجوب حتى من متصفحك — اكتبه يدوياً'
+          : '🔒 محجوب عن الخادم — ثبّت إضافة Chrome أو اكتبه يدوياً'; st.title = x.detail || ''; st.className = 'py-1.5 ps-2 an-price-status text-[10px] font-bold text-amber-700 whitespace-nowrap'; blocked++;
       } else {
         st.textContent = x.status === 'not_found' ? 'لم يُعثر على سعر' : 'خطأ'; st.title = x.detail || '';
       }
     });
-    btn.textContent = `✅ ${ok} سعر` + (blocked ? ` · ${blocked} محجوب` : '');
+    btn.textContent = `✅ ${ok} سعر` + (blocked ? ` · ${blocked} محجوب` : '') + (viaExt ? ' (من متصفحك)' : '');
     setTimeout(() => { btn.textContent = label; }, 4000);
   } catch (e) {
     alert('خطأ: ' + e.message); btn.textContent = label;

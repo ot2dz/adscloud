@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ad Library Research Assistant",
   "description": "Local research tools for ads displayed in Facebook Ad Library.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "permissions": [
     "storage",
     "downloads"
@@ -39,6 +39,17 @@
       ],
       "css": [
         "src/content/content.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://ads.botdz.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "src/content/platform_bridge.js"
       ],
       "run_at": "document_idle"
     }

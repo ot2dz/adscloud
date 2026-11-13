@@ -2,6 +2,7 @@
 
 // Build-time config (fixed hosted URL). Must load before anything uses it.
 importScripts("../config.js");
+importScripts("../price/price_extract.js");
 
 const ADRA_PLATFORM_CACHE_KEY = "adra_platform_origin_cache";
 const ADRA_PLATFORM_CACHE_VERSION = 4;
@@ -684,7 +685,103 @@ function adraDownload(url, filename) {
   });
 }
 
+// ── Competitor prices, fetched from the user's own browser ──────────────
+// Asked by the AdsCloud platform page (through platform_bridge.js) when the
+// user clicks "fetch prices". One page at a time with a pause, plain fetch from
+// this browser: nothing is disguised; a page that answers with a bot check is
+// reported as "blocked" and left to the user.
+const ADRA_PRICE_MAX_URLS = 30;
+const ADRA_PRICE_PAUSE_MS = 700;
+const ADRA_PRICE_TIMEOUT_MS = 15000;
+
+function adraSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function adraFetchWithTimeout(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ADRA_PRICE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { redirect: "follow", signal: ctrl.signal });
+    return { status: res.status, text: await res.text() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function adraFetchOnePrice(url) {
+  const out = { url, price: null, how: "", status: "error", detail: "" };
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_e) {
+    out.detail = "bad url";
+    return out;
+  }
+  if (!/^https?:$/u.test(parsed.protocol)) {
+    out.detail = "bad url";
+    return out;
+  }
+  try {
+    if (parsed.pathname.includes("/products/")) {  // Shopify: cheap JSON first
+      try {
+        const js = await adraFetchWithTimeout(`${parsed.origin}${parsed.pathname.replace(/\/$/u, "")}.js`);
+        if (js.status === 200 && js.text.trim().startsWith("{")) {
+          const j = JSON.parse(js.text);
+          const cents = j.price || (j.variants && j.variants[0] && j.variants[0].price);
+          const v = cents ? adraPrice.num(Math.floor(Number(cents) / 100)) : null;
+          if (v) return Object.assign(out, { price: v, how: "shopify", status: "ok" });
+        }
+      } catch (_e) { /* fall back to the page */ }
+    }
+    const page = await adraFetchWithTimeout(url);
+    if (adraPrice.looksLikeChallenge(page.status, page.text)) {
+      return Object.assign(out, { status: "blocked", detail: `HTTP ${page.status}` });
+    }
+    if (page.status >= 400) {
+      return Object.assign(out, { status: "error", detail: `HTTP ${page.status}` });
+    }
+    const r = adraPrice.extractPrice(page.text);
+    return Object.assign(out, { price: r.price, how: r.how, status: r.price ? "ok" : "not_found" });
+  } catch (error) {
+    return Object.assign(out, { status: "error", detail: String(error && error.message || error).slice(0, 160) });
+  }
+}
+
+async function adraFetchPrices(urls) {
+  const list = [...new Set((urls || []).filter((u) => typeof u === "string" && /^https?:\/\//iu.test(u)))]
+    .slice(0, ADRA_PRICE_MAX_URLS);
+  const results = [];
+  for (let i = 0; i < list.length; i += 1) {
+    if (i) await adraSleep(ADRA_PRICE_PAUSE_MS);
+    results.push(await adraFetchOnePrice(list[i]));
+  }
+  return results;
+}
+
+function adraIsPlatformSender(sender) {
+  if (!sender || sender.id !== chrome.runtime.id || !sender.url) return false;
+  try {
+    const origin = new URL(sender.url).origin;
+    return origin === new URL(ADRA_DEFAULT_CLOUD_URL).origin
+      || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/u.test(origin);
+  } catch (_e) {
+    return false;
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "ADRA_FETCH_PRICES") {
+    if (!adraIsPlatformSender(_sender)) {
+      sendResponse({ ok: false, error: "not allowed" });
+      return false;
+    }
+    adraFetchPrices(message.urls)
+      .then((results) => sendResponse({ ok: true, results }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === "ADRA_DETECT_PLATFORM") {
     adraDetectPlatform(message.landingUrl)
       .then((result) => sendResponse(result))
@@ -721,5 +818,7 @@ globalThis.adraBackground = Object.freeze({
   register: adraCloudRegister,
   authConfig: adraCloudAuthConfig,
   syncHistory: adraSyncHistory,
-  syncChunkSize: ADRA_CLOUD_SYNC_CHUNK
+  syncChunkSize: ADRA_CLOUD_SYNC_CHUNK,
+  fetchPrices: adraFetchPrices,
+  isPlatformSender: adraIsPlatformSender
 });
