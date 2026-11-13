@@ -231,7 +231,89 @@ async function stopEngine(){
     }
   }, 3000);
 }
-async function resetAll(){ if(!confirm('هل أنت متأكد من مسح جميع الإعلانات؟')) return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
+// ── Selective database reset: choose which sections of ads to delete ──
+const RESET_SECTIONS = [
+  ['bank', '🛍️ إعلانات الرئيسية (البنك)', 'كل إعلان لا ينتمي لأي قسم آخر من الأقسام أدناه.', true],
+  ['competitors', '🎯 إعلانات المنافسين المتتبَّعين', 'إعلانات الصفحات والمتاجر في «تتبع المنافسين».', false],
+  ['keywords', '🔍 إعلانات الكلمات المفتاحية المتتبَّعة', 'إعلانات الكلمات المضافة في «تتبع المنافسين».', false],
+  ['winning', '🏆 إعلانات المنتجات الرابحة', 'إعلانات المنتجات التي تتابعها في «المنتجات الرابحة».', false],
+  ['global', '🌍 السوق الخارجي', 'كل إعلانات تبويب السوق الخارجي.', false],
+];
+
+function resetSelection() {
+  const sel = {};
+  RESET_SECTIONS.forEach(([k]) => { sel[k] = !!document.getElementById('reset-' + k)?.checked; });
+  return sel;
+}
+
+async function resetRefreshCounts() {
+  const out = document.getElementById('reset-summary');
+  const go = document.getElementById('reset-go');
+  out.textContent = '⏳ جاري الحساب...'; go.disabled = true;
+  try {
+    const r = await fetch('/api/reset/preview', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                 body: JSON.stringify(resetSelection())});
+    const d = await r.json();
+    RESET_SECTIONS.forEach(([k]) => {
+      const el = document.getElementById('reset-n-' + k);
+      if (el) el.textContent = Number(d[k] || 0).toLocaleString('en-US');
+    });
+    const n = Number(d.to_delete || 0);
+    out.innerHTML = n ? `سيُحذف <b class="text-rose-700">${n.toLocaleString('en-US')}</b> إعلان نهائياً. أي إعلان ينتمي لقسم غير مختار يبقى محمياً.`
+                      : 'لا شيء سيُحذف بهذا الاختيار.';
+    go.disabled = !n;
+    go.dataset.n = n;
+  } catch (e) {
+    out.textContent = 'خطأ: ' + e.message;
+  }
+}
+
+function resetAll() {
+  document.getElementById('reset-modal')?.remove();
+  const rows = RESET_SECTIONS.map(([k, label, help, on]) => `
+    <label class="flex items-start gap-3 p-2.5 rounded-xl border border-[#d7e3f4] hover:bg-[#f8fbff] cursor-pointer">
+      <input type="checkbox" id="reset-${k}" ${on ? 'checked' : ''} onchange="resetRefreshCounts()" class="mt-1 w-4 h-4 accent-rose-600">
+      <span class="flex-1"><span class="font-bold text-slate-800">${label}</span>
+        <span class="block text-[11px] text-slate-500 font-semibold">${help}</span></span>
+      <span id="reset-n-${k}" class="num text-xs font-bold text-slate-600 bg-slate-100 rounded-lg px-2 py-0.5">…</span>
+    </label>`).join('');
+  const wrap = document.createElement('div');
+  wrap.id = 'reset-modal';
+  wrap.className = 'fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4';
+  wrap.onclick = e => { if (e.target === wrap) wrap.remove(); };
+  wrap.innerHTML = `<div class="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 space-y-3 text-sm" dir="rtl">
+      <div class="flex items-center justify-between">
+        <h3 class="font-extrabold text-[#102a56]">🗑️ مسح القاعدة — اختر ما تريد مسحه</h3>
+        <button onclick="document.getElementById('reset-modal').remove()" class="text-slate-400 hover:text-slate-700 font-bold">✕</button>
+      </div>
+      <div class="space-y-2">${rows}</div>
+      <div class="text-[11px] text-slate-500 font-semibold">لا يُحذف أبداً: قائمة المنافسين، قائمة المنتجات الرابحة وملاحظاتها، المستخدمون، الإعدادات، والتقارير.</div>
+      <div id="reset-summary" class="p-2.5 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700"></div>
+      <div class="flex gap-2 justify-end">
+        <button onclick="document.getElementById('reset-modal').remove()" class="px-4 py-2 rounded-xl border border-[#b7c9e2] font-bold text-slate-700 text-xs">إلغاء</button>
+        <button id="reset-go" onclick="resetConfirm(this)" disabled class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white font-bold text-xs">مسح المحدد</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  resetRefreshCounts();
+}
+
+async function resetConfirm(btn) {
+  const n = Number(btn.dataset.n || 0);
+  if (!n || !confirm(`حذف ${n.toLocaleString('en-US')} إعلان نهائياً؟ لا يمكن التراجع.`)) return;
+  btn.disabled = true; btn.textContent = '⏳ جاري المسح...';
+  try {
+    const r = await fetch('/api/reset', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                         body: JSON.stringify(resetSelection())});
+    const d = await r.json();
+    if (!r.ok) { alert(d.error || 'فشل المسح'); return; }
+    document.getElementById('reset-modal')?.remove();
+    alert(`✅ حُذف ${Number(d.deleted || 0).toLocaleString('en-US')} إعلان.`);
+    loadStats(); loadAds();
+  } finally {
+    btn.disabled = false; btn.textContent = 'مسح المحدد';
+  }
+}
 function exportData(f){ window.location = '/api/export/' + f + adminUserParam('?'); }
 // ── SSE Events ──
 let logLines = [];

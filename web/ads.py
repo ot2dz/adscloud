@@ -311,11 +311,28 @@ def api_stats():
     return jsonify(db.get_stats(user_id=_scope_user_id()))
 
 
+def _reset_selection() -> dict:
+    c = request.get_json(force=True, silent=True) or {}
+    return {k: bool(c.get(k)) for k in db.RESET_SECTIONS}
+
+
+@bp.route("/api/reset/preview", methods=["POST"])
+@admin_required
+def api_reset_preview():
+    """Ads per section and how many the chosen sections would delete."""
+    return jsonify(db.reset_counts(_reset_selection()))
+
+
 @bp.route("/api/reset", methods=["POST"])
 @admin_required
 def api_reset():
-    db.clear_ads()
-    return jsonify({"ok": True})
+    """Delete only the chosen sections; nothing is deleted without a choice."""
+    sel = _reset_selection()
+    if not any(sel.values()):
+        return jsonify({"error": "اختر ما تريد مسحه"}), 400
+    deleted = db.reset_ads(sel)
+    _audit("db_reset", ",".join(k for k, v in sel.items() if v) + f" ({deleted} ads)")
+    return jsonify({"ok": True, "deleted": deleted})
 
 
 @bp.route("/api/export/<fmt>")

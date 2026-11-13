@@ -2602,6 +2602,92 @@ class Database:
             "last_collection": last["t"] if last else None,
         }
 
+    # ── selective reset ("مسح القاعدة") ───────────────────────────────────
+    # Sections an ad can belong to. An ad is deleted only when EVERY section it
+    # belongs to was chosen; ads in no section are the plain bank ("bank").
+    RESET_SECTIONS = ("bank", "competitors", "keywords", "winning", "global")
+    _DZ = "(market IS NULL OR market = 'dz')"
+
+    def _reset_conditions(self) -> dict:
+        dz_t = "(t.market IS NULL OR t.market = 'dz')"
+        comp = (
+            f"(page_id IN (SELECT t.target_value FROM targets t WHERE t.type = 'page' AND {dz_t}) "
+            f"OR page_id IN (SELECT page_id FROM tracked_pages) "
+            f"OR store_domain IN (SELECT t.target_value FROM targets t WHERE t.type = 'domain' AND {dz_t}) "
+            f"OR target_id IN (SELECT t.id FROM targets t WHERE t.type IN ('page', 'domain') AND {dz_t}))")
+        kw = (
+            f"(query IN (SELECT t.target_value FROM targets t WHERE t.type = 'keyword' AND {dz_t}) "
+            f"OR ad_id IN (SELECT ak.ad_id FROM ad_keywords ak WHERE ak.keyword IN "
+            f"(SELECT t.target_value FROM targets t WHERE t.type = 'keyword' AND {dz_t})) "
+            f"OR target_id IN (SELECT t.id FROM targets t WHERE t.type = 'keyword' AND {dz_t}))")
+        win = ("(product_key IS NOT NULL AND product_key <> '' "
+               "AND product_key IN (SELECT product_key FROM winning_products))")
+        # "IS TRUE": an ad with an empty page/store/key makes these NULL, and
+        # NOT NULL is NULL too, which would neither protect nor delete it.
+        return {k: f"({v} IS TRUE)" for k, v in
+                (("competitors", comp), ("keywords", kw), ("winning", win))}
+
+    def _reset_where(self, sel: dict) -> list[str]:
+        """WHERE clauses (OR-ed) of the ads a selection deletes."""
+        c = self._reset_conditions()
+        out = []
+        if any(sel.get(k) for k in ("bank", "competitors", "keywords", "winning")):
+            parts = [self._DZ]
+            for k in ("competitors", "keywords", "winning"):
+                if not sel.get(k):
+                    parts.append(f"NOT {c[k]}")  # protected section
+            if not sel.get("bank"):
+                parts.append("(" + " OR ".join(c[k] for k in ("competitors", "keywords", "winning")
+                                               if sel.get(k)) + ")")
+            out.append("(" + " AND ".join(parts) + ")")
+        if sel.get("global"):
+            out.append("(market = 'global')")
+        return out
+
+    def reset_counts(self, sel: Optional[dict] = None) -> dict:
+        """Ads per section, and how many a selection would delete."""
+        c = self._reset_conditions()
+        n = lambda where: int((self._query_one(f"SELECT COUNT(*) AS n FROM meta_ads WHERE {where}") or {}).get("n") or 0)
+        counts = {
+            "bank": n(f"{self._DZ} AND NOT {c['competitors']} AND NOT {c['keywords']} AND NOT {c['winning']}"),
+            "competitors": n(f"{self._DZ} AND {c['competitors']}"),
+            "keywords": n(f"{self._DZ} AND {c['keywords']}"),
+            "winning": n(f"{self._DZ} AND {c['winning']}"),
+            "global": n("market = 'global'"),
+            "total": n("1=1"),
+        }
+        where = self._reset_where(sel or {})
+        counts["to_delete"] = n(" OR ".join(where)) if where else 0
+        return counts
+
+    @_changes_ads
+    def reset_ads(self, sel: dict) -> int:
+        """Delete the ads of the chosen sections (and their tags, niches,
+        events and per-user links). Lists (competitors, winning products),
+        users and settings are never touched. Returns the ads deleted."""
+        where = self._reset_where(sel)
+        if not where:
+            return 0
+        cond = " OR ".join(where)
+        doomed = f"SELECT ad_id FROM meta_ads WHERE {cond}"
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            # Postgres can't reuse a subquery on a table being deleted from in
+            # one statement safely across the sequence, so snapshot the ids.
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS reset_ids (ad_id TEXT PRIMARY KEY)")
+            cur.execute("DELETE FROM reset_ids")
+            cur.execute(f"INSERT INTO reset_ids (ad_id) {doomed}")
+            for t in ("ad_keywords", "ad_niches", "ad_events", "user_ads"):
+                cur.execute(f"DELETE FROM {t} WHERE ad_id IN (SELECT ad_id FROM reset_ids)")
+            cur.execute("DELETE FROM meta_ads WHERE ad_id IN (SELECT ad_id FROM reset_ids)")
+            deleted = cur.rowcount if cur.rowcount is not None else 0
+            cur.execute("DELETE FROM reset_ids")
+            conn.commit()
+            return int(deleted)
+        finally:
+            conn.close()
+
     @_changes_ads
     def clear_ads(self) -> None:
         """Reset the Algerian bank only; the foreign side tab is separate."""
