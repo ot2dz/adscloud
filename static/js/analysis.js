@@ -95,6 +95,7 @@ async function anPreview() {
 }
 
 function anPreviewHtml(d) {
+  if (d.cost_model) anCostModel = d.cost_model;
   const s = d.store || {};
   if (s.error) return `<div class="p-3 rounded-xl bg-rose-50 text-rose-700 text-xs font-bold">${escT(s.error_text || s.error)}</div>`;
   if (!d.ads_found) {
@@ -147,30 +148,96 @@ function anPreviewHtml(d) {
 }
 
 // ── Products of the store: lifecycle (market proof) + competitor price ──
+// Cost model sent by the server with the preview (constants live in product_audit.py).
+let anCostModel = {usd: 250, rmb: 40, overhead: 895, levels: [400, 800, 1500], kg_rate: 4500};
+
+function anKgRate() {
+  const v = parseFloat((document.getElementById('an-kg-rate') || {}).value || '');
+  return v >= 500 ? v : anCostModel.kg_rate;
+}
+
+// The user's own sourcing numbers per product, remembered in this browser.
+function anCostKey(path) { return 'an-cost|' + anStoreValue().toLowerCase() + '|' + path; }
+function anLoadCost(path) {
+  try { return JSON.parse(localStorage.getItem(anCostKey(path)) || 'null'); } catch (e) { return null; }
+}
+
+function anRowCost(tr) {
+  const buy = parseFloat(tr.querySelector('.an-buy').value.replace(',', '.'));
+  const weight = parseFloat(tr.querySelector('.an-weight').value.replace(',', '.'));
+  return buy > 0 ? {buy, cur: tr.querySelector('.an-cur').value, weight_g: weight > 0 ? weight : null} : null;
+}
+
+// Live: cost ceiling from the competitor price, and the user's landed cost and profit.
+function anRecalcRow(tr) {
+  const out = tr.querySelector('.an-calc');
+  const price = parseInt(tr.querySelector('.an-price').value || '', 10);
+  const cost = anRowCost(tr);
+  try { localStorage.setItem(anCostKey(tr.dataset.path), JSON.stringify(cost || {})); } catch (e) {}
+  const m = anCostModel;
+  const parts = [];
+  if (price >= 100) parts.push(`سقف الكلفة (ربح 800): <b>${anFmt(Math.round(price - m.overhead - 800))}</b>`);
+  if (cost) {
+    const buyDzd = cost.buy * (cost.cur === 'RMB' ? m.rmb : cost.cur === 'DZD' ? 1 : m.usd);
+    const ship = cost.weight_g ? cost.weight_g / 1000 * anKgRate() : 0;
+    const landed = Math.round(buyDzd + ship);
+    let s = `كلفتك: <b>${anFmt(landed)}</b>` + (cost.weight_g ? '' : ' <span class="text-amber-700">(بلا وزن)</span>');
+    if (price >= 100) {
+      const profit = Math.round(price - landed - m.overhead);
+      s += ` ← ربحك: <b class="${profit >= 800 ? 'text-emerald-700' : profit >= 400 ? 'text-amber-700' : 'text-rose-700'}">${anFmt(profit)}</b>`;
+    }
+    parts.push(s);
+  }
+  out.innerHTML = parts.join(' · ') || '<span class="text-slate-400">أدخل سعر المنافس</span>';
+}
+
+function anRecalcAll() {
+  document.querySelectorAll('#an-products tr[data-path]').forEach(anRecalcRow);
+}
+
 function anProductsHtml(products) {
   if (!products.length) return '';
   const tone = s => ({relaunched: 'bg-emerald-100 text-emerald-800', scaling: 'bg-emerald-100 text-emerald-800',
     running_winner: 'bg-emerald-50 text-emerald-700', finished_winner: 'bg-sky-50 text-sky-800',
     test_success_waiting: 'bg-violet-50 text-violet-700', running: 'bg-slate-50 text-slate-700',
     finished_small: 'bg-sky-50 text-sky-700', failed_test: 'bg-rose-50 text-rose-700'}[s] || 'bg-amber-50 text-amber-800');
-  const rows = products.map(p => `<tr class="border-b border-slate-100 last:border-0" data-path="${escT(p.path)}">
+  const inp = 'bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-xs num';
+  const rows = products.map(p => {
+    const c = anLoadCost(p.path) || {};
+    return `<tr class="border-b border-slate-100 last:border-0 align-top" data-path="${escT(p.path)}">
       <td class="py-1.5 pe-2"><span class="px-2 py-0.5 rounded-lg font-bold whitespace-nowrap ${tone(p.stage)}" title="${escT(p.meaning || '')}">${escT(p.label || '—')}</span></td>
-      <td class="py-1.5 pe-2 max-w-[260px] truncate" dir="ltr">${p.url ? `<a href="${escT(p.url)}" target="_blank" rel="noopener nofollow" class="font-mono text-blue-700 hover:underline">${escT(p.path)}</a>` : `<span class="font-mono">${escT(p.path)}</span>`}</td>
-      <td class="py-1.5 pe-2 num text-slate-500 whitespace-nowrap">${anFmt(p.ads)} إعلان · ${anFmt(p.active)} نشط · ${anFmt(p.max_days)} يوم</td>
-      <td class="py-1.5"><input type="number" min="100" step="100" placeholder="السعر دج" value="${p.price || ''}"
-        data-src="${escT(p.price_source || '')}" oninput="this.dataset.src='manual'"
-        class="an-price w-28 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-xs num"></td>
-      <td class="py-1.5 ps-2 an-price-status text-[10px] font-bold text-slate-400 whitespace-nowrap"></td>
-    </tr>`).join('');
+      <td class="py-1.5 pe-2 max-w-[220px]"><div class="truncate" dir="ltr">${p.url ? `<a href="${escT(p.url)}" target="_blank" rel="noopener nofollow" class="font-mono text-blue-700 hover:underline">${escT(p.path)}</a>` : `<span class="font-mono">${escT(p.path)}</span>`}</div>
+        <div class="num text-[10px] text-slate-500 whitespace-nowrap">${anFmt(p.ads)} إعلان · ${anFmt(p.active)} نشط · ${anFmt(p.max_days)} يوم</div></td>
+      <td class="py-1.5 pe-2"><input type="number" min="100" step="100" placeholder="سعر المنافس" value="${p.price || ''}"
+        data-src="${escT(p.price_source || '')}" oninput="this.dataset.src='manual'; anRecalcRow(this.closest('tr'))"
+        class="an-price w-28 ${inp}">
+        <div class="an-price-status text-[10px] font-bold text-slate-400 whitespace-nowrap mt-0.5"></div></td>
+      <td class="py-1.5 pe-2 whitespace-nowrap"><input type="number" min="0" step="0.01" placeholder="شراء 1688" value="${c.buy || ''}"
+          oninput="anRecalcRow(this.closest('tr'))" class="an-buy w-20 ${inp}">
+        <select onchange="anRecalcRow(this.closest('tr'))" class="an-cur ${inp}">
+          <option value="USD" ${c.cur !== 'RMB' && c.cur !== 'DZD' ? 'selected' : ''}>$</option>
+          <option value="RMB" ${c.cur === 'RMB' ? 'selected' : ''}>¥</option>
+          <option value="DZD" ${c.cur === 'DZD' ? 'selected' : ''}>دج</option></select>
+        <input type="number" min="0" step="10" placeholder="الوزن غ" value="${c.weight_g || ''}"
+          oninput="anRecalcRow(this.closest('tr'))" class="an-weight w-20 ${inp}"></td>
+      <td class="py-1.5 an-calc text-[11px] text-slate-700 leading-relaxed"></td>
+    </tr>`;
+  }).join('');
+  setTimeout(anRecalcAll, 0);
   return `<div class="rounded-xl border border-[#d7e3f4] p-3 space-y-2">
     <div class="flex items-center gap-2 flex-wrap">
-      <div class="font-extrabold text-[#102a56]">📦 منتجات المتجر: حالة السوق وسعر المنافس</div>
-      <button type="button" onclick="anFetchPrices(this)" class="ms-auto bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-lg px-3 py-1.5 font-bold text-xs">🏷️ جلب الأسعار من صفحات المنتجات</button>
+      <div class="font-extrabold text-[#102a56]">📦 منتجات المتجر: السوق، السعر، وكلفتك</div>
+      <label class="ms-auto text-xs font-bold text-slate-600 flex items-center gap-1.5">سعر الكيلو جواً
+        <input id="an-kg-rate" type="number" min="500" step="100" value="${anFmtRaw(localStorage.getItem('an-kg-rate') || anCostModel.kg_rate)}"
+          oninput="localStorage.setItem('an-kg-rate', this.value); anRecalcAll()" class="w-24 ${inp}"> دج</label>
+      <button type="button" onclick="anFetchPrices(this)" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-lg px-3 py-1.5 font-bold text-xs">🏷️ جلب أسعار المنافس</button>
     </div>
-    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">حالة السوق محسوبة من تواريخ الإعلانات: الإعلان المتوقف بعد مدة طويلة = رابح انتهى مخزونه، وتست قوي توقف مؤخراً = غالباً ينتظر الاستيراد. السعر يُستعمل في التدقيق وفي بيانات Gemini. ${anExt ? `<span class="text-emerald-700">🧩 إضافة Chrome متصلة (v${escT(anExt.version || '')}): الأسعار تُجلب من متصفحك.</span>` : 'بدون إضافة Chrome تُجلب من الخادم، وبعض المتاجر تحجبه — ثبّت الإضافة أو اكتب السعر بيدك.'}</div>
+    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">«سقف الكلفة» = أقصى كلفة واصلة (شراء + شحن) تترك لك ربح 800 دج بسعر المنافس، بعد ${anFmt(anCostModel.overhead)} دج للتأكيد والريتور والإعلان. ابحث بالصورة في 1688 وأدخل السعر والوزن لتحسب ربحك الحقيقي — أرقامك تُحفظ في متصفحك وتُرسل للتدقيق ولـ Gemini. ${anExt ? `<span class="text-emerald-700">🧩 إضافة Chrome متصلة (v${escT(anExt.version || '')}): أسعار المنافس تُجلب من متصفحك.</span>` : 'بدون إضافة Chrome تُجلب أسعار المنافس من الخادم، وبعض المتاجر تحجبه.'}</div>
     <div class="overflow-x-auto"><table class="w-full text-xs"><tbody id="an-products">${rows}</tbody></table></div>
   </div>`;
 }
+
+function anFmtRaw(v) { const n = parseFloat(v); return Number.isFinite(n) ? String(n) : ''; }
 
 // The AdsCloud Chrome extension (adlibrary/) announces itself on this page and
 // can read prices from the user's own browser, where stores that refuse the
@@ -211,7 +278,10 @@ function anCollectPrices() {
   document.querySelectorAll('#an-products tr[data-path]').forEach(tr => {
     const inp = tr.querySelector('.an-price');
     const v = parseInt((inp && inp.value) || '', 10);
-    if (v >= 100) out[tr.dataset.path] = {price: v, source: inp.dataset.src === 'page' ? 'page' : 'manual'};
+    const cost = anRowCost(tr);
+    if (v >= 100 || cost) {
+      out[tr.dataset.path] = {price: v >= 100 ? v : null, source: inp.dataset.src === 'page' ? 'page' : 'manual', cost};
+    }
   });
   return out;
 }
@@ -241,11 +311,11 @@ async function anFetchPrices(btn) {
       const inp = tr.querySelector('.an-price');
       if (!x) { st.textContent = 'بلا رابط'; return; }
       if (x.status === 'ok' && x.price) {
-        if (!inp.value || inp.dataset.src !== 'manual') { inp.value = x.price; inp.dataset.src = 'page'; }
-        st.textContent = viaExt ? '✅ من متصفحك' : '✅ من الصفحة'; st.className = 'py-1.5 ps-2 an-price-status text-[10px] font-bold text-emerald-700 whitespace-nowrap'; ok++;
+        if (!inp.value || inp.dataset.src !== 'manual') { inp.value = x.price; inp.dataset.src = 'page'; anRecalcRow(tr); }
+        st.textContent = viaExt ? '✅ من متصفحك' : '✅ من الصفحة'; st.className = 'an-price-status text-[10px] font-bold text-emerald-700 whitespace-nowrap mt-0.5'; ok++;
       } else if (x.status === 'blocked') {
         st.textContent = viaExt ? '🔒 محجوب حتى من متصفحك — اكتبه يدوياً'
-          : '🔒 محجوب عن الخادم — ثبّت إضافة Chrome أو اكتبه يدوياً'; st.title = x.detail || ''; st.className = 'py-1.5 ps-2 an-price-status text-[10px] font-bold text-amber-700 whitespace-nowrap'; blocked++;
+          : '🔒 محجوب عن الخادم — ثبّت إضافة Chrome أو اكتبه يدوياً'; st.title = x.detail || ''; st.className = 'an-price-status text-[10px] font-bold text-amber-700 whitespace-nowrap mt-0.5'; blocked++;
       } else {
         st.textContent = x.status === 'not_found' ? 'لم يُعثر على سعر' : 'خطأ'; st.title = x.detail || '';
       }
@@ -288,10 +358,11 @@ async function anGemLoad() {
   const store = anStoreValue();
   const note = document.getElementById('an-note').value;
   const prices = anCollectPrices();
-  const pkey = JSON.stringify(prices);
+  const kg_rate = anKgRate();
+  const pkey = JSON.stringify([prices, kg_rate]);
   if (anGem && anGem.store_input === store && anGem.note === note && anGem.pkey === pkey) return anGem;
   const r = await fetch('/api/analysis/export', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({store, note, prices})
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({store, note, prices, kg_rate})
   });
   const d = await r.json();
   if (!r.ok) throw new Error(d.error || 'فشل تجهيز البيانات');
@@ -353,7 +424,7 @@ async function anRun(btn, kind) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({store: anStoreValue(), lang: document.getElementById('an-lang').value,
                             note: document.getElementById('an-note').value, kind: kind || 'report',
-                            prices: anCollectPrices()})
+                            prices: anCollectPrices(), kg_rate: anKgRate()})
     });
     const d = await r.json();
     if (!r.ok || !d.id) { alert(d.error || 'فشل التحليل'); btn.disabled = false; btn.textContent = label; return; }

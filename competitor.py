@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
+import product_audit
 from store_filter import extract_store_domain, host_of, is_store_domain
 
 # Hosted-store platforms: each store lives on its own subdomain, so the
@@ -269,10 +270,12 @@ def product_lifecycle(ads: list[dict], today: Optional[date] = None) -> dict:
 
 # ── dossier ──────────────────────────────────────────────────────────────
 def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
-                  today: Optional[date] = None, prices: Optional[dict] = None) -> dict:
+                  today: Optional[date] = None, prices: Optional[dict] = None,
+                  kg_rate: Optional[float] = None) -> dict:
     """Summarise one store's ads. Pure function (testable without a DB).
 
-    ``prices`` = {landing path: {"price": DZD, "source": "page"|"manual"}}."""
+    ``prices`` = {landing path: {"price": DZD, "source": "page"|"manual",
+    "cost": the user's own {"buy", "cur", "weight_g"} from 1688}}."""
     today = today or date.today()
     total = len(ads)
     active = sum(1 for a in ads if int(a.get("is_active") or 0) == 1)
@@ -333,6 +336,7 @@ def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
         pr = (prices or {}).get(path) or {}
         p["price_dzd"] = int(pr["price"]) if pr.get("price") else None
         p["price_source"] = pr.get("source") if pr.get("price") else None
+        p["cost"] = pr.get("cost") or None
 
     # launch cadence: last 16 weeks
     week0 = today - timedelta(days=today.weekday())
@@ -365,6 +369,7 @@ def build_dossier(ads: list[dict], store: dict, max_texts: int = 120,
         "store": {"host": store.get("host"), "platform": store.get("platform"),
                   "domains": store.get("domains", [])},
         "today": today.isoformat(),
+        "kg_rate": float(kg_rate or product_audit.DEFAULT_KG_RATE),
         "totals": {
             "ads": total, "active": active, "stopped": total - active,
             "unique_texts": len(groups), "duplicate_ads": total - len(groups),
@@ -437,6 +442,9 @@ def dossier_text(d: dict) -> str:
                  f"{p['first']}..{p['last']} | {','.join(p['texts'])} | "
                  f"{lc.get('label', '?')} — {lc.get('meaning', '')} ({'; '.join(extra)}) | "
                  f"{lc.get('market_score', '?')}/40 | {price}")
+        costs = product_audit.cost_line(p.get("price_dzd"), p.get("cost"), d.get("kg_rate"))
+        if costs:
+            L.append(f"    COST: {costs}")
     L += ["", "UNIQUE AD TEXTS (id | ads using it | active | max_days | Meta variants | first..last | path | cta):"]
     for x in d["texts"]:
         L.append(f"[{x['id']}] ads={x['ads']} active={x['active']} max_days={x['max_days']} "

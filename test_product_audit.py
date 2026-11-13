@@ -20,96 +20,85 @@ from db import db
 WINNER = {"lifecycle": {"stage": "running_winner", "label": "✅ رابح مستمر", "market_score": 35}}
 
 FACTS = {
-    "name_ar": "مصباح ليلي", "name_en": "motion sensor night light", "niche": "حل مشكلة يومية",
-    "track": "imported", "sensitive_cargo": False, "fragile": False,
-    "purchase_price": {"amount": 5, "currency": "USD", "source": "AliExpress"},
-    "weight_g": 200, "dims_cm": [10, 8, 5], "competitor_price_dzd": 5900,
-    "research": {"summary": "ok", "avg_rating": 4.3, "authenticity": "real",
-                 "top_defect": "battery", "sources": ["https://reddit.com/x"]},
+    "name_ar": "سباتول الكوان", "name_en": "inside corner drywall trowel", "niche": "أداة بريكولاج",
+    "fragile": False, "competitor_price_dzd": 3400,
+    "research": {"summary": "ok", "avg_rating": 4.3, "authenticity": "real", "return_risk": "low",
+                 "top_defect": "زوايا غير منتظمة", "sources": ["https://reddit.com/x"]},
     "kill_gate": None, "pain_score": 25, "perceived_value": "", "offer": "2-Pack",
-    "meta_keywords": ["ضوء"], "wholesale_exit_price_dzd": 1500, "one_line_reason": "حقيقي ومطلوب",
+    "search_1688": ["阴角抹子 不锈钢"], "meta_keywords": ["سباتول الكوان"], "one_line_reason": "حقيقي ومطلوب",
 }
+WINNER = {"lifecycle": {"stage": "scaling", "label": "🔥 يسكايل الآن", "market_score": 38}}
+MY_COST = {"buy": 1, "cur": "USD", "weight_g": 170}  # the owner's real 1688 numbers
 
 
 class MathTest(unittest.TestCase):
-    def test_logistics_and_landed(self):
-        c = pa.evaluate(FACTS)
-        self.assertEqual(c["logistics"]["volumetric_g"], 80)
-        self.assertEqual(c["logistics"]["billed_g"], 200)
-        self.assertEqual(c["logistics"]["shipping_dzd"], 960)       # 0.2 kg × 4800
-        self.assertEqual(c["landed_dzd"], 2210)                       # 5$ × 250 + 960
-        # break-even = 2210 + 100 + 200 (return burden) + 595.24 (ads) = 3105
-        self.assertEqual(c["scenarios"]["break_even"], 3105)
+    def test_overhead_and_ceilings(self):
+        # 100 confirmation + 200 return burden + 595 ads (1$ / 42%) per delivered order
+        self.assertEqual(round(pa.overhead()), 895)
+        self.assertEqual(pa.cost_ceilings(3400), {400: 2105, 800: 1705, 1500: 1005})
+        self.assertIsNone(pa.cost_ceilings(None))
 
-    def test_volumetric_wins_and_sensitive_rate(self):
-        log = pa.logistics(100, [30, 20, 10], "imported", sensitive=True)
-        self.assertEqual(log["billed_g"], 1200)
-        self.assertEqual(log["shipping_dzd"], 7800)  # 1.2 × 6500
+    def test_users_own_cost(self):
+        mine = pa.landed_from_user(MY_COST, 4500)
+        self.assertEqual((mine["buy_dzd"], mine["shipping_dzd"], mine["landed"]), (250, 765, 1015))
+        self.assertEqual(pa.landed_from_user({"buy": 15, "cur": "RMB"}, 4500)["landed"], 600)  # no weight
+        self.assertIsNone(pa.landed_from_user({"buy": ""}))
 
-    def test_scenarios_reach_their_targets(self):
-        for track, tier in (("imported", "high"), ("local", "low"), ("imported", "low")):
-            sc = pa.scenarios(800 if tier == "low" else 2500, track, tier)
-            for key, target in zip(("economic", "balanced", "high"), pa.TARGETS[tier]):
-                self.assertGreaterEqual(sc[key]["profit"], target, (track, key))
-                self.assertEqual(sc[key]["price"] % 100, 0)
-            self.assertLess(sc["economic"]["price"], sc["balanced"]["price"])
-            self.assertLess(sc["balanced"]["price"], sc["high"]["price"])
-
-    def test_max_cpa_formula(self):
-        c = pa.unit_costs(2210, "imported")
-        m = pa.at_price(5900, c)
-        expected = (5900 - 2210 - 100 - 200) * 0.42 / 250
-        self.assertAlmostEqual(m["max_cpa"], round(expected, 2))
-
-    def test_local_track_has_no_air_freight(self):
-        c = pa.evaluate(dict(FACTS, track="local", purchase_price={"amount": 600, "currency": "DZD"}))
-        self.assertEqual(c["logistics"]["shipping_dzd"], 0)
-        self.assertEqual(c["landed_dzd"], 600)
-        self.assertEqual(c["scenarios"]["costs"]["dr"], 0.70)
-
-    def test_green_decision(self):
-        c = pa.evaluate(FACTS, WINNER)
-        self.assertEqual(c["scores"], {"market": 35, "margin": 20, "pain": 15, "quality": 15, "logistics": 10})
+    def test_spatula_example(self):
+        """3,400 DZD at the competitor, bought 1$ + 170 g at 4,500/kg → ~1,490 profit."""
+        c = pa.evaluate(FACTS, dict(WINNER, price=3400, cost=MY_COST, kg_rate=4500))
+        self.assertEqual(c["mine"]["landed"], 1015)
+        self.assertEqual(c["market"]["profit"], 1490)
+        self.assertEqual(c["margin_basis"], "real")
+        self.assertEqual(c["tier"], "high")
+        self.assertIsNotNone(c["scenarios"])
         self.assertEqual(c["decision"], "green")
 
+    def test_no_cost_means_no_invented_numbers(self):
+        c = pa.evaluate(FACTS, dict(WINNER, price=3400))
+        self.assertIsNone(c["mine"])
+        self.assertIsNone(c["scenarios"])
+        self.assertIsNone(c["market"])
+        self.assertEqual(c["margin_basis"], "ceiling")
+        self.assertEqual(c["scores"]["margin"], 16)  # ceiling 1,705 ≥ 1,500
+        self.assertEqual(c["scores"]["logistics"], pa.UNKNOWN_LOGISTICS_SCORE)
+
+    def test_model_cost_guesses_are_ignored(self):
+        guessed = dict(FACTS, purchase_price={"amount": 2.4, "currency": "USD"}, weight_g=288)
+        self.assertIsNone(pa.evaluate(guessed, dict(WINNER, price=3400))["mine"])
+
+    def test_scenarios_reach_their_targets(self):
+        for tier in ("high", "low"):
+            sc = pa.scenarios(1015, tier)
+            for key, target in zip(("economic", "balanced", "high"), pa.TARGETS[tier]):
+                self.assertGreaterEqual(sc[key]["profit"], target, (tier, key))
+                self.assertEqual(sc[key]["price"] % 100, 0)
+
+    def test_max_cpa_formula(self):
+        m = pa.at_price(3400, pa.unit_costs(1015))
+        self.assertAlmostEqual(m["max_cpa"], round((3400 - 1015 - 100 - 200) * 0.42 / 250, 2))
+
     def test_market_proof_carries_an_average_product(self):
-        """A gadget with doubtful reviews that the market bought for weeks is not red."""
-        gadget = dict(FACTS, pain_score=8, research=dict(FACTS["research"], authenticity="doubtful"),
-                      weight_g=600, dims_cm=[28, 22, 6], competitor_price_dzd=None)
-        finished = {"lifecycle": {"stage": "finished_winner", "label": "🏁 رابح انتهى", "market_score": 32}}
-        c = pa.evaluate(gadget, finished)
-        self.assertIn(c["decision"], ("yellow", "green"), c["scores"])
-        failed = {"lifecycle": {"stage": "failed_test", "label": "❌", "market_score": 0}}
+        gadget = dict(FACTS, pain_score=8, research=dict(FACTS["research"], authenticity="doubtful"))
+        finished = {"lifecycle": {"stage": "finished_winner", "market_score": 32}, "price": 5200}
+        self.assertIn(pa.evaluate(gadget, finished)["decision"], ("yellow", "green"))
+        failed = {"lifecycle": {"stage": "failed_test", "market_score": 0}, "price": 5200}
         self.assertIn(pa.evaluate(gadget, failed)["decision"], ("orange", "red"))
-
-    def test_low_ticket_tier_from_market_price(self):
-        pen = dict(FACTS, purchase_price={"amount": 1.2, "currency": "USD"}, weight_g=60,
-                   dims_cm=[16, 3, 3], competitor_price_dzd=None)
-        c = pa.evaluate(pen, {"price": 2500, "lifecycle": {"market_score": 26}})
-        self.assertEqual(c["tier"], "low")
-        self.assertLess(c["scenarios"]["balanced"]["price"], 3000)
-        self.assertGreater(c["market"]["profit"], 400)  # 2,500 DZD pays at air freight
-        self.assertEqual(c["market_price_source"], "page/manual")
-
-    def test_cheaper_local_source_wins(self):
-        heavy = dict(FACTS, weight_g=450, sensitive_cargo=True, local_wholesale_dzd=700)
-        c = pa.evaluate(heavy)
-        self.assertEqual(c["source"], "local")
-        self.assertEqual(c["landed_dzd"], 700)
-        self.assertGreater(c["routes"]["imported"], 3000)  # 450 g × 6,500 + 1,250
 
     def test_kill_gate_forces_red(self):
         c = pa.evaluate(dict(FACTS, kill_gate="وهم كيميائي: بخاخ خدوش"), WINNER)
         self.assertEqual(c["decision"], "red")
         self.assertLessEqual(c["total"], 39)
-        c = pa.evaluate(dict(FACTS, research=dict(FACTS["research"], authenticity="fake")))
+        c = pa.evaluate(dict(FACTS, research=dict(FACTS["research"], authenticity="fake")), WINNER)
         self.assertEqual(c["decision"], "red")
         self.assertTrue(c["kill_gate"])
 
-    def test_missing_values_are_flagged(self):
-        c = pa.evaluate({"name_ar": "x", "track": "imported"})
-        self.assertIn("الوزن", c["assumed"])
-        self.assertIn("سعر الشراء", c["assumed"])
+    def test_cost_line_for_the_dossier(self):
+        line = pa.cost_line(3400, MY_COST, 4500)
+        self.assertIn("800: 1705", line)
+        self.assertIn("landed 1015", line)
+        self.assertIn("profit at competitor price 1490", line)
+        self.assertEqual(pa.cost_line(None, None, 4500), "")
 
     def test_parse_json_with_fences_and_prose(self):
         self.assertEqual(pa.parse_json('Here:\n```json\n{"a": {"b": "}"}}\n```'), {"a": {"b": "}"}})
@@ -118,14 +107,27 @@ class MathTest(unittest.TestCase):
             pa.parse_json("no json")
 
     def test_render_table(self):
-        rows = [{"product": {"name_ar": "مصباح"}, "facts": FACTS, "calc": pa.evaluate(FACTS, WINNER)},
+        rows = [{"product": {"name_ar": "سباتول"}, "facts": FACTS,
+                 "calc": pa.evaluate(FACTS, dict(WINNER, price=3400, cost=MY_COST))},
+                {"product": {"name_ar": "قلم"}, "facts": FACTS, "calc": pa.evaluate(FACTS, dict(WINNER, price=2900))},
                 {"product": {"name_ar": "بخاخ"}, "error": "HTTP 500"}]
         md = pa.render("shop.youcan.store", rows, web=True)
-        self.assertIn("| # | المنتج | حالة السوق | القرار", md)
-        self.assertIn("✅ رابح مستمر", md)
-        self.assertIn("🟢 اختبر فوراً", md)
+        self.assertIn("| # | المنتج | حالة السوق | القرار | الدرجة | سعر المنافس | سقف الكلفة", md)
+        self.assertIn("ابحث في 1688", md)
+        self.assertIn("الأسعار الثلاثة بكلفتك", md)
+        self.assertIn("阴角抹子", md)
         self.assertIn("تعذر التدقيق", md)
-        self.assertIn("متوازن ⭐", md)
+        self.assertNotIn("الوزن الحجمي", md)
+
+
+class PromptTest(unittest.TestCase):
+    def test_no_cost_estimates_asked_from_the_model(self):
+        for text in (pa.AUDIT_SYSTEM, open("prompts/gemini_audit_system.md", encoding="utf-8").read()):
+            self.assertNotIn("4,800 DZD / kg", text)
+            self.assertNotIn("volumetric_weight", text)
+            self.assertIn("1688", text)
+        self.assertNotIn('"weight_g"', pa.AUDIT_SYSTEM)
+        self.assertNotIn('"purchase_price"', pa.AUDIT_SYSTEM)
 
 
 TODAY = date(2026, 11, 13)
@@ -264,7 +266,9 @@ class AuditApiTest(unittest.TestCase):
                     "finish_reason": "stop", "model": "m/x", "citations": ["https://amazon.com/r"]}
 
         with mock.patch.object(ai_client, "chat", side_effect=fake_chat) as chat:
-            r = c.post("/api/analysis/run", json={"store": "shiba.youcan.store", "kind": "audit"}).get_json()
+            r = c.post("/api/analysis/run", json={
+                "store": "shiba.youcan.store", "kind": "audit", "kg_rate": 4500,
+                "prices": {"/products/lamp": {"price": 3400, "source": "manual", "cost": MY_COST}}}).get_json()
             self.assertEqual(r["kind"], "audit")
             for _ in range(100):
                 row = c.get(f"/api/analysis/reports/{r['id']}").get_json()
@@ -276,10 +280,11 @@ class AuditApiTest(unittest.TestCase):
         self.assertEqual(chat.call_count, 3)  # identify + 2 products
         self.assertEqual(row["prompt_tokens"], 300)
         md = row["report"]
-        self.assertIn("🟢 اختبر فوراً", md)
         self.assertIn("🔴 ارمه في البحر", md)
+        self.assertIn("1,015", md)   # the owner's landed cost reached the report
+        self.assertIn("1,490", md)   # and their profit at the competitor price
         # green product is listed before the killed one
-        self.assertLess(md.index("مصباح ليلي"), md.index("بخاخ خدوش"))
+        self.assertLess(md.index("سباتول الكوان"), md.index("بخاخ خدوش"))
         listed = c.get("/api/analysis/reports").get_json()["reports"]
         self.assertEqual(listed[0]["kind"], "audit")
 

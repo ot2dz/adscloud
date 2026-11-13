@@ -156,10 +156,36 @@ def _payload_prices(payload: dict) -> dict:
         try:
             price = int(float(str(price).replace(",", "").replace(" ", "")))
         except (TypeError, ValueError):
-            continue
-        if 100 <= price <= 1_000_000:
-            out[str(path)[:500]] = {"price": price, "source": "page" if src == "page" else "manual"}
+            price = 0
+        cost = None
+        if isinstance(v, dict) and isinstance(v.get("cost"), dict):
+            c = v["cost"]
+            try:
+                buy = float(str(c.get("buy") or "").replace(",", "."))
+            except ValueError:
+                buy = 0.0
+            if 0 < buy < 100_000:
+                try:
+                    weight = float(str(c.get("weight_g") or 0).replace(",", "."))
+                except ValueError:
+                    weight = 0.0
+                cur = str(c.get("cur") or "USD").upper()
+                cost = {"buy": buy, "cur": cur if cur in ("USD", "RMB", "DZD") else "USD",
+                        "weight_g": weight if 0 < weight < 100_000 else None}
+        if not (100 <= price <= 1_000_000):
+            price = None
+        if price or cost:
+            out[str(path)[:500]] = {"price": price, "source": "page" if src == "page" else "manual",
+                                    "cost": cost}
     return out
+
+
+def _payload_kg_rate(payload: dict) -> float:
+    try:
+        v = float(payload.get("kg_rate") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return v if 500 <= v <= 50_000 else product_audit.DEFAULT_KG_RATE
 
 
 def _prepare(payload: dict) -> tuple[dict, dict | None, list | None, dict]:
@@ -179,7 +205,8 @@ def _prepare(payload: dict) -> tuple[dict, dict | None, list | None, dict]:
     if len(_links_cache) > 200:
         _links_cache.pop(next(iter(_links_cache)))
     dossier = competitor.build_dossier(ads, store, max_texts=cfg["max_texts"],
-                                       prices=_payload_prices(payload))
+                                       prices=_payload_prices(payload),
+                                       kg_rate=_payload_kg_rate(payload))
     lang = payload.get("lang") if payload.get("lang") in LANGS else "auto"
     messages = competitor.build_messages(dossier, lang=lang, note=str(payload.get("note") or "")[:2000])
     return store, dossier, messages, cfg
@@ -224,6 +251,10 @@ def api_analysis_preview():
     out = {"store": _store_json(store), "ready_error": ai_client.ready(cfg),
            "model": cfg["model"], "provider": cfg["provider"], "quota_left": _quota_left(cfg),
            "web_search": ai_client.supports_web_search(cfg),
+           "cost_model": {"usd": product_audit.USD_TO_DZD, "rmb": product_audit.RMB_TO_DZD,
+                          "overhead": round(product_audit.overhead()),
+                          "levels": list(product_audit.PROFIT_LEVELS),
+                          "kg_rate": product_audit.DEFAULT_KG_RATE},
            "audit_max_products": cfg["audit_max_products"]}
     if dossier is None:
         out["ads_found"] = 0
@@ -415,7 +446,8 @@ def api_analysis_export():
     if not ads:
         return jsonify({"error": "لا توجد إعلانات لهذا المتجر في القاعدة."}), 404
     dossier = competitor.build_dossier(ads, store, max_texts=EXPORT_MAX_TEXTS,
-                                       prices=_payload_prices(payload))
+                                       prices=_payload_prices(payload),
+                                       kg_rate=_payload_kg_rate(payload))
     data = competitor.export_text(dossier, ads, note=str(payload.get("note") or "")[:2000])
     system = _gemini_system()
     _audit("ai_export", store["host"])
