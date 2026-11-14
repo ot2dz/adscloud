@@ -28,8 +28,17 @@ from product_audit import parse_json
 logger = logging.getLogger("niche_ai")
 
 BATCH = 25
+MIN_BATCH = 5
 DEFAULT_DAILY = 3000
 TEXT_CHARS = 450
+# Answer budget: some models write ~70 tokens per product (spaces, line
+# breaks), so give plenty — only the tokens actually written are paid.
+TOKENS_PER_PRODUCT = 150
+MAX_ANSWER_TOKENS = 8000
+MAX_TRIES = 3            # a product that keeps failing is left to the keyword rules
+
+_batch = BATCH           # shrinks when answers get cut, grows back slowly
+_tries: dict = {}        # product_key -> failed attempts (this process)
 
 SYSTEM = """You classify e-commerce products advertised in Algeria (Meta ads) into niches.
 
@@ -41,8 +50,10 @@ Rules:
 - Judge the PRODUCT being sold, not the words "delivery", "offer" or the store name.
 - confidence: 0-100, how sure you are.
 
-Answer with JSON only:
+Answer with compact JSON only (one line, no markdown, no extra fields, no explanations):
 {"items":[{"id":"P1","niches":[{"slug":"kitchen","confidence":92}]}]}"""
+
+_ITEM_RE = re.compile(r'\{\s*"id"\s*:\s*"?(P?\d+)"?\s*,\s*"niches"\s*:\s*(\[[^\[\]]*\])\s*\}', re.I)
 
 
 def _settings() -> dict:
@@ -94,11 +105,25 @@ def build_messages(niches: list[dict], products: list[dict]) -> list[dict]:
             {"role": "user", "content": "PRODUCTS:\n" + "\n".join(rows)}]
 
 
+def _items(text: str) -> list:
+    """The answer's items; from a cut-off answer, every item that is complete."""
+    try:
+        return parse_json(text).get("items") or []
+    except ValueError:
+        out = []
+        for m in _ITEM_RE.finditer(text or ""):
+            try:
+                out.append({"id": m.group(1), "niches": json.loads(m.group(2))})
+            except ValueError:
+                continue
+        return out
+
+
 def parse_answer(text: str, count: int, valid: set) -> dict:
-    """{index (1-based): [{"slug","confidence"}]} keeping only listed slugs."""
-    data = parse_json(text)
+    """{index (1-based): [{"slug","confidence"}]} keeping only listed slugs.
+    Products missing from the answer (cut off) are simply absent."""
     out: dict = {}
-    for item in data.get("items") or []:
+    for item in _items(text):
         m = re.match(r"P?(\d+)$", str(item.get("id") or "").strip(), re.I)
         if not m or not (1 <= int(m.group(1)) <= count):
             continue
@@ -143,7 +168,8 @@ def run_once(db, conf: Optional[dict] = None) -> int:
     if room <= 0:
         return 0
     since = "" if conf["backfill"] else conf["since"]
-    pending = db.niche_ai_pending(limit=min(BATCH, room), since=since)
+    global _batch
+    pending = db.niche_ai_pending(limit=min(_batch, room), since=since)
     if not pending:
         return 0
 
@@ -167,14 +193,35 @@ def run_once(db, conf: Optional[dict] = None) -> int:
     niches = db.niche_list()
     valid = {n["slug"] for n in niches}
     r = ai_client.chat(conf["cfg"], build_messages(niches, to_ask),
-                       max_tokens=60 * len(to_ask) + 200, timeout=180)
+                       max_tokens=min(MAX_ANSWER_TOKENS, TOKENS_PER_PRODUCT * len(to_ask) + 400),
+                       timeout=180)
     answer = parse_answer(r["text"], len(to_ask), valid)
+    answered = 0
     for i, prod in enumerate(to_ask, 1):
-        db.save_niche_ai(prod["product_key"], answer.get(i, []))
-    _bump_counters(db, len(to_ask), r.get("cost"))
-    db.set_setting("ai_niche_error", "")
-    logger.info("AI niches: %s products classified, %s reused", len(to_ask), reused)
-    return len(to_ask) + reused
+        key = prod["product_key"]
+        if i in answer:
+            db.save_niche_ai(key, answer[i])
+            _tries.pop(key, None)
+            answered += 1
+            continue
+        # Not in the answer (cut off / skipped): retried in a later, smaller
+        # batch; after MAX_TRIES it keeps its keyword-rule niche for good.
+        _tries[key] = _tries.get(key, 0) + 1
+        if _tries[key] >= MAX_TRIES:
+            db.niche_ai_skip(key)
+            _tries.pop(key, None)
+            logger.warning("AI niches: product left to the keyword rules after %s tries: %s", MAX_TRIES, key)
+    cut = answered < len(to_ask) or r.get("finish_reason") == "length"
+    _batch = max(MIN_BATCH, len(to_ask) // 2) if cut else min(BATCH, _batch + 2)
+    if cut:
+        logger.warning("AI niches: answer covered %s/%s products%s — next batch %s",
+                       answered, len(to_ask), " (cut at the token limit)" if r.get("finish_reason") == "length" else "",
+                       _batch)
+    _bump_counters(db, answered, r.get("cost"))
+    db.set_setting("ai_niche_error", "" if not cut else
+                   f"آخر دفعة: الموديل أجاب عن {answered}/{len(to_ask)} منتج — الباقي يُعاد بدفعة أصغر ({_batch}).")
+    logger.info("AI niches: %s products classified, %s reused", answered, reused)
+    return answered + reused + (1 if cut and not answered else 0)
 
 
 def status(db) -> dict:

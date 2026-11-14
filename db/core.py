@@ -2184,6 +2184,12 @@ class Database:
         finally:
             conn.close()
 
+    def niche_ai_skip(self, product_key: str) -> None:
+        """Stop asking the AI about this product: it keeps its keyword-rule niches."""
+        p = self._ph()
+        self._execute(f"UPDATE meta_ads SET niche_ai_at = {p} WHERE product_key = {p} AND niche_ai_at IS NULL",
+                      (_now(), product_key))
+
     def niche_counts(self, user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(user_id=user_id)

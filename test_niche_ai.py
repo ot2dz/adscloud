@@ -128,5 +128,49 @@ class NicheAITest(unittest.TestCase):
         self.assertEqual(c.post("/api/ai/niches", json={"daily": "x"}).status_code, 400)
 
 
+class CutAnswerTest(unittest.TestCase):
+    """A model that stops mid-answer (token limit) must not lose the batch."""
+
+    def setUp(self):
+        NicheAITest.setUp(self)
+        niche_ai._batch = niche_ai.BATCH
+        niche_ai._tries.clear()
+
+    niches_of = NicheAITest.niches_of
+
+    def test_budget_and_salvage_of_a_cut_answer(self):
+        k = self.slugs[0]
+        calls = []
+
+        def cut_chat(cfg, messages, max_tokens=None, **kw):
+            calls.append(max_tokens)
+            # first product complete, second cut in the middle
+            text = '{"items":[{"id":"P1","niches":[{"slug":"%s","confidence":91}]},{"id":"P2","nich' % k
+            return {"text": text, "prompt_tokens": 10, "completion_tokens": 10, "cost": 0.001,
+                    "finish_reason": "length", "model": "m", "citations": []}
+        with mock.patch.object(ai_client, "chat", side_effect=cut_chat):
+            n = niche_ai.run_once(db)
+        self.assertGreaterEqual(calls[0], 2 * niche_ai.TOKENS_PER_PRODUCT)  # generous budget
+        self.assertEqual(n, 1)
+        classified = db._query("SELECT DISTINCT product_key FROM meta_ads WHERE niche_ai_at IS NOT NULL")
+        self.assertEqual(len(classified), 1)            # the complete item was saved
+        self.assertEqual(niche_ai._batch, niche_ai.MIN_BATCH)  # next batch is smaller
+        self.assertIn("1/2", db.get_settings()["ai_niche_error"])
+
+    def test_a_product_that_always_fails_falls_back_to_rules(self):
+        def empty_chat(cfg, messages, **kw):
+            return {"text": '{"items":[]}', "prompt_tokens": 1, "completion_tokens": 1, "cost": 0,
+                    "finish_reason": "stop", "model": "m", "citations": []}
+        before = db._query("SELECT ad_id, niche_id FROM ad_niches WHERE method = 'rules' ORDER BY ad_id, niche_id")
+        with mock.patch.object(ai_client, "chat", side_effect=empty_chat) as chat:
+            for _ in range(niche_ai.MAX_TRIES):
+                niche_ai.run_once(db)
+            self.assertEqual(niche_ai.run_once(db), 0)  # nothing left to ask
+            self.assertEqual(chat.call_count, niche_ai.MAX_TRIES)
+        after = db._query("SELECT ad_id, niche_id FROM ad_niches WHERE method = 'rules' ORDER BY ad_id, niche_id")
+        self.assertEqual([dict(r) for r in after], [dict(r) for r in before])  # keyword niches untouched
+        self.assertEqual(db._query_one("SELECT COUNT(*) AS n FROM meta_ads WHERE niche_ai_at IS NULL")["n"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
