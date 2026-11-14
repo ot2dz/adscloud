@@ -89,6 +89,7 @@ async function loadWinning() {
       : (d.last_check ? 'آخر فحص: ' + winDateTime(d.last_check) : 'لم يُجرَ أي فحص بعد — أول فحص خلال دقائق من حفظ أول منتج.');
     const btn = document.getElementById('winning-check-btn');
     if (btn) btn.classList.toggle('hidden', !isAdmin());
+    if (typeof catLoad === 'function') await catLoad();
     renderWinning();
   } catch (e) {
     el.innerHTML = '<div class="text-rose-600 text-sm font-bold">تعذّر تحميل المنتجات الرابحة.</div>';
@@ -98,10 +99,11 @@ async function loadWinning() {
 function renderWinning() {
   const el = document.getElementById('winning-list');
   const stage = document.getElementById('winning-stage-filter').value;
-  const list = winProducts.filter(p => !stage || p.stage === stage);
+  const list = winProducts.filter(p => (!stage || p.stage === stage)
+    && (typeof catMatches !== 'function' || catMatches('winning', p.id)));
   if (!list.length) {
     el.innerHTML = `<div class="md:col-span-2 bg-white border border-dashed border-[#cfe0f5] rounded-2xl p-8 text-center text-slate-500 text-sm font-semibold">
-      ${winProducts.length ? 'لا منتجات بهذه الحالة.' : 'لا منتجات رابحة بعد. اضغط ☆ في بطاقة أي إعلان في بنك الإعلانات لحفظ منتجه هنا.'}</div>`;
+      ${winProducts.length ? 'لا منتجات بهذه الحالة أو هذا التصنيف.' : 'لا منتجات رابحة بعد. اضغط ☆ في بطاقة أي إعلان في بنك الإعلانات لحفظ منتجه هنا.'}</div>`;
     return;
   }
   el.innerHTML = list.map(winCardHtml).join('');
@@ -132,6 +134,7 @@ function winCardHtml(p) {
             : `<span class="shrink-0 text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">🔴 متوقف</span>`}
         </div>
         <div class="text-[11.5px] text-slate-500 font-mono truncate" dir="ltr" style="text-align:right">${escT(p.store_domain || '')}</div>
+        ${typeof catTagsHtml === 'function' && catOf('winning', p.id).length ? `<div class="flex flex-wrap gap-1">${catTagsHtml('winning', p.id)}</div>` : ''}
         ${body ? `<p class="text-[12px] text-slate-700 leading-relaxed line-clamp-2">${body}</p>` : ''}
         ${p.owner_email && isAdmin() ? `<div class="text-[10.5px] text-slate-400">👤 ${escT(p.owner_email)}</div>` : ''}
       </div>
@@ -156,6 +159,7 @@ function winCardHtml(p) {
       <div class="flex items-center gap-1.5 flex-wrap">
         <button type="button" data-key="${escT(p.product_key)}" data-title="${title} — كل إعلانات المنتج"
           onclick="openGroupModal(this.dataset.key, this.dataset.title)" class="h-8 px-3 rounded-lg bg-[#174ea6] hover:bg-[#123f87] text-white font-bold text-xs">📦 كل الإعلانات</button>
+        ${typeof catButtonHtml === 'function' ? catButtonHtml('winning', p.id, 'h-8 px-3 rounded-lg border border-[#cfe0f5] text-slate-700 font-bold text-xs hover:bg-[#eef5ff]') : ''}
         <button type="button" onclick="toggleWinTimeline(${p.id}, this)" class="h-8 px-3 rounded-lg border border-[#cfe0f5] text-[#174ea6] font-bold text-xs hover:bg-[#eef5ff]">🕒 السجل</button>
         ${p.link_url ? `<a href="${safeUrl(p.link_url)}" target="_blank" rel="noopener" class="h-8 px-3 rounded-lg border border-[#cfe0f5] text-[#174ea6] font-bold text-xs hover:bg-[#eef5ff] flex items-center">🛒 صفحة المنتج</a>` : ''}
         <button type="button" onclick="removeWinning(${p.id})" class="h-8 px-3 rounded-lg border border-rose-200 text-rose-600 font-bold text-xs hover:bg-rose-50 ms-auto">🗑 إزالة</button>

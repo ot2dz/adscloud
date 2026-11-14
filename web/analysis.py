@@ -37,6 +37,40 @@ def _is_admin() -> bool:
     return (g.user or {}).get("role") == "admin"
 
 
+# ── AI niche classification settings (admin) ─────────────────────────────
+@bp.route("/api/ai/niches", methods=["GET"])
+@admin_required
+def api_ai_niches():
+    import niche_ai
+    return jsonify(niche_ai.status(db))
+
+
+@bp.route("/api/ai/niches", methods=["POST"])
+@admin_required
+def api_ai_niches_save():
+    """enabled / model (empty = the analysis model) / daily limit / backfill."""
+    c = request.get_json(force=True, silent=True) or {}
+    s = db.get_settings()
+    if "enabled" in c:
+        on = bool(c["enabled"])
+        db.set_setting("ai_niche_enabled", "1" if on else "0")
+        # First switch-on: only what is scraped from now on.
+        if on and not str(s.get("ai_niche_since") or ""):
+            db.set_setting("ai_niche_since", datetime.now(timezone.utc).isoformat())
+    if "model" in c:
+        db.set_setting("ai_niche_model", str(c.get("model") or "").strip()[:200])
+    if "daily" in c:
+        try:
+            db.set_setting("ai_niche_daily", str(max(0, min(1_000_000, int(c["daily"])))))
+        except (TypeError, ValueError):
+            return jsonify({"error": "الحد اليومي غير صالح"}), 400
+    if "backfill" in c:
+        db.set_setting("ai_niche_backfill", "1" if c["backfill"] else "0")
+    _audit("ai_niches_settings", ",".join(sorted(c)))
+    import niche_ai
+    return jsonify(dict(niche_ai.status(db), ok=True))
+
+
 def _cfg() -> dict:
     return ai_client.load_config(db.get_settings())
 

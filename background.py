@@ -549,6 +549,24 @@ def niches_loop() -> None:
             time.sleep(30)
 
 
+def niche_ai_loop() -> None:
+    """AI niche classification of new products (OpenRouter), batch after
+    batch while there is work and the daily limit allows; idle otherwise."""
+    import niche_ai
+    time.sleep(45)
+    while True:
+        try:
+            n = niche_ai.run_once(db)
+            time.sleep(3 if n else 60)
+        except Exception as exc:  # noqa: BLE001 — provider down, bad answer…
+            logger.warning("AI niche loop: %s", exc)
+            try:
+                db.set_setting("ai_niche_error", str(exc)[:300])
+            except Exception:
+                pass
+            time.sleep(300)
+
+
 def hunter_backfill_once() -> None:
     """Fill hunter_score for ads saved before the column existed (one-shot)."""
     try:
@@ -592,6 +610,7 @@ def start_background_threads() -> None:
     threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
     threading.Thread(target=niches_loop, daemon=True).start()
+    threading.Thread(target=niche_ai_loop, daemon=True).start()
     threading.Thread(target=hunter_backfill_once, daemon=True).start()
     if os.environ.get("TELEGRAM_BOT", "on").strip().lower() not in ("0", "off", "false", "no"):
         threading.Thread(target=telegram_bot_supervisor, daemon=True).start()

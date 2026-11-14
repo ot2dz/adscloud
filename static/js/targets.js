@@ -1,12 +1,23 @@
 // ── Competitors (per user) ──
+let targetsAll = [];
 async function loadTargets() {
   const r = await fetch('/api/targets' + adminUserParam('?')); const d = await r.json();
-  const el = document.getElementById('targets-list');
   document.getElementById('schedule-off-note').classList.toggle('hidden', !!d.schedule_enabled);
-  const list = d.targets || [];
-  document.getElementById('targets-count').innerText = list.length ? `(${list.length})` : '';
+  targetsAll = d.targets || [];
+  if (typeof catLoad === 'function') await catLoad();
+  renderTargets();
+}
+
+function renderTargets() {
+  const el = document.getElementById('targets-list');
+  const all = targetsAll;
+  const list = all.filter(t => typeof catMatches !== 'function' || catMatches('target', t.id));
+  document.getElementById('targets-count').innerText = all.length
+    ? (list.length !== all.length ? `(${list.length} من ${all.length})` : `(${all.length})`) : '';
   if (!list.length) {
-    el.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-400 font-semibold">لا يوجد منافسون بعد. أضف أول صفحة أو متجر بالأعلى، أو تتبّع صفحة من إضافة المتصفح.</td></tr>';
+    el.innerHTML = all.length
+      ? '<tr><td colspan="6" class="text-center py-8 text-slate-400 font-semibold">لا منافسين في هذا التصنيف.</td></tr>'
+      : '<tr><td colspan="6" class="text-center py-8 text-slate-400 font-semibold">لا يوجد منافسون بعد. أضف أول صفحة أو متجر بالأعلى، أو تتبّع صفحة من إضافة المتصفح.</td></tr>';
     return;
   }
   const typeBadge = {
@@ -42,6 +53,7 @@ async function loadTargets() {
           ${adsCount > 0 ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 num font-bold">${adsCount} إعلان</span>` : `<span class="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 num">0</span>`}
         </div>
         <div class="text-[11px] text-slate-500 truncate max-w-xs font-mono">${escT(t.target_value)}</div>
+        ${typeof catTagsHtml === 'function' ? `<div class="flex flex-wrap gap-1 mt-1">${catTagsHtml('target', t.id)}</div>` : ''}
         ${isAdmin() && !currentAdminUserFilter() ? `<div class="text-[10px] text-slate-400 mt-0.5" dir="ltr">👤 ${(t.tracked_by || []).map(escT).join('، ') || '—'}</div>` : ''}
       </td>
       <td class="px-5">${activityCell}</td>
@@ -51,6 +63,7 @@ async function loadTargets() {
         <div class="flex items-center justify-center gap-2 flex-wrap">
           <button ${dataAttrs} onclick="filterByTargetEl(this)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-[#174ea6] border border-[#9fbbe0] font-bold transition shadow-sm">👁️ إعلاناته</button>
           <button ${dataAttrs} onclick="openTargetActivityEl(this)" class="text-xs px-2.5 py-1 rounded-lg bg-white hover:bg-[#eef6ff] text-slate-700 border border-[#cfe0f5] font-bold transition shadow-sm">📈 سجل النشاط</button>
+          ${typeof catButtonHtml === 'function' ? catButtonHtml('target', t.id) : ''}
           <button onclick="scanTarget(${t.id})" class="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition shadow-sm">⚡ فحص الآن</button>
           <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleTarget(${t.id}, this.checked)" title="تفعيل/إيقاف الفحص الدوري" class="cursor-pointer rounded text-blue-600">
           <button onclick="delTarget(${t.id})" class="text-rose-600 hover:text-rose-700 text-xs px-1.5 font-bold" title="إلغاء التتبع">✕</button>

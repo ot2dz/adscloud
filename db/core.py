@@ -552,6 +552,8 @@ class Database:
             ("meta_ads", "product_key", "TEXT"),
             ("meta_ads", "primary_niche", "TEXT"),
             ("meta_ads", "niche_checked_at", "TEXT"),
+            # When the AI niche classifier handled this ad (NULL = not yet).
+            ("meta_ads", "niche_ai_at", "TEXT"),
             # Persisted product strength (see scoring.py). NULL until computed.
             ("meta_ads", "hunter_score", "INTEGER"),
             # 'dz' (default Arabic bank) or 'global' (foreign market side tab).
@@ -713,6 +715,30 @@ class Database:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_reports_user ON ai_reports (user_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_reports_domain ON ai_reports (store_domain)")
+        # User categories (nested: parent_id) for competitors and winning
+        # products; one item can be in many categories.
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS categories (
+            id {idcol},
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            color TEXT DEFAULT '',
+            parent_id INTEGER,
+            sort INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_categories_user ON categories (user_id)")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS category_items (
+            category_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            created_at TEXT,
+            PRIMARY KEY (category_id, kind, item_id)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_category_items_item ON category_items (kind, item_id)")
         # kind: 'report' (strategy report) or 'audit' (per-product decision table);
         # audit: the audit rows as JSON.
         for col, ddl in (("kind", "TEXT DEFAULT 'report'"), ("audit", "TEXT")):
@@ -2013,6 +2039,13 @@ class Database:
 
     def _save_niche_rows(self, cur, ad_id: str, results: list[dict], now: str) -> None:
         p = self._ph()
+        # A niche chosen by the AI classifier or by hand wins over the keyword
+        # rules: a re-scan must not overwrite it.
+        cur.execute(f"SELECT 1 FROM ad_niches WHERE ad_id = {p} AND method IN ('llm', 'manual') LIMIT 1",
+                    (ad_id,))
+        if cur.fetchone():
+            cur.execute(f"UPDATE meta_ads SET niche_checked_at = {p} WHERE ad_id = {p}", (now, ad_id))
+            return
         by_slug = {n["slug"]: n["id"] for n in self._niches_cache}
         cur.execute(f"DELETE FROM ad_niches WHERE ad_id = {p} AND method = 'rules'", (ad_id,))
         for r in results:
@@ -2061,6 +2094,95 @@ class Database:
             r["niches"] = items
             r["primary_niche"] = items[0]["slug"] if items else (r.get("primary_niche") or "")
         return rows
+
+    # ── AI niche classification (per product, see niche_ai.py) ─────────────
+    def niche_list(self) -> list[dict]:
+        if not self._niches_cache:
+            self._load_niches()
+        return list(self._niches_cache)
+
+    def _niche_ai_where(self, since: str) -> tuple[str, list]:
+        p = self._ph()
+        where = ["(market IS NULL OR market = 'dz')", "niche_ai_at IS NULL",
+                 "COALESCE(product_key, '') <> ''"]
+        params: list = []
+        if since:
+            where.append(f"first_seen >= {p}")
+            params.append(since)
+        return " AND ".join(where), params
+
+    def niche_ai_pending(self, limit: int = 25, since: str = "") -> list[dict]:
+        """Products (same advertiser + same product) with ads the AI has not
+        classified yet, active and newest first. ``since`` limits it to ads
+        first seen after that time (new scrapes only)."""
+        where, params = self._niche_ai_where(since)
+        return self._query(
+            f"SELECT product_key, COUNT(*) AS ads FROM meta_ads WHERE {where} "
+            f"GROUP BY product_key ORDER BY MAX(is_active) DESC, MAX(collected_at) DESC "
+            f"LIMIT {int(limit)}", tuple(params))
+
+    def niche_ai_pending_count(self, since: str = "") -> int:
+        where, params = self._niche_ai_where(since)
+        row = self._query_one(f"SELECT COUNT(DISTINCT product_key) AS n FROM meta_ads WHERE {where}",
+                              tuple(params))
+        return int((row or {}).get("n") or 0)
+
+    def niche_ai_sample(self, product_key: str) -> Optional[dict]:
+        """The product's richest ad text, for the classifier."""
+        p = self._ph()
+        rows = self._query(
+            f"SELECT ad_id, page_name, store_domain, link_url, body FROM meta_ads "
+            f"WHERE product_key = {p} ORDER BY LENGTH(COALESCE(body, '')) DESC LIMIT 3",
+            (product_key,))
+        if not rows:
+            return None
+        best = dict(rows[0])
+        best["other_texts"] = [r["body"] for r in rows[1:]
+                               if r.get("body") and r["body"] != best.get("body")][:1]
+        return best
+
+    def niche_ai_known(self, product_key: str) -> list[dict]:
+        """AI niches already given to another ad of this product (reused for free)."""
+        p = self._ph()
+        return self._query(
+            f"SELECT n.slug, MAX(an.confidence) AS confidence FROM ad_niches an "
+            f"JOIN niches n ON n.id = an.niche_id JOIN meta_ads m ON m.ad_id = an.ad_id "
+            f"WHERE m.product_key = {p} AND an.method = 'llm' GROUP BY n.slug "
+            f"ORDER BY MAX(an.confidence) DESC", (product_key,))
+
+    @_invalidates_cache
+    def save_niche_ai(self, product_key: str, results: list[dict]) -> int:
+        """Give every not-yet-classified ad of the product the AI niches
+        (``results`` = [{"slug", "confidence"}], best first; empty = none fits).
+        Keyword-rule niches of those ads are dropped. Returns the ads updated."""
+        if not self._niches_cache:
+            self._load_niches()
+        by_slug = {n["slug"]: n["id"] for n in self._niches_cache}
+        results = [r for r in results if r.get("slug") in by_slug][:2]
+        p = self._ph()
+        now = _now()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"SELECT ad_id FROM meta_ads WHERE product_key = {p} AND niche_ai_at IS NULL",
+                        (product_key,))
+            ad_ids = [r[0] for r in cur.fetchall()]
+            for aid in ad_ids:
+                cur.execute(f"DELETE FROM ad_niches WHERE ad_id = {p} AND method IN ('rules', 'llm')", (aid,))
+                for r in results:
+                    conf = int(max(40, min(100, int(r.get("confidence") or 80))))
+                    cur.execute(f"INSERT INTO ad_niches (ad_id, niche_id, score, confidence, method, updated_at) "
+                                f"VALUES ({p},{p},{p},{p},'llm',{p})", (aid, by_slug[r["slug"]], conf, conf, now))
+                cur.execute(f"SELECT n.slug FROM ad_niches an JOIN niches n ON n.id = an.niche_id "
+                            f"WHERE an.ad_id = {p} AND an.method = 'manual' LIMIT 1", (aid,))
+                manual = cur.fetchone()
+                primary = manual[0] if manual else (results[0]["slug"] if results else "")
+                cur.execute(f"UPDATE meta_ads SET primary_niche = {p}, niche_ai_at = {p}, "
+                            f"niche_checked_at = {p} WHERE ad_id = {p}", (primary, now, now, aid))
+            conn.commit()
+            return len(ad_ids)
+        finally:
+            conn.close()
 
     def niche_counts(self, user_id: Optional[int] = None) -> list[dict]:
         p = self._ph()
@@ -2613,6 +2735,141 @@ class Database:
             "total_tracked_pages": int(tracked["c"]) if tracked and tracked.get("c") else 0,
             "last_collection": last["t"] if last else None,
         }
+
+    # ── user categories (nested, many per item) ──────────────────────────
+    CATEGORY_KINDS = ("target", "winning")
+    MAX_CATEGORY_DEPTH = 4
+
+    def list_categories(self, user_id: int) -> dict:
+        """{categories: [...with counts], items: {kind: {item_id: [category ids]}}}."""
+        p = self._ph()
+        cats = self._query(f"SELECT id, name, color, parent_id, sort FROM categories WHERE user_id={p} "
+                           f"ORDER BY sort, id", (int(user_id),))
+        links = self._query(
+            f"SELECT ci.category_id, ci.kind, ci.item_id FROM category_items ci "
+            f"JOIN categories c ON c.id = ci.category_id WHERE c.user_id={p}", (int(user_id),))
+        counts: dict = {}
+        items: dict = {k: {} for k in self.CATEGORY_KINDS}
+        for r in links:
+            c = counts.setdefault(int(r["category_id"]), {k: 0 for k in self.CATEGORY_KINDS})
+            if r["kind"] in c:
+                c[r["kind"]] += 1
+                items[r["kind"]].setdefault(str(int(r["item_id"])), []).append(int(r["category_id"]))
+        for c in cats:
+            c["counts"] = counts.get(int(c["id"]), {k: 0 for k in self.CATEGORY_KINDS})
+        return {"categories": cats, "items": items}
+
+    def _own_category(self, user_id: int, cid) -> Optional[dict]:
+        if cid in (None, "", 0):
+            return None
+        p = self._ph()
+        return self._query_one(f"SELECT * FROM categories WHERE id={p} AND user_id={p}",
+                               (int(cid), int(user_id)))
+
+    def _category_depth(self, user_id: int, cid: Optional[int]) -> int:
+        depth, seen = 0, set()
+        while cid and cid not in seen:
+            seen.add(cid)
+            row = self._own_category(user_id, cid)
+            if not row:
+                break
+            depth += 1
+            cid = row.get("parent_id")
+        return depth
+
+    def _category_descendants(self, user_id: int, cid: int) -> list[int]:
+        p = self._ph()
+        rows = self._query(f"SELECT id, parent_id FROM categories WHERE user_id={p}", (int(user_id),))
+        kids: dict = {}
+        for r in rows:
+            kids.setdefault(r.get("parent_id"), []).append(int(r["id"]))
+        out, stack = [], [int(cid)]
+        while stack:
+            c = stack.pop()
+            out.append(c)
+            stack.extend(kids.get(c, []))
+        return out
+
+    def create_category(self, user_id: int, name: str, color: str = "",
+                        parent_id: Optional[int] = None) -> int:
+        name = " ".join(str(name or "").split())[:60]
+        if not name:
+            raise ValueError("الاسم مطلوب")
+        if parent_id:
+            if not self._own_category(user_id, parent_id):
+                raise ValueError("التصنيف الأب غير موجود")
+            if self._category_depth(user_id, parent_id) >= self.MAX_CATEGORY_DEPTH:
+                raise ValueError(f"أقصى عمق {self.MAX_CATEGORY_DEPTH} مستويات")
+        p = self._ph()
+        vals = (int(user_id), name, str(color or "")[:20], int(parent_id) if parent_id else None, _now())
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            sql = (f"INSERT INTO categories (user_id, name, color, parent_id, created_at) "
+                   f"VALUES ({p},{p},{p},{p},{p})")
+            if self.is_postgres:
+                cur.execute(sql + " RETURNING id", vals)
+                new_id = cur.fetchone()[0]
+            else:
+                cur.execute(sql, vals)
+                new_id = cur.lastrowid
+            conn.commit()
+            return int(new_id)
+        finally:
+            conn.close()
+
+    def update_category(self, user_id: int, cid: int, name: Optional[str] = None,
+                        color: Optional[str] = None, parent_id="__keep__") -> None:
+        row = self._own_category(user_id, cid)
+        if not row:
+            raise ValueError("التصنيف غير موجود")
+        sets, vals = [], []
+        p = self._ph()
+        if name is not None:
+            name = " ".join(str(name).split())[:60]
+            if not name:
+                raise ValueError("الاسم مطلوب")
+            sets.append(f"name={p}"); vals.append(name)
+        if color is not None:
+            sets.append(f"color={p}"); vals.append(str(color)[:20])
+        if parent_id != "__keep__":
+            if parent_id:
+                if int(parent_id) in self._category_descendants(user_id, cid):
+                    raise ValueError("لا يمكن نقل تصنيف داخل نفسه أو أحد فروعه")
+                if not self._own_category(user_id, parent_id):
+                    raise ValueError("التصنيف الأب غير موجود")
+            sets.append(f"parent_id={p}"); vals.append(int(parent_id) if parent_id else None)
+        if sets:
+            self._execute(f"UPDATE categories SET {', '.join(sets)} WHERE id={p}", tuple(vals) + (int(cid),))
+
+    def delete_category(self, user_id: int, cid: int) -> int:
+        """Delete a category and all its sub-categories (the items stay)."""
+        if not self._own_category(user_id, cid):
+            return 0
+        ids = self._category_descendants(user_id, cid)
+        p = self._ph()
+        marks = ", ".join([p] * len(ids))
+        self._execute(f"DELETE FROM category_items WHERE category_id IN ({marks})", tuple(ids))
+        self._execute(f"DELETE FROM categories WHERE id IN ({marks})", tuple(ids))
+        return len(ids)
+
+    def set_item_categories(self, user_id: int, kind: str, item_id: int,
+                            category_ids: list) -> list[int]:
+        """Replace the categories of one item with ``category_ids`` (own ones only)."""
+        if kind not in self.CATEGORY_KINDS:
+            raise ValueError("نوع غير معروف")
+        p = self._ph()
+        own = {int(r["id"]) for r in self._query(f"SELECT id FROM categories WHERE user_id={p}", (int(user_id),))}
+        wanted = [int(c) for c in dict.fromkeys(category_ids or []) if str(c).isdigit() and int(c) in own]
+        if own:
+            marks = ", ".join([p] * len(own))
+            self._execute(f"DELETE FROM category_items WHERE kind={p} AND item_id={p} "
+                          f"AND category_id IN ({marks})", (kind, int(item_id)) + tuple(own))
+        now = _now()
+        for c in wanted:
+            self._execute(f"INSERT INTO category_items (category_id, kind, item_id, created_at) "
+                          f"VALUES ({p},{p},{p},{p})", (c, kind, int(item_id), now))
+        return wanted
 
     # ── selective reset ("مسح القاعدة") ───────────────────────────────────
     # Sections an ad can belong to. An ad is deleted only when EVERY section it

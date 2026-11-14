@@ -1,6 +1,7 @@
 // ── Settings & Telegram Integration ──
 async function loadSettings() {
   aiLoadConfig();
+  if (typeof naiLoad === 'function' && isAdmin()) naiLoad();
   const r = await fetch('/api/settings'); const s = await r.json();
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
