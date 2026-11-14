@@ -254,9 +254,10 @@ from web.winning import bp as winning_bp
 from web.analysis import bp as analysis_bp
 from web.categories import bp as categories_bp
 from web.backup import bp as backup_bp
+from web.lanes import bp as lanes_bp
 
 for _bp in (auth_bp, scrape_bp, ads_bp, targets_bp, settings_bp, extension_bp, egress_bp,
-            global_market_bp, winning_bp, analysis_bp, categories_bp, backup_bp):
+            global_market_bp, winning_bp, analysis_bp, categories_bp, backup_bp, lanes_bp):
     app.register_blueprint(_bp)
 
 if __name__ == "__main__":

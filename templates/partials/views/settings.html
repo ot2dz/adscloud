@@ -201,6 +201,25 @@
         </div>
       </div>
 
+      <!-- Parallel scrape lanes -->
+      <div data-admin-only class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-3 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
+        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
+          <span class="text-2xl">🚀</span>
+          <div>
+            <h3 class="font-bold text-[#102a56] text-sm">خطوط السحب المتوازي (سحب السوق كاملاً)</h3>
+            <p class="text-xs text-slate-500">كل خط بروكسي يسحب أياماً مختلفة في نفس الوقت: كل خط يأخذ اليوم التالي غير المسحوب. إذا حُظر خط ودوّر الـ IP، تكمل الخطوط الأخرى. لكل خط سرعته وتدويره الخاص.</p>
+          </div>
+        </div>
+        <div id="lanes-list" class="space-y-2 text-xs"></div>
+        <div class="flex gap-2 flex-wrap">
+          <button onclick="lanesAdd('scrape')" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 py-2 font-bold text-xs">➕ خط السحب الحالي</button>
+          <button onclick="lanesAdd('status')" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 py-2 font-bold text-xs">➕ خط فحص الحالة (التابلت)</button>
+          <button onclick="lanesAdd('custom')" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 py-2 font-bold text-xs">➕ بروكسي آخر</button>
+          <button onclick="lanesSave()" class="ms-auto bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2 font-bold text-white text-xs">حفظ الخطوط</button>
+        </div>
+        <div id="lanes-active" class="p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700"></div>
+      </div>
+
       <!-- Big-marketplace blocklist -->
       <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-3 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
         <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">

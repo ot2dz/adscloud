@@ -117,7 +117,8 @@ class MarketSlicesTest(unittest.TestCase):
         out = self._run([ScrapeResult(completed=True, scanned=10)] * 3)
         self.assertEqual((out["slices_ok"], out["slices_total"], out["completed"]), (3, 3, True))
         self.assertEqual(out["scanned"], 30)
-        self.assertEqual(out["checkpoint"], {"pass": 4, "cursor": None, "ok": 3})
+        # v2 checkpoint (parallel lanes): which passes are done, not "the next one"
+        self.assertEqual(out["checkpoint"], {"v": 2, "done": [1, 2, 3], "ok": 3, "cursors": {}})
 
     def test_a_failed_slice_is_skipped_and_counted_missing(self):
         out = self._run([ScrapeResult(completed=True, scanned=5),

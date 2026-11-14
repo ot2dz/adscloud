@@ -247,7 +247,7 @@ _ROTATE_MAX_WAIT_S = 150.0      # typical PPPoE re-dial + tunnel back = 45-90s
 
 def rotate_and_wait_ready(proxy_spec=None, progress=None, should_stop=None,
                           max_wait_s: float = _ROTATE_MAX_WAIT_S,
-                          rotate_url=None, rotate_token=None) -> bool:
+                          rotate_url=None, rotate_token=None, pace: "Optional[Pace]" = None) -> bool:
     """Rotate the public IP and return only when the proxy tunnel is answering.
 
     The rotator agent re-dials the ONT PPPoE session and answers ``202`` before
@@ -284,7 +284,7 @@ def rotate_and_wait_ready(proxy_spec=None, progress=None, should_stop=None,
             # Ready when the IP changed, when we never knew the old one, or
             # once the tunnel was seen dropping (same-IP re-dial).
             if ip != old_ip or was_down or not old_ip:
-                PACE.reset()
+                (pace or PACE).reset()
                 if old_ip and ip != old_ip:
                     progress(f"🔄 تم تدوير الـ IP بنجاح: {old_ip} → {ip}")
                 else:
@@ -492,13 +492,17 @@ def scrape(
     estimate: bool = True,
     rotate_url: Optional[str] = None,
     rotate_token: Optional[str] = None,
+    pace: Optional[Pace] = None,
 ) -> ScrapeResult:
     """Collect ads for a keyword / page / domain / custom URL over HTTP.
 
     ``resume_cursor`` continues a previous run; ``on_checkpoint(cursor)`` is
     called after each fully-processed page (``None`` once exhausted).
+    ``pace`` = the request pace of this egress (parallel scrape lanes each
+    have their own, so a block on one line never slows the others).
     """
     progress = progress or (lambda _m: None)
+    pace = pace or PACE
 
     # The dashboard may send a pasted Ad Library URL as ``query`` (it has a
     # single input). Treat it as a URL so its q/page/date params are parsed
@@ -567,7 +571,7 @@ def scrape(
         res.cursor = next_cursor
         exhausted = next_cursor is None
         if collector is not None:
-            collector.rate_limit_delay = PACE.page_ok()
+            collector.rate_limit_delay = pace.page_ok()
         if on_checkpoint:
             on_checkpoint(next_cursor)
 
@@ -585,11 +589,11 @@ def scrape(
         if _AUTO_ROTATE and ip_rotator.enabled(rotate_url):
             block_pauses += 1
             if rotate_and_wait_ready(proxy, progress, should_stop,
-                                     rotate_url=rotate_url, rotate_token=rotate_token):
+                                     rotate_url=rotate_url, rotate_token=rotate_token, pace=pace):
                 block_pauses = 0  # fresh IP = fresh block budget
                 return True
             block_pauses -= 1  # rotation unavailable: fall back to the pauses
-        delay = PACE.slow_down()
+        delay = pace.slow_down()
         if block_pauses >= len(BLOCK_PAUSES_MIN):
             res.interrupted = True
             res.error = "حظر مؤقت من Meta (نتائج فارغة) — سيُستأنف لاحقاً من نفس النقطة"
@@ -617,7 +621,7 @@ def scrape(
             res.interrupted = True
             res.error = _FAIL_PROXY
             break
-        collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=PACE.delay,
+        collector = MetaAdsCollector(proxy=_proxy_arg(proxy), rate_limit_delay=pace.delay,
                                      jitter=REQUEST_JITTER)
         try:
             # Best-effort estimated count (one extra request; never fatal).

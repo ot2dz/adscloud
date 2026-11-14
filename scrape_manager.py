@@ -55,6 +55,78 @@ def _status_egress() -> tuple:
             (os.environ.get("STATUS_CHECK_ROTATE_TOKEN") or "").strip() or None)
 
 
+LANE_SOURCES = ("scrape", "status", "custom")
+
+
+def scrape_lanes(settings: Optional[dict] = None) -> list[dict]:
+    """Egress lanes of a whole-market scan, from the ``scrape_lanes`` setting.
+
+    Each lane = {"name", "proxy", "rotate_url", "rotate_token", "source"}:
+      source "scrape" -> the saved scrape proxy and its default rotator
+      source "status" -> the status-check line (shop tablet); while a market
+                         scan runs no status check runs (one job at a time)
+      source "custom" -> any other proxy, with its own rotator URL and the
+                         rotator token read from the env var ``token_env``
+    No setting / nothing usable = one lane on the scrape proxy (as before).
+    ``rotate_url=None`` means "the default rotator" (IP_ROTATE_URL); "" = none.
+    """
+    if settings is None:
+        try:
+            settings = db.get_settings()
+        except Exception:
+            settings = {}
+    try:
+        raw = json.loads(settings.get("scrape_lanes") or "[]")
+    except (TypeError, ValueError):
+        raw = []
+    out, seen = [], set()
+    for i, ln in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(ln, dict) or ln.get("enabled") is False:
+            continue
+        src = ln.get("source") if ln.get("source") in LANE_SOURCES else "custom"
+        name = str(ln.get("name") or "").strip()[:40] or f"خط {i + 1}"
+        if src == "scrape":
+            lane = {"proxy": (settings.get("meta_ads_proxy") or "").strip(), "rotate_url": None, "rotate_token": None}
+        elif src == "status":
+            dedicated = (settings.get("status_check_proxy") or "").strip()
+            if not dedicated:
+                continue  # no separate status line: it would just repeat the scrape line
+            lane = {"proxy": dedicated, "rotate_url": (settings.get("status_check_rotate_url") or "").strip(),
+                    "rotate_token": (os.environ.get("STATUS_CHECK_ROTATE_TOKEN") or "").strip() or None}
+        else:
+            proxy = str(ln.get("proxy") or "").strip()
+            if not proxy:
+                continue
+            env = str(ln.get("token_env") or "").strip()
+            lane = {"proxy": proxy, "rotate_url": str(ln.get("rotate_url") or "").strip(),
+                    "rotate_token": ((os.environ.get(env) or "").strip() or None) if env else None}
+        key = lane["proxy"] or "<default>"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(lane, name=name, source=src))
+    if not out:
+        out = [{"name": "خط السحب", "source": "scrape", "proxy": (settings.get("meta_ads_proxy") or "").strip(),
+                "rotate_url": None, "rotate_token": None}]
+    return out
+
+
+def _month_resume(resume: dict) -> tuple[set, dict, Optional[int]]:
+    """(done pass numbers, {pass: cursor}, slices ok) from a checkpoint.
+
+    v2 (lanes): {"v": 2, "done": [...], "cursors": {"n": cursor}, "ok": k}
+    v1 (one lane): {"pass": n, "cursor": c, "ok": k} = passes before n done."""
+    if not resume:
+        return set(), {}, 0
+    if resume.get("v") == 2:
+        done = {int(x) for x in resume.get("done") or []}
+        cursors = {int(k): v for k, v in (resume.get("cursors") or {}).items() if v}
+        return done, cursors, int(resume.get("ok") or 0)
+    start = max(1, int(resume.get("pass") or 1))
+    cursors = {start: resume["cursor"]} if resume.get("cursor") else {}
+    return set(range(1, start)), cursors, int(resume.get("ok", start - 1) or 0)
+
+
 class ScrapeManager:
     def __init__(self):
         self.thread = None
@@ -211,9 +283,15 @@ class ScrapeManager:
                 "query": query or url,
             })
 
+        ad_lock = threading.Lock()  # parallel lanes share the counters and seen-sets
+
         def on_ad(ad):
             if self.stop_event.is_set():
                 return
+            with ad_lock:
+                _on_ad(ad)
+
+        def _on_ad(ad):
             d = ad.to_dict()
             d["keywords"] = [tag] if tag else []
             d["market"] = market
@@ -306,50 +384,122 @@ class ScrapeManager:
                          f"{st.get('new', 0)} إعلان جديد، {st.get('requests', 0)} طلب.")
 
             elif mode == MONTH_MODE:
-                # Whole market for a date range, one launch day x language at
-                # a time (Meta's '" "' exact-phrase wildcard = every ad).
+                # Whole market for a date range, one launch day x language per
+                # pass (Meta's '" "' exact-phrase wildcard = every ad). Several
+                # egress lanes work in parallel: each takes the next pass not
+                # done yet, so a lane busy rotating its IP never holds the others.
+                from engine import PACE, REQUEST_DELAY, Pace
                 from slicing import build_day_passes
                 passes = build_day_passes(start_date_min, start_date_max, month_languages or MONTH_LANGS)
                 total_passes = len(passes)
-                progress(f"🗓️ سحب السوق يوماً بيوم: {start_date_min} ← {start_date_max} "
-                         f"({total_passes} شريحة = يوم × لغة، الأحدث أولاً، المتاجر فقط).")
-                start_pass = max(1, int(resume.get("pass") or 1))
+                lanes = scrape_lanes() if egress == "scrape" else [
+                    {"name": "خط الفحص", "source": "status", "proxy": proxy_spec,
+                     "rotate_url": rot_url, "rotate_token": rot_token}]
+                done, cursors, ok0 = _month_resume(resume)
                 outcome["slices_total"] = total_passes
-                # Slices that reached Meta's end, carried in the checkpoint
-                # across resumes (older checkpoints: assume the earlier ones did).
-                outcome["slices_ok"] = int(resume.get("ok", start_pass - 1) or 0)
-                if start_pass > 1:
-                    progress(f"↩️ استئناف من الشريحة {start_pass}/{total_passes}.")
-                for idx, p in enumerate(passes, 1):
-                    if idx < start_pass:
-                        continue
-                    if self.stop_event.is_set():
-                        outcome["status"] = "stopped"
-                        progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
-                        break
-                    progress(f"↪ شريحة {idx}/{total_passes}: إعلانات {p['label']} — إجمالي مجمع: "
-                             f"{(base_count + len(seen_ad_ids))} إعلان.")
-                    self._emit("slice_update", {"pass": idx, "total_passes": total_passes, "label": p["label"],
-                                                "accumulated": (base_count + len(seen_ad_ids))})
-                    r = scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
-                               sort_mode="relevancy_monthly_grouped",
-                               start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
-                               content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
-                               progress=progress, on_ad=on_ad, on_scanned=on_scanned,
-                               should_stop=lambda: self.stop_event.is_set(), proxy=proxy_spec,
-                               rotate_url=rot_url, rotate_token=rot_token,
-                               resume_cursor=(resume.get("cursor") if idx == start_pass else None),
-                               on_checkpoint=make_checkpointer(idx))
-                    if r.failed:
-                        outcome["scanned"] += int(r.scanned or 0)
-                        progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
-                        make_checkpointer(idx)(None)
-                        continue
-                    if not absorb(r):
-                        break
-                    if r.completed:
-                        outcome["slices_ok"] += 1
-                        make_checkpointer(idx)(None)  # persist the new "ok" count
+                outcome["slices_ok"] = ok0
+                todo = [i for i in range(1, total_passes + 1) if i not in done]  # newest day first
+                lock = threading.Lock()
+                lane_errors: list = []
+                self.state["lanes"] = {ln["name"]: {"pass": None, "label": "", "status": "waiting"} for ln in lanes}
+                progress(f"🗓️ سحب السوق يوماً بيوم: {start_date_min} ← {start_date_max} "
+                         f"({total_passes} شريحة = يوم × لغة، الأحدث أولاً، المتاجر فقط) — "
+                         f"{len(lanes)} خط سحب: {'، '.join(ln['name'] for ln in lanes)}.")
+                if done:
+                    progress(f"↩️ استئناف: {len(done)}/{total_passes} شريحة منجزة سابقاً.")
+
+                def persist_month():
+                    cp = {"v": 2, "done": sorted(done), "ok": outcome["slices_ok"],
+                          "cursors": {str(k): v for k, v in cursors.items() if v}}
+                    outcome["checkpoint"] = cp
+                    if on_checkpoint:
+                        try:
+                            on_checkpoint(cp)
+                        except Exception:
+                            logger.exception("checkpoint persist failed")
+
+                def lane_state(name, **kw):
+                    if "pass_" in kw:
+                        kw["pass"] = kw.pop("pass_")
+                    self.state["lanes"][name].update(kw)
+                    self._emit("lanes", {"lanes": self.state["lanes"]})
+
+                def run_lane(lane, pace):
+                    name = lane["name"]
+
+                    def lane_progress(msg, _n=name):
+                        progress(f"[{_n}] {msg}" if len(lanes) > 1 else msg)
+
+                    while not self.stop_event.is_set():
+                        with lock:
+                            idx = todo.pop(0) if todo else None
+                        if idx is None:
+                            lane_state(name, status="finished", pass_=None)
+                            return
+                        p = passes[idx - 1]
+                        lane_state(name, status="running", pass_=idx, label=p["label"])
+                        lane_progress(f"↪ شريحة {idx}/{total_passes}: إعلانات {p['label']} — إجمالي مجمع: "
+                                      f"{(base_count + len(seen_ad_ids))} إعلان.")
+                        self._emit("slice_update", {"pass": idx, "total_passes": total_passes, "label": p["label"],
+                                                    "lane": name, "accumulated": (base_count + len(seen_ad_ids))})
+
+                        def cp_fn(cursor, _i=idx):
+                            with lock:
+                                if cursor:
+                                    cursors[_i] = cursor
+                                persist_month()
+
+                        r = scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
+                                   sort_mode="relevancy_monthly_grouped",
+                                   start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
+                                   content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
+                                   progress=lane_progress, on_ad=on_ad, on_scanned=on_scanned,
+                                   should_stop=lambda: self.stop_event.is_set(), proxy=lane["proxy"],
+                                   rotate_url=lane["rotate_url"], rotate_token=lane["rotate_token"], pace=pace,
+                                   resume_cursor=cursors.get(idx), on_checkpoint=cp_fn)
+                        with lock:
+                            outcome["scanned"] += int(r.scanned or 0)
+                            if r.stopped or self.stop_event.is_set():
+                                todo.insert(0, idx)  # resumes from its cursor next run
+                                persist_month()
+                                return
+                            if r.interrupted:
+                                # This line is blocked / its proxy is down: give the
+                                # pass back to the other lanes and leave.
+                                todo.insert(0, idx)
+                                lane_errors.append(f"{name}: {r.error}")
+                                persist_month()
+                        if r.interrupted:
+                            lane_progress(f"⏸ هذا الخط توقف ({r.error}) — تكمل الخطوط الأخرى.")
+                            lane_state(name, status="paused", pass_=None)
+                            return
+                        with lock:
+                            done.add(idx)
+                            cursors.pop(idx, None)
+                            if r.completed:
+                                outcome["slices_ok"] += 1
+                            persist_month()
+                        if r.failed:
+                            lane_progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
+                    lane_state(name, status="stopped", pass_=None)
+
+                threads = []
+                for i, lane in enumerate(lanes):
+                    # The first lane keeps the process pace (as before); others get their own.
+                    t = threading.Thread(target=run_lane, args=(lane, PACE if i == 0 else Pace(REQUEST_DELAY)),
+                                         name=f"lane-{i}", daemon=True)
+                    t.start()
+                    threads.append(t)
+                for t in threads:
+                    t.join()
+
+                if self.stop_event.is_set():
+                    outcome["status"] = "stopped"
+                    progress("⏹ تم إيقاف السحب بطلب من المستخدم.")
+                elif todo:
+                    # Every lane left with passes still to do: the job queue retries later.
+                    outcome.update(status="interrupted", error=" | ".join(lane_errors)[:500]
+                                   or "توقفت كل خطوط السحب")
                 ok, total = outcome["slices_ok"], total_passes
                 outcome["completed"] = ok >= total
                 if outcome["status"] == "done":
