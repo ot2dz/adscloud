@@ -202,13 +202,32 @@ async function startEngine() {
     document.getElementById('start-date-max').value = d.start_date_max || '';
     loadAds();
   }
-  document.getElementById('live-status-note').innerText = d.queued
+  document.getElementById('live-status-note').innerText = d.preempts
+    ? '⏸ سيُوقَف سحب السوق مؤقتاً ويبدأ سحبك خلال ثوانٍ — بعده يُكمل السوق من حيث توقف.'
+    : d.queued
     ? '🕒 السحب في قائمة الانتظار — سيبدأ تلقائياً بعد انتهاء السحب الحالي.'
     : (scrapeMode === 'market' ? `🌍 بدأ سحب السوق يوماً بيوم (${d.date_label || ''}).` : '▶ بدأ السحب.');
   loadJobs();
 }
 document.addEventListener('DOMContentLoaded', () => setScrapeMode('targeted'));
 
+// Pause the running scrape: it stops at the next checkpoint and waits in the
+// jobs list with a «استئناف» button; resuming continues from the same point.
+async function pauseEngine(){
+  const note = document.getElementById('live-status-note');
+  let d = {};
+  try {
+    const r = await fetch('/api/pause', { method: 'POST' });
+    d = await r.json();
+  } catch (_e) {}
+  if (note) {
+    note.classList.remove('text-rose-700');
+    note.innerText = d.ok
+      ? '⏸ جارٍ الإيقاف المؤقت… ستجده في «الأوامر» مع زر «استئناف».'
+      : ('⚠️ ' + (d.error || 'تعذّر الإيقاف المؤقت'));
+  }
+  loadJobs();
+}
 async function stopEngine(){
   const note = document.getElementById('live-status-note');
   if (note) { note.classList.remove('text-rose-700'); note.innerText = '⏹ جارٍ إرسال أمر الإيقاف…'; }

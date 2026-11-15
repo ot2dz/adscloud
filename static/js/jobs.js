@@ -1,5 +1,5 @@
 // ── Jobs loop ──
-const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف' };
+const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف', paused:'متوقف مؤقتاً' };
 // Below this share of Meta's estimate, a run that Meta "finished" most likely
 // hit Meta's pagination limit rather than the real end of the results.
 const JOB_COVERAGE_OK = 0.9;
@@ -42,6 +42,7 @@ async function loadJobs() {
     done:'text-emerald-700 bg-emerald-50 border-emerald-300',
     failed:'text-rose-700 bg-rose-50 border-rose-300',
     stopped:'text-amber-700 bg-amber-50 border-amber-300',
+    paused:'text-amber-800 bg-amber-100 border-amber-400',
     stopping:'text-amber-700 bg-amber-50 border-amber-300'
   };
   el.innerHTML = d.jobs.map(j => `
@@ -54,18 +55,33 @@ async function loadJobs() {
         <div class="flex items-center gap-2 shrink-0">
           ${(j.status === 'done' || j.status === 'stopped') ? `<span class="text-xs text-emerald-700 font-bold num">${j.result_count || 0} إعلان</span>` : ''}
           <span class="text-[11px] px-2.5 py-0.5 rounded-full border font-bold ${color[j.status] || 'bg-slate-100'}">${JOB_AR[j.status] || escT(j.status)}</span>
-          ${(j.status === 'running' || j.status === 'pending') ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
+          ${j.status === 'paused' ? `<button onclick="resumeJob(${j.id})" class="text-xs text-emerald-700 hover:underline font-bold">▶ استئناف</button>` : ''}
+          ${((j.status === 'running' && !j.pause_requested) || (j.status === 'pending' && !j.paused_reason)) ? `<button onclick="pauseJob(${j.id})" class="text-xs text-amber-700 hover:underline font-bold">⏸ إيقاف مؤقت</button>` : ''}
+          ${(j.status === 'running' || j.status === 'pending' || j.status === 'paused') ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
         </div>
       </div>
       ${j.status === 'running' ? `
         <div class="text-xs text-sky-700 font-semibold">📥 ${Number(j.progress) || 0} إعلان مسحوب ${j.progress_note ? ('· ' + escT(j.progress_note)) : ''}</div>
         <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full bg-blue-600 animate-pulse" style="width:100%"></div></div>` : ''}
+      ${j.status === 'running' && j.pause_requested ? `
+        <div class="text-xs text-amber-700 font-semibold">⏸ جارٍ الإيقاف المؤقت — يُحفظ الموضع…</div>` : ''}
+      ${j.status === 'pending' && j.paused_reason === 'auto' ? `
+        <div class="text-xs text-amber-700 font-semibold">⏸ أُوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان لتنفيذ سحبك أولاً — سيُكمل تلقائياً من نفس النقطة بعده.</div>` : ''}
+      ${j.status === 'paused' ? `
+        <div class="text-xs text-amber-700 font-semibold">⏸ متوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان — «استئناف» يكمل من نفس النقطة.</div>` : ''}
       ${j.status === 'pending' && j.retry_at ? `
         <div class="text-xs text-amber-700 font-semibold">⏸ انقطع بعد ${j.result_count || 0} إعلان · سيُستأنف من نفس النقطة ${new Date(j.retry_at).toLocaleTimeString('ar-DZ', {hour: '2-digit', minute: '2-digit'})} (محاولة ${j.attempts || 1})</div>` : ''}
       ${jobCoverage(j)}
       ${j.status === 'failed' && j.error ? `
         <div class="text-xs text-rose-700 font-semibold truncate" title="${escT(j.error)}">⚠️ ${escT(j.error)}</div>` : ''}
     </div>`).join('');
+}
+async function pauseJob(id){ await fetch('/api/jobs/'+id+'/pause',{method:'POST'}); loadJobs(); }
+async function resumeJob(id){
+  const r = await fetch('/api/jobs/'+id+'/resume',{method:'POST'}); const d = await r.json().catch(() => ({}));
+  if (!d.ok) alert('⚠️ ' + (d.error || 'تعذّر الاستئناف'));
+  else if (d.queued) alert('🕒 أُعيدت المهمة إلى الطابور — تُكمل بعد انتهاء السحب الحالي.');
+  loadJobs();
 }
 async function stopJob(id){ await fetch('/api/jobs/'+id+'/stop',{method:'POST'}); loadJobs(); }
 

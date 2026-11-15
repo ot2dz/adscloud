@@ -116,10 +116,34 @@ def api_start():
         start_date_min=d_min, start_date_max=d_max, date_scope=date_scope,
     )
     job_wakeup.set()
-    if busy:
+    preempts = _market_scan_running()
+    if preempts:
+        manager._emit("log", {"text": f"⏸ سيُوقَف سحب السوق مؤقتاً ليبدأ «{query or url}» خلال ثوانٍ، ثم يُكمل السوق من حيث توقف."})
+    elif busy:
         manager._emit("log", {"text": f"🕒 أُضيف السحب «{query or url}» إلى قائمة الانتظار وسيبدأ بعد انتهاء السحب الحالي."})
-    return jsonify({"ok": True, "queued": busy, "job_id": job_id, "kind": kind, "value": value,
+    return jsonify({"ok": True, "queued": busy, "preempts": preempts, "job_id": job_id, "kind": kind, "value": value,
                     "start_date_min": d_min, "start_date_max": d_max, "date_label": label, "date_scope": date_scope})
+
+
+def _market_scan_running() -> bool:
+    """True when the running job is a whole-market scan (a manual scan pauses it)."""
+    jid = manager.state.get("job_id")
+    if not (manager.state.get("running") and jid):
+        return False
+    job = db.get_job(int(jid))
+    return bool(job and job.get("mode") == MONTH_MODE)
+
+
+@bp.route("/api/pause", methods=["POST"])
+@admin_required
+def api_pause():
+    """Pause the running scrape; it resumes from the same point on «استئناف»."""
+    jid = manager.state.get("job_id")
+    if not (manager.state.get("running") and jid):
+        return jsonify({"ok": False, "error": "لا يوجد سحب يعمل الآن."}), 409
+    state = db.request_pause(int(jid))
+    manager._emit("log", {"text": f"⏸ تم إرسال أمر الإيقاف المؤقت للمهمة #{jid}."})
+    return jsonify({"ok": bool(state), "job_id": jid, "status": state})
 
 
 @bp.route("/api/stop", methods=["POST"])
@@ -322,9 +346,38 @@ def api_worker_progress():
 @bp.route("/api/jobs/<int:job_id>/stop", methods=["POST"])
 @admin_required
 def api_job_stop(job_id):
+    job = db.get_job(job_id)
+    if job and job.get("status") == "paused":
+        # Nothing is running to notice the flag: close it here.
+        db.finish_job(job_id, status="stopped", result_count=int(job.get("result_count") or 0))
+        manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "stopped"}})
+        return jsonify({"ok": True})
     db.request_stop(job_id)
     manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "stopping"}})
     return jsonify({"ok": True})
+
+
+@bp.route("/api/jobs/<int:job_id>/pause", methods=["POST"])
+@admin_required
+def api_job_pause(job_id):
+    """Pause a running or queued job; it keeps its checkpoint."""
+    state = db.request_pause(job_id)
+    if not state:
+        return jsonify({"ok": False, "error": "المهمة انتهت أو غير موجودة."}), 404
+    manager.events.put({"type": "job", "data": {"job_id": job_id, "status": state}})
+    return jsonify({"ok": True, "status": state})
+
+
+@bp.route("/api/jobs/<int:job_id>/resume", methods=["POST"])
+@admin_required
+def api_job_resume(job_id):
+    """Put a paused job back in the queue; it continues where it stopped."""
+    if not db.resume_job(job_id):
+        return jsonify({"ok": False, "error": "المهمة ليست متوقفة مؤقتاً."}), 409
+    job_wakeup.set()
+    busy = bool(manager.state.get("running"))
+    manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "pending"}})
+    return jsonify({"ok": True, "queued": busy})
 
 
 # ── Competitors (per user: Pages, Stores, Keywords, Custom URLs) ──────

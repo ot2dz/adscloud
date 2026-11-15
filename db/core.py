@@ -30,6 +30,12 @@ _SQLITE_PATH = (os.environ.get("META_ADS_SQLITE")
 
 
 SLOW_QUERY_MS = float(os.environ.get("SLOW_QUERY_MS", "300"))
+
+# Job sources of a single scan the user started by hand (scrape bar, Telegram,
+# a competitor's "scan now", the foreign market): they run first and pause a
+# running whole-market scan. Bulk runs ("scan all", the schedule) do not.
+PRIORITY_SOURCES = frozenset({"manual", "manual_target", "new_competitor",
+                              "manual_global", "manual_global_all"})
 _CACHE_LOCK = threading.Lock()
 
 
@@ -527,6 +533,15 @@ class Database:
             # Meta's end (NULL for single searches).
             ("slices_total", "INTEGER"),
             ("slices_ok", "INTEGER"),
+            # Pause / priority: a scan the user starts by hand (keyword, page,
+            # store, foreign market) has priority 1 and pauses a running
+            # whole-market scan, which resumes from its checkpoint afterwards.
+            # pause_requested: '' | 'manual' | 'auto' (set while running);
+            # paused_reason: why the job is waiting ('manual' = status
+            # 'paused' until resumed, 'auto' = pending behind priority jobs).
+            ("priority", "INTEGER DEFAULT 0"),
+            ("pause_requested", "TEXT DEFAULT ''"),
+            ("paused_reason", "TEXT DEFAULT ''"),
         ]:
             try:
                 if self.is_postgres:
@@ -3017,18 +3032,23 @@ class Database:
                    target_id: Optional[int] = None, incremental: bool = False,
                    start_date_min: str = "", start_date_max: str = "",
                    date_scope: str = "impressions", mode: str = "", languages: str = "",
-                   market: str = "dz") -> int:
+                   market: str = "dz", priority: Optional[int] = None) -> int:
         p = self._ph()
+        if priority is None:
+            # A single scan the user asked for runs before queued background
+            # work and pauses a running whole-market scan.
+            priority = 1 if (source in PRIORITY_SOURCES and not mode) else 0
         conn = self._connect()
         try:
             cur = conn.cursor()
             cols = ("query", "url", "country", "exact_phrase", "stores_only",
                     "sort_mode", "status", "source", "created_at", "target_id", "incremental",
-                    "start_date_min", "start_date_max", "date_scope", "mode", "languages", "market")
+                    "start_date_min", "start_date_max", "date_scope", "mode", "languages", "market",
+                    "priority")
             vals = (query, url, country, int(exact_phrase), int(stores_only),
                     sort_mode, "pending", source, _now(), target_id, int(incremental),
                     start_date_min, start_date_max, date_scope or "impressions", mode or "", languages or "",
-                    "global" if str(market).lower() == "global" else "dz")
+                    "global" if str(market).lower() == "global" else "dz", int(priority))
             placeholders = ", ".join([p] * len(cols))
             col_list = ", ".join(cols)
             if self.is_postgres:
@@ -3048,19 +3068,22 @@ class Database:
         return self._query(f"SELECT * FROM jobs ORDER BY id DESC LIMIT {limit}")
 
     def claim_next_job(self, worker_id: str) -> Optional[dict]:
-        """Atomically mark the oldest pending job as running and return it."""
+        """Atomically mark the next pending job as running and return it:
+        priority jobs first (scans the user started by hand), then the oldest."""
         p = self._ph()
         conn = self._connect()
         job = None
+        claimed = ("status='running', worker_id={p}, started_at={p}, heartbeat_at={p}, "
+                   "pause_requested='', paused_reason=''")
         try:
             cur = conn.cursor()
             if self.is_postgres:
                 now = _now()
                 cur.execute(
-                    "UPDATE jobs SET status='running', worker_id=%s, started_at=%s, heartbeat_at=%s "
+                    f"UPDATE jobs SET {claimed.format(p='%s')} "
                     "WHERE id = (SELECT id FROM jobs WHERE status='pending' "
                     "AND (retry_at IS NULL OR retry_at <= %s) "
-                    "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                    "ORDER BY COALESCE(priority, 0) DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED) "
                     "RETURNING *", (worker_id, now, now, now))
                 row = cur.fetchone()
                 if row:
@@ -3069,12 +3092,13 @@ class Database:
             else:
                 now = _now()
                 cur.execute("SELECT id FROM jobs WHERE status='pending' "
-                            "AND (retry_at IS NULL OR retry_at <= ?) ORDER BY id LIMIT 1", (now,))
+                            "AND (retry_at IS NULL OR retry_at <= ?) "
+                            "ORDER BY COALESCE(priority, 0) DESC, id LIMIT 1", (now,))
                 r = cur.fetchone()
                 if r:
                     jid = r[0]
-                    cur.execute("UPDATE jobs SET status='running', worker_id=?, started_at=?, heartbeat_at=? "
-                                "WHERE id=?", (worker_id, now, now, jid))
+                    cur.execute(f"UPDATE jobs SET {claimed.format(p='?')} WHERE id=?",
+                                (worker_id, now, now, jid))
                     conn.commit()
                     job = self._query_one("SELECT * FROM jobs WHERE id=?", (jid,))
         finally:
@@ -3167,6 +3191,56 @@ class Database:
     def request_stop(self, job_id: int) -> None:
         self._execute(f"UPDATE jobs SET stop_requested={self._ph()} WHERE id={self._ph()}", (1, job_id))
 
+    def request_pause(self, job_id: int) -> Optional[str]:
+        """Pause a job by hand. A queued job is parked at once; a running one is
+        asked to stop at its next checkpoint (the worker parks it). Returns
+        'paused', 'pausing' or None (finished / unknown job)."""
+        p = self._ph()
+        job = self.get_job(job_id)
+        if not job:
+            return None
+        if job["status"] == "pending":
+            self._execute(f"UPDATE jobs SET status='paused', paused_reason='manual', retry_at=NULL "
+                          f"WHERE id={p} AND status='pending'", (job_id,))
+            return "paused"
+        if job["status"] == "running":
+            self._execute(f"UPDATE jobs SET pause_requested='manual' WHERE id={p}", (job_id,))
+            return "pausing"
+        return "paused" if job["status"] == "paused" else None
+
+    def pause_job(self, job_id: int, reason: str, checkpoint: Optional[str], result_count: int = 0,
+                  scanned_count: Optional[int] = None) -> None:
+        """Park a job that stopped for a pause, keeping its resume point.
+        'auto' goes back to the queue behind the priority jobs; 'manual'
+        waits (status 'paused') until resume_job."""
+        p = self._ph()
+        status = "pending" if reason == "auto" else "paused"
+        extra, vals = "", [status, reason, checkpoint, result_count]
+        if scanned_count is not None:
+            extra = f", scanned_count={p}"
+            vals.append(int(scanned_count))
+        vals.append(job_id)
+        self._execute(
+            f"UPDATE jobs SET status={p}, paused_reason={p}, pause_requested='', worker_id=NULL, "
+            f"started_at=NULL, retry_at=NULL, checkpoint={p}, result_count={p}{extra} WHERE id={p}",
+            tuple(vals))
+
+    def resume_job(self, job_id: int) -> bool:
+        """Put a paused job back in the queue; it continues from its checkpoint."""
+        p = self._ph()
+        job = self.get_job(job_id)
+        if not job or job["status"] != "paused":
+            return False
+        self._execute(f"UPDATE jobs SET status='pending', paused_reason='', pause_requested='', "
+                      f"retry_at=NULL WHERE id={p} AND status='paused'", (job_id,))
+        return True
+
+    def has_priority_pending(self) -> bool:
+        """True if a scan the user started by hand is waiting to run now."""
+        return bool(self._query_one(
+            f"SELECT id FROM jobs WHERE status='pending' AND COALESCE(priority, 0) > 0 "
+            f"AND (retry_at IS NULL OR retry_at <= {self._ph()}) LIMIT 1", (_now(),)))
+
     def get_job(self, job_id: int) -> Optional[dict]:
         return self._query_one(f"SELECT * FROM jobs WHERE id={self._ph()}", (job_id,))
 
@@ -3198,9 +3272,12 @@ class Database:
             (_now(),)))
 
     def cancel_pending_jobs(self, source: str) -> int:
-        """Cancel queued jobs of a source (incl. ones waiting to resume)."""
+        """Cancel queued jobs of a source (incl. ones waiting to resume). A
+        job paused to let a priority scan through is kept: it is not "queued
+        behind" the stopped scrape, it was interrupted by it."""
         p = self._ph()
-        rows = self._query(f"SELECT id FROM jobs WHERE status='pending' AND source={p}", (source,))
+        rows = self._query(f"SELECT id FROM jobs WHERE status='pending' AND source={p} "
+                           f"AND COALESCE(paused_reason, '')=''", (source,))
         for row in rows:
             self._execute(
                 f"UPDATE jobs SET status='stopped', finished_at={p}, retry_at=NULL WHERE id={p}",
@@ -3211,7 +3288,8 @@ class Database:
         """True if a job of this mode is queued, waiting to resume or running."""
         p = self._ph()
         return bool(self._query_one(
-            f"SELECT id FROM jobs WHERE mode={p} AND status IN ('pending', 'running') LIMIT 1", (mode,)))
+            f"SELECT id FROM jobs WHERE mode={p} AND status IN ('pending', 'running', 'paused') LIMIT 1",
+            (mode,)))
 
     def has_open_job(self, target_id: Optional[int]) -> bool:
         """True if the target already has a pending or running job."""
@@ -3219,7 +3297,7 @@ class Database:
             return False
         p = self._ph()
         return bool(self._query_one(
-            f"SELECT id FROM jobs WHERE target_id={p} AND status IN ('pending', 'running') LIMIT 1",
+            f"SELECT id FROM jobs WHERE target_id={p} AND status IN ('pending', 'running', 'paused') LIMIT 1",
             (target_id,)))
 
     def requeue_orphaned_jobs(self, worker_prefix: str) -> int:

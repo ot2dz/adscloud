@@ -68,7 +68,8 @@
         </span>
         <span id="live-percent" class="text-blue-700 num">0%</span>
         <button type="button" onclick="toggleLiveDetails()" class="text-[11px] text-slate-600 hover:underline font-bold">تفاصيل</button>
-        <button type="button" onclick="stopEngine()" class="ms-auto px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-sm transition">⏹ إيقاف</button>
+        <button type="button" onclick="pauseEngine()" title="إيقاف مؤقت: يُحفظ الموضع وتستأنف لاحقاً من نفس النقطة" class="ms-auto px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] shadow-sm transition">⏸ إيقاف مؤقت</button>
+        <button type="button" onclick="stopEngine()" class="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-sm transition">⏹ إيقاف</button>
       </div>
       <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
         <div id="live-progress-fill" class="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 rounded-full transition-all duration-300" style="width: 0%"></div>
