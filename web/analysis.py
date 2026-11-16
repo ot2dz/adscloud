@@ -66,6 +66,13 @@ def api_ai_niches_save():
             return jsonify({"error": "الحد اليومي غير صالح"}), 400
     if "backfill" in c:
         db.set_setting("ai_niche_backfill", "1" if c["backfill"] else "0")
+    if "free" in c:
+        db.set_setting("ai_niche_free", "1" if c["free"] else "0")
+    if "free_skip" in c:
+        skip = c.get("free_skip") or []
+        if not isinstance(skip, list):
+            return jsonify({"error": "قائمة الموديلات غير صالحة"}), 400
+        db.set_setting("ai_niche_free_skip", ",".join(str(x).strip()[:200] for x in skip[:200] if str(x).strip()))
     _audit("ai_niches_settings", ",".join(sorted(c)))
     import niche_ai
     return jsonify(dict(niche_ai.status(db), ok=True))

@@ -236,8 +236,24 @@
               <input id="nai-enabled" type="checkbox" class="rounded text-blue-600">
               <div class="srow-t">تفعيل التصنيف التلقائي للسحوبات الجديدة</div>
             </label>
+            <div class="srow block space-y-2">
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input id="nai-free" type="checkbox" class="rounded text-blue-600 mt-0.5" onchange="naiFreeToggle()">
+                <div>
+                  <div class="srow-t">🆓 استعمل كل الموديلات المجانية في OpenRouter</div>
+                  <div class="srow-d">إذا فشل موديل (حد الاستعمال، عطل، أو جواب غير صالح) يرتاح قليلاً وينتقل التصنيف تلقائياً للموديل التالي. آخر موديل نجح يُجرَّب أولاً. بلا تكلفة، لكن OpenRouter يحدّ عدد الطلبات المجانية يومياً.</div>
+                </div>
+              </label>
+              <div id="nai-free-box" class="hidden space-y-1.5">
+                <div class="flex items-center justify-between text-[11px] font-bold text-slate-600">
+                  <span>الموديلات المستعملة (أزل العلامة عن موديل لا تريده):</span>
+                  <span class="flex gap-3"><button type="button" onclick="naiFreeAll(true)" class="text-[#174ea6]">تحديد الكل</button><button type="button" onclick="naiFreeAll(false)" class="text-slate-500">إلغاء الكل</button></span>
+                </div>
+                <div id="nai-free-list" class="grid sm:grid-cols-2 gap-1 text-[11px]" dir="ltr"></div>
+              </div>
+            </div>
             <div class="grid md:grid-cols-2 gap-3 text-xs">
-              <label class="block"><span class="slabel">موديل التصنيف</span>
+              <label class="block"><span class="slabel" id="nai-model-label">موديل التصنيف</span>
                 <input id="nai-model" type="text" dir="ltr" list="ai-model-list" placeholder="فارغ = نفس موديل التحليل" class="sinput font-mono">
                 <span class="text-[10px] text-slate-400 mt-1 block">اكتب موديلاً أرخص إن أردت.</span></label>
               <label class="block"><span class="slabel">حد يومي (منتجات)</span>

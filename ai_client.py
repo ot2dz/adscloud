@@ -241,6 +241,7 @@ def list_models(cfg: dict, ttl: float = 3600) -> list[dict]:
             "context": m.get("context_length"),
             "price_in": _per_m(pr.get("prompt")),
             "price_out": _per_m(pr.get("completion")),
+            "output": list((m.get("architecture") or {}).get("output_modalities") or ["text"]),
         })
     out.sort(key=lambda x: x["id"])
     _MODELS_CACHE[ck] = (time.time(), out)

@@ -10,13 +10,16 @@ async function naiLoad() {
   document.getElementById('nai-enabled').checked = !!d.enabled;
   document.getElementById('nai-model').value = d.model || '';
   document.getElementById('nai-daily').value = d.daily;
+  document.getElementById('nai-free').checked = !!d.free;
+  naiRenderFree(d);
   const btn = document.getElementById('nai-backfill-btn');
   btn.textContent = d.backfill ? '⏸ إيقاف تصنيف المنتجات القديمة' : 'صنّف كل المنتجات الموجودة أيضاً';
   btn.dataset.on = d.backfill ? '1' : '';
   const lines = [];
   if (d.ready_error) lines.push(`<div class="text-rose-700">⚠️ ${escT(d.ready_error)} — اضبط مفتاح OpenRouter والموديل أعلاه.</div>`);
+  if (d.free && d.free_error) lines.push(`<div class="text-rose-700">⚠️ تعذّر جلب الموديلات المجانية: ${escT(d.free_error)}</div>`);
   lines.push(d.enabled
-    ? `<div>✅ مفعّل · الموديل: <span class="font-mono" dir="ltr">${escT(d.effective_model || '—')}</span> · ${d.backfill ? 'يصنّف كل المنتجات (القديمة والجديدة)' : 'يصنّف السحوبات الجديدة فقط' + (d.since ? ' (منذ ' + escT(String(d.since).slice(0, 10)) + ')' : '')}</div>`
+    ? `<div>✅ مفعّل · ${d.free ? `🆓 ${naiFmt(d.free_active)} موديل مجاني · التالي: ` : 'الموديل: '}<span class="font-mono" dir="ltr">${escT(d.effective_model || '—')}</span> · ${d.backfill ? 'يصنّف كل المنتجات (القديمة والجديدة)' : 'يصنّف السحوبات الجديدة فقط' + (d.since ? ' (منذ ' + escT(String(d.since).slice(0, 10)) + ')' : '')}</div>`
     : '<div>⏸ معطّل — المنتجات الجديدة تُصنَّف بالكلمات المفتاحية فقط.</div>');
   lines.push(`<div>اليوم: <b class="num">${naiFmt(d.done_today)}</b> منتج من حد <b class="num">${naiFmt(d.daily)}</b>`
     + (d.cost_today ? ` · التكلفة ≈ <b class="num">$${Number(d.cost_today).toFixed(4)}</b>` : '')
@@ -34,12 +37,41 @@ async function naiPost(body) {
   return d;
 }
 
+function naiRenderFree(d) {
+  const box = document.getElementById('nai-free-list');
+  const rest = d.resting || {};
+  box.innerHTML = (d.free_models || []).map(m => {
+    const r = rest[m.id];
+    const tag = m.id === d.last_model ? ' <span class="text-emerald-700">✓ آخر نجاح</span>'
+      : r ? ` <span class="text-amber-700">⏸ ${Math.ceil(r / 60)} د</span>` : '';
+    return `<label class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white border border-slate-200 cursor-pointer">
+      <input type="checkbox" data-free-model="${escT(m.id)}" ${m.on ? 'checked' : ''}>
+      <span class="font-mono truncate">${escT(m.id)}</span>${tag}</label>`;
+  }).join('') || '<div class="text-slate-400" dir="rtl">احفظ مفتاح OpenRouter أولاً لتظهر القائمة.</div>';
+  naiFreeToggle();
+}
+
+function naiFreeToggle() {
+  const on = document.getElementById('nai-free').checked;
+  document.getElementById('nai-free-box').classList.toggle('hidden', !on);
+  document.getElementById('nai-model-label').textContent = on ? 'موديل مفضّل (يُجرَّب أولاً إن كان مجانياً)' : 'موديل التصنيف';
+}
+
+function naiFreeAll(on) {
+  document.querySelectorAll('[data-free-model]').forEach(c => { c.checked = on; });
+  if (typeof settingsMarkDirty === 'function') settingsMarkDirty('nai', 'ai');
+}
+
 function naiSave() {
-  return naiPost({
+  const boxes = [...document.querySelectorAll('[data-free-model]')];
+  const body = {
     enabled: document.getElementById('nai-enabled').checked,
     model: document.getElementById('nai-model').value.trim(),
     daily: parseInt(document.getElementById('nai-daily').value || '0', 10),
-  });
+    free: document.getElementById('nai-free').checked,
+  };
+  if (boxes.length) body.free_skip = boxes.filter(c => !c.checked).map(c => c.dataset.freeModel);
+  return naiPost(body);
 }
 
 function naiBackfill(btn) {

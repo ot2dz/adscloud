@@ -172,5 +172,101 @@ class CutAnswerTest(unittest.TestCase):
         self.assertEqual(db._query_one("SELECT COUNT(*) AS n FROM meta_ads WHERE niche_ai_at IS NULL")["n"], 0)
 
 
+FREE = [{"id": "a/one:free", "price_in": 0, "price_out": 0, "output": ["text"]},
+        {"id": "b/two:free", "price_in": 0, "price_out": 0, "output": ["text"]},
+        {"id": "c/three:free", "price_in": 0, "price_out": 0, "output": ["text"]},
+        {"id": "img/pic:free", "price_in": 0, "price_out": 0, "output": ["image"]},
+        {"id": "paid/model", "price_in": 1.0, "price_out": 2.0, "output": ["text"]},
+        {"id": "openrouter/free", "price_in": 0, "price_out": 0, "output": ["text"]}]
+
+
+class FreeModelsTest(unittest.TestCase):
+    """Every free OpenRouter model, one after another when one fails."""
+
+    niches_of = NicheAITest.niches_of
+
+    def setUp(self):
+        NicheAITest.setUp(self)
+        niche_ai._batch = niche_ai.BATCH
+        niche_ai._tries.clear()
+        niche_ai._rest.clear()
+        db.set_setting("ai_niche_free", "1")
+        db.set_setting("ai_niche_free_skip", "")
+        db.set_setting("ai_niche_last_model", "")
+        p = mock.patch.object(ai_client, "list_models", return_value=FREE)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _chat(self, fail):
+        """fail: {model: "429" | "error" | "empty"}; other models answer."""
+        k, b = self.slugs[0], self.slugs[1]
+        good = _by_text({"سكين": [k], "كريم": [b]})
+        self.calls = []
+
+        def chat(cfg, messages, **kw):
+            self.calls.append(cfg["model"])
+            how = fail.get(cfg["model"])
+            if how == "429":
+                raise ai_client.AIError("HTTP 429 from provider: rate limited")
+            if how == "error":
+                raise ai_client.AIError("HTTP 404 from provider: no endpoints")
+            if how == "empty":
+                return {"text": "sorry", "prompt_tokens": 1, "completion_tokens": 1, "cost": 0,
+                        "finish_reason": "stop", "model": cfg["model"], "citations": []}
+            return good(cfg, messages, **kw)
+        return chat
+
+    def test_chain_is_free_text_models_with_the_router_last(self):
+        self.assertEqual(niche_ai.model_chain(niche_ai.config()),
+                         ["a/one:free", "b/two:free", "c/three:free", "openrouter/free"])
+        db.set_setting("ai_niche_free_skip", "b/two:free")
+        db.set_setting("ai_niche_last_model", "c/three:free")
+        self.assertEqual(niche_ai.model_chain(niche_ai.config()), ["c/three:free", "a/one:free", "openrouter/free"])
+
+    def test_failed_models_rest_and_the_next_one_classifies(self):
+        with mock.patch.object(ai_client, "chat", side_effect=self._chat({"a/one:free": "429", "b/two:free": "empty"})):
+            self.assertEqual(niche_ai.run_once(db), 2)
+        self.assertEqual(self.calls, ["a/one:free", "b/two:free", "c/three:free"])
+        self.assertEqual(db.get_settings()["ai_niche_last_model"], "c/three:free")
+        self.assertEqual(set(niche_ai.resting()), {"a/one:free", "b/two:free"})
+        self.assertEqual({r["method"] for r in self.niches_of("a1")}, {"llm"})
+        # next batch: the model that worked goes first, the resting ones are skipped
+        db.save_ad(tc._ad("c1", "s3.youcan.store", "سكين آخر", link_path="/products/k2", page_id="702"),
+                   query="q", country="DZ")
+        with mock.patch.object(ai_client, "chat", side_effect=self._chat({})):
+            self.assertEqual(niche_ai.run_once(db), 1)
+        self.assertEqual(self.calls, ["c/three:free"])
+
+    def test_every_model_failing_raises_and_keeps_the_products(self):
+        fail = {m: "error" for m in ("a/one:free", "b/two:free", "c/three:free", "openrouter/free")}
+        with mock.patch.object(ai_client, "chat", side_effect=self._chat(fail)):
+            with self.assertRaises(ai_client.AIError):
+                niche_ai.run_once(db)
+            with self.assertRaises(ai_client.AIError):  # all resting now: no call at all
+                niche_ai.run_once(db)
+        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(db._query_one("SELECT COUNT(*) AS n FROM meta_ads WHERE niche_ai_at IS NULL")["n"], 3)
+
+    def test_single_model_mode_is_unchanged(self):
+        db.set_setting("ai_niche_free", "0")
+        with mock.patch.object(ai_client, "chat", side_effect=self._chat({"analysis/model": "429"})):
+            with self.assertRaises(ai_client.AIError):
+                niche_ai.run_once(db)
+        self.assertEqual(self.calls, ["analysis/model"])
+        self.assertEqual(niche_ai.resting(), {})
+
+    def test_api_saves_free_mode_and_skip_list(self):
+        import app as app_module
+        from werkzeug.security import generate_password_hash
+        db.create_user("admin@test.dz", generate_password_hash("pass-12345"), role="admin")
+        c = app_module.app.test_client()
+        c.post("/api/auth/login", json={"email": "admin@test.dz", "password": "pass-12345"})
+        d = c.post("/api/ai/niches", json={"free": True, "free_skip": ["a/one:free"]}).get_json()
+        self.assertTrue(d["free"])
+        self.assertEqual([m["id"] for m in d["free_models"] if not m["on"]], ["a/one:free"])
+        self.assertEqual(d["effective_model"], "b/two:free")
+        self.assertEqual(c.post("/api/ai/niches", json={"free_skip": "x"}).status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

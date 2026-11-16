@@ -13,12 +13,18 @@ Runs in background.niche_ai_loop; settings live in the settings table:
   ai_niche_daily     max products per day (protects the OpenRouter balance)
   ai_niche_since     only ads first seen after this time (new scrapes only)
   ai_niche_backfill  "1" = also classify everything already in the bank
+  ai_niche_free      "1" = use every free OpenRouter model, one after another:
+                     a model that fails (rate limit, error, no usable answer)
+                     rests a while and the next one takes the batch
+  ai_niche_free_skip free models the admin switched off (comma separated)
+  ai_niche_last_model the model that answered last (tried first next time)
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -39,6 +45,14 @@ MAX_TRIES = 3            # a product that keeps failing is left to the keyword r
 
 _batch = BATCH           # shrinks when answers get cut, grows back slowly
 _tries: dict = {}        # product_key -> failed attempts (this process)
+
+# Free-model chain: a model that failed rests, the next one answers.
+REST_RATE_LIMIT = 10 * 60   # HTTP 429: free quota per minute/day used up
+REST_ERROR = 30 * 60        # model down, removed, bad request…
+REST_NO_ANSWER = 15 * 60    # answered, but nothing usable
+MAX_MODELS_PER_BATCH = 6    # do not burn the whole list on one batch
+ROUTER_FREE = "openrouter/free"  # OpenRouter's own free router: last resort
+_rest: dict = {}            # model id -> time it may be used again
 
 SYSTEM = """You classify e-commerce products advertised in Algeria (Meta ads) into niches.
 
@@ -70,7 +84,11 @@ def config(settings: Optional[dict] = None) -> dict:
         daily = DEFAULT_DAILY
     model = str(s.get("ai_niche_model") or "").strip()
     cfg = dict(cfg, model=model or cfg["model"], temperature=0.0)
+    skip = {x.strip() for x in str(s.get("ai_niche_free_skip") or "").split(",") if x.strip()}
     return {
+        "free": str(s.get("ai_niche_free") or "0") == "1",
+        "free_skip": skip,
+        "last_model": str(s.get("ai_niche_last_model") or ""),
         "enabled": str(s.get("ai_niche_enabled") or "0") == "1",
         "backfill": str(s.get("ai_niche_backfill") or "0") == "1",
         "since": str(s.get("ai_niche_since") or ""),
@@ -82,6 +100,75 @@ def config(settings: Optional[dict] = None) -> dict:
         "cost_today": float(str(s.get("ai_niche_cost") or "0") or 0),
         "last_error": str(s.get("ai_niche_error") or ""),
     }
+
+
+def free_models(cfg: dict) -> list[str]:
+    """Every free text model OpenRouter lists now (cached 1 h), the free
+    router last. Empty for other providers."""
+    if cfg.get("provider") != "openrouter":
+        return []
+    out = []
+    for m in ai_client.list_models(cfg):
+        if m["id"] == ROUTER_FREE or m.get("output", ["text"]) != ["text"]:
+            continue
+        if m.get("price_in") == 0 and m.get("price_out") == 0 and m["id"].endswith(":free"):
+            out.append(m["id"])
+    return out + [ROUTER_FREE]
+
+
+def model_chain(conf: dict) -> list[str]:
+    """Models to try, in order. Without the free mode: the one model."""
+    if not conf.get("free"):
+        return [conf["cfg"]["model"]] if conf["cfg"].get("model") else []
+    frees = [m for m in free_models(conf["cfg"]) if m not in conf.get("free_skip", set())]
+    first = [m for m in (conf.get("last_model"), conf.get("model_override")) if m in frees]
+    seen, chain = set(), []
+    for m in first + frees:
+        if m not in seen:
+            seen.add(m)
+            chain.append(m)
+    return chain
+
+
+def resting() -> dict:
+    """{model: seconds left} for models that failed recently."""
+    now = time.time()
+    return {m: int(t - now) for m, t in _rest.items() if t > now}
+
+
+def _ask(db, conf: dict, chain: list[str], messages: list[dict], count: int, valid: set, max_tokens: int):
+    """Ask the chain until a model gives a usable answer.
+    Returns (reply, answer, model). Raises AIError when every model failed."""
+    many = len(chain) > 1
+    now = time.time()
+    ready_models = [m for m in chain if _rest.get(m, 0) <= now] if many else chain
+    if not ready_models:
+        raise ai_client.AIError("كل الموديلات المجانية في استراحة بعد فشلها — تُجرَّب من جديد بعد قليل")
+    errors = []
+    last = None
+    for model in ready_models[:MAX_MODELS_PER_BATCH]:
+        try:
+            r = ai_client.chat(dict(conf["cfg"], model=model), messages, max_tokens=max_tokens, timeout=180)
+        except ai_client.AIError as exc:
+            if not many:
+                raise
+            _rest[model] = time.time() + (REST_RATE_LIMIT if "HTTP 429" in str(exc) else REST_ERROR)
+            errors.append(f"{model}: {str(exc)[:80]}")
+            logger.warning("AI niches: %s failed (%s) — next model", model, str(exc)[:120])
+            continue
+        answer = parse_answer(r["text"], count, valid)
+        last = (r, answer, model)
+        if answer or not many:
+            if model != conf.get("last_model"):
+                db.set_setting("ai_niche_last_model", model)
+                conf["last_model"] = model
+            return last
+        _rest[model] = time.time() + REST_NO_ANSWER
+        errors.append(f"{model}: لا جواب صالح")
+        logger.warning("AI niches: %s gave no usable answer — next model", model)
+    if last:  # every model answered, none usefully: let the batch logic count the try
+        return last
+    raise ai_client.AIError("فشلت كل الموديلات المجربة: " + " · ".join(errors)[:400])
 
 
 def niche_catalog(niches: list[dict]) -> str:
@@ -158,6 +245,12 @@ def run_once(db, conf: Optional[dict] = None) -> int:
     conf = conf or config()
     if not conf["enabled"]:
         return 0
+    if conf["free"] and conf["cfg"].get("provider") != "openrouter":
+        db.set_setting("ai_niche_error", "الموديلات المجانية تعمل مع OpenRouter فقط")
+        return 0
+    chain = model_chain(conf)
+    if chain:
+        conf["cfg"] = dict(conf["cfg"], model=chain[0])
     why = ai_client.ready(conf["cfg"])
     if why:
         db.set_setting("ai_niche_error", why)
@@ -192,10 +285,8 @@ def run_once(db, conf: Optional[dict] = None) -> int:
 
     niches = db.niche_list()
     valid = {n["slug"] for n in niches}
-    r = ai_client.chat(conf["cfg"], build_messages(niches, to_ask),
-                       max_tokens=min(MAX_ANSWER_TOKENS, TOKENS_PER_PRODUCT * len(to_ask) + 400),
-                       timeout=180)
-    answer = parse_answer(r["text"], len(to_ask), valid)
+    r, answer, model = _ask(db, conf, chain, build_messages(niches, to_ask), len(to_ask), valid,
+                            max_tokens=min(MAX_ANSWER_TOKENS, TOKENS_PER_PRODUCT * len(to_ask) + 400))
     answered = 0
     for i, prod in enumerate(to_ask, 1):
         key = prod["product_key"]
@@ -220,18 +311,31 @@ def run_once(db, conf: Optional[dict] = None) -> int:
     _bump_counters(db, answered, r.get("cost"))
     db.set_setting("ai_niche_error", "" if not cut else
                    f"آخر دفعة: الموديل أجاب عن {answered}/{len(to_ask)} منتج — الباقي يُعاد بدفعة أصغر ({_batch}).")
-    logger.info("AI niches: %s products classified, %s reused", answered, reused)
+    logger.info("AI niches: %s products classified by %s, %s reused", answered, model, reused)
     return answered + reused + (1 if cut and not answered else 0)
 
 
 def status(db) -> dict:
     conf = config()
+    free_list, free_error = [], ""
+    if conf["cfg"].get("provider") == "openrouter" and conf["cfg"].get("api_key"):
+        try:
+            free_list = free_models(conf["cfg"])
+        except ai_client.AIError as exc:
+            free_error = str(exc)[:200]
+    chain = model_chain(conf) if conf["free"] and not free_error else []
     today = datetime.now(timezone.utc).date().isoformat()
     since = "" if conf["backfill"] else conf["since"]
     return {
         "enabled": conf["enabled"], "backfill": conf["backfill"], "since": conf["since"],
         "daily": conf["daily"], "model": conf["model_override"],
-        "effective_model": conf["cfg"].get("model"),
+        "effective_model": (chain[0] if chain else None) if conf["free"] else conf["cfg"].get("model"),
+        "free": conf["free"],
+        "free_models": [{"id": m, "on": m not in conf["free_skip"]} for m in free_list],
+        "free_error": free_error,
+        "free_active": len(chain),
+        "last_model": conf["last_model"],
+        "resting": resting(),
         "done_today": conf["done_today"] if conf["day"] == today else 0,
         "cost_today": conf["cost_today"] if conf["day"] == today else 0,
         "pending": db.niche_ai_pending_count(since=since) if conf["enabled"] else 0,
