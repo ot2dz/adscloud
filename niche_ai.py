@@ -18,6 +18,9 @@ Runs in background.niche_ai_loop; settings live in the settings table:
                      rests a while and the next one takes the batch
   ai_niche_free_skip free models the admin switched off (comma separated)
   ai_niche_last_model the model that answered last (tried first next time)
+  ai_niche_<p>_key / _models / _on   extra free providers (p = gemini, groq):
+                     encrypted key, comma-separated models, "0" = switched off.
+                     They come first in the chain, OpenRouter after them.
 """
 from __future__ import annotations
 
@@ -54,6 +57,16 @@ MAX_MODELS_PER_BATCH = 6    # do not burn the whole list on one batch
 ROUTER_FREE = "openrouter/free"  # OpenRouter's own free router: last resort
 _rest: dict = {}            # model id -> time it may be used again
 
+# Extra providers with a free tier, OpenAI-compatible. Chain ids are
+# "<provider>:<model>"; OpenRouter ids keep their own form ("vendor/model").
+EXTRA_PROVIDERS = {
+    "gemini": {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"},
+    "groq": {"label": "Groq", "base_url": "https://api.groq.com/openai/v1"},
+}
+# Not chat models: left out of the "load models" list.
+_NOT_CHAT = ("embedding", "embed", "whisper", "tts", "audio", "image", "imagen", "veo", "guard",
+             "live", "orpheus", "playai", "aqa", "learnlm", "transcribe", "speech")
+
 SYSTEM = """You classify e-commerce products advertised in Algeria (Meta ads) into niches.
 
 Rules:
@@ -85,7 +98,17 @@ def config(settings: Optional[dict] = None) -> dict:
     model = str(s.get("ai_niche_model") or "").strip()
     cfg = dict(cfg, model=model or cfg["model"], temperature=0.0)
     skip = {x.strip() for x in str(s.get("ai_niche_free_skip") or "").split(",") if x.strip()}
+    extra = {}
+    for name in EXTRA_PROVIDERS:
+        raw = str(s.get(f"ai_niche_{name}_key") or "")
+        key = ai_client.decrypt_secret(raw) if raw else ""
+        extra[name] = {
+            "key": key, "key_set": bool(raw), "key_unreadable": bool(raw) and not key,
+            "models": split_models(s.get(f"ai_niche_{name}_models")),
+            "on": str(s.get(f"ai_niche_{name}_on") or "1") == "1",
+        }
     return {
+        "extra": extra,
         "free": str(s.get("ai_niche_free") or "0") == "1",
         "free_skip": skip,
         "last_model": str(s.get("ai_niche_last_model") or ""),
@@ -116,18 +139,61 @@ def free_models(cfg: dict) -> list[str]:
     return out + [ROUTER_FREE]
 
 
+def split_models(raw) -> list[str]:
+    items = raw if isinstance(raw, list) else str(raw or "").replace("\n", ",").split(",")
+    out = []
+    for x in items:
+        x = str(x).strip()[:200]
+        if x and x not in out:
+            out.append(x)
+    return out[:20]
+
+
+def provider_cfg(conf_cfg: dict, name: str, key: str, model: str = "") -> dict:
+    return dict(conf_cfg, provider=name, base_url=EXTRA_PROVIDERS[name]["base_url"],
+                api_key=key, key_set=bool(key), key_unreadable=False, model=model)
+
+
+def cfg_for(conf: dict, chain_id: str) -> dict:
+    """The client config that calls one chain entry."""
+    name, _, model = chain_id.partition(":")
+    if name in EXTRA_PROVIDERS and model:
+        return provider_cfg(conf["cfg"], name, conf["extra"][name]["key"], model)
+    return dict(conf["cfg"], model=chain_id)
+
+
 def model_chain(conf: dict) -> list[str]:
-    """Models to try, in order. Without the free mode: the one model."""
-    if not conf.get("free"):
-        return [conf["cfg"]["model"]] if conf["cfg"].get("model") else []
-    frees = [m for m in free_models(conf["cfg"]) if m not in conf.get("free_skip", set())]
-    first = [m for m in (conf.get("last_model"), conf.get("model_override")) if m in frees]
-    seen, chain = set(), []
-    for m in first + frees:
-        if m not in seen:
-            seen.add(m)
-            chain.append(m)
-    return chain
+    """Models to try, in order: Gemini, Groq (when they have a key and
+    models), then OpenRouter — every free model, or the one set model. The
+    model that answered last goes first."""
+    chain = []
+    for name, p in (conf.get("extra") or {}).items():
+        if p["on"] and p["key"]:
+            chain += [f"{name}:{m}" for m in p["models"]]
+    if conf.get("free"):
+        frees = [m for m in free_models(conf["cfg"]) if m not in conf.get("free_skip", set())]
+        if conf.get("model_override") in frees:
+            frees.remove(conf["model_override"])
+            frees.insert(0, conf["model_override"])
+        chain += frees
+    elif not ai_client.ready(conf["cfg"]):
+        chain.append(conf["cfg"]["model"])
+    if conf.get("last_model") in chain:
+        chain.remove(conf["last_model"])
+        chain.insert(0, conf["last_model"])
+    seen = set()
+    return [m for m in chain if not (m in seen or seen.add(m))]
+
+
+def list_provider_models(name: str, key: str) -> list[str]:
+    """Chat model ids of an extra provider (for the settings picker)."""
+    cfg = provider_cfg(ai_client.load_config({}), name, key)
+    out = []
+    for m in ai_client.list_models(cfg):
+        mid = m["id"].removeprefix("models/")
+        if not any(w in mid.lower() for w in _NOT_CHAT):
+            out.append(mid)
+    return out
 
 
 def resting() -> dict:
@@ -148,7 +214,7 @@ def _ask(db, conf: dict, chain: list[str], messages: list[dict], count: int, val
     last = None
     for model in ready_models[:MAX_MODELS_PER_BATCH]:
         try:
-            r = ai_client.chat(dict(conf["cfg"], model=model), messages, max_tokens=max_tokens, timeout=180)
+            r = ai_client.chat(cfg_for(conf, model), messages, max_tokens=max_tokens, timeout=180)
         except ai_client.AIError as exc:
             if not many:
                 raise
@@ -245,14 +311,11 @@ def run_once(db, conf: Optional[dict] = None) -> int:
     conf = conf or config()
     if not conf["enabled"]:
         return 0
-    if conf["free"] and conf["cfg"].get("provider") != "openrouter":
-        db.set_setting("ai_niche_error", "الموديلات المجانية تعمل مع OpenRouter فقط")
-        return 0
     chain = model_chain(conf)
-    if chain:
-        conf["cfg"] = dict(conf["cfg"], model=chain[0])
-    why = ai_client.ready(conf["cfg"])
-    if why:
+    if not chain:
+        why = ai_client.ready(conf["cfg"]) or "لا يوجد موديل جاهز"
+        if conf["free"] and conf["cfg"].get("provider") != "openrouter":
+            why = "الموديلات المجانية في OpenRouter تحتاج المزوّد OpenRouter — أو أضف مفتاح Gemini/Groq"
         db.set_setting("ai_niche_error", why)
         return 0
     today = datetime.now(timezone.utc).date().isoformat()
@@ -323,13 +386,22 @@ def status(db) -> dict:
             free_list = free_models(conf["cfg"])
         except ai_client.AIError as exc:
             free_error = str(exc)[:200]
-    chain = model_chain(conf) if conf["free"] and not free_error else []
+    try:
+        chain = model_chain(conf)
+    except ai_client.AIError:
+        chain = []
+    providers = {name: {"label": EXTRA_PROVIDERS[name]["label"], "on": p["on"], "models": p["models"],
+                        "key_set": p["key_set"], "key_unreadable": p["key_unreadable"],
+                        "key_hint": ai_client.mask(p["key"]) if p["key"] else ""}
+                 for name, p in conf["extra"].items()}
     today = datetime.now(timezone.utc).date().isoformat()
     since = "" if conf["backfill"] else conf["since"]
     return {
         "enabled": conf["enabled"], "backfill": conf["backfill"], "since": conf["since"],
         "daily": conf["daily"], "model": conf["model_override"],
-        "effective_model": (chain[0] if chain else None) if conf["free"] else conf["cfg"].get("model"),
+        "effective_model": chain[0] if chain else None,
+        "chain": chain,
+        "providers": providers,
         "free": conf["free"],
         "free_models": [{"id": m, "on": m not in conf["free_skip"]} for m in free_list],
         "free_error": free_error,

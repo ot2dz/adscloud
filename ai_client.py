@@ -137,6 +137,9 @@ def _request(cfg: dict, path: str, payload: Optional[dict] = None, timeout: floa
     req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
+    # An honest client name: some providers (Groq) refuse the default
+    # "Python-urllib" agent with a 403.
+    req.add_header("User-Agent", "AdsCloud/1.0 (OpenAI-compatible client)")
     if cfg.get("api_key"):
         req.add_header("Authorization", "Bearer " + cfg["api_key"])
     try:

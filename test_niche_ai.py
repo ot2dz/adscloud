@@ -268,5 +268,74 @@ class FreeModelsTest(unittest.TestCase):
         self.assertEqual(c.post("/api/ai/niches", json={"free_skip": "x"}).status_code, 400)
 
 
+class ExtraProvidersTest(unittest.TestCase):
+    """Gemini and Groq come before OpenRouter, each with its own key."""
+
+    niches_of = NicheAITest.niches_of
+
+    def setUp(self):
+        FreeModelsTest.setUp(self)
+        for name in niche_ai.EXTRA_PROVIDERS:
+            for k in ("key", "models", "on"):
+                db.set_setting(f"ai_niche_{name}_{k}", "")
+        db.set_setting("ai_niche_gemini_key", ai_client.encrypt_secret("AIza-test"))
+        db.set_setting("ai_niche_gemini_models", "gemini-flash,gemini-flash-lite")
+        db.set_setting("ai_niche_groq_key", ai_client.encrypt_secret("gsk-test"))
+        db.set_setting("ai_niche_groq_models", "gpt-oss-120b")
+
+    _chat = FreeModelsTest._chat
+
+    def test_chain_order_and_off_switch(self):
+        self.assertEqual(niche_ai.model_chain(niche_ai.config())[:4],
+                         ["gemini:gemini-flash", "gemini:gemini-flash-lite", "groq:gpt-oss-120b", "a/one:free"])
+        db.set_setting("ai_niche_gemini_on", "0")
+        db.set_setting("ai_niche_free", "0")
+        self.assertEqual(niche_ai.model_chain(niche_ai.config()), ["groq:gpt-oss-120b", "analysis/model"])
+
+    def test_each_provider_gets_its_own_url_key_and_model(self):
+        seen = []
+        k = self.slugs[0]
+        good = _by_text({"سكين": [k], "كريم": [k]})
+
+        def chat(cfg, messages, **kw):
+            seen.append((cfg["base_url"], cfg["api_key"], cfg["model"]))
+            if cfg["model"] == "gemini-flash":
+                raise ai_client.AIError("HTTP 429 from provider: quota")
+            return good(cfg, messages, **kw)
+        with mock.patch.object(ai_client, "chat", side_effect=chat):
+            self.assertEqual(niche_ai.run_once(db), 2)
+        self.assertEqual(seen[0], (niche_ai.EXTRA_PROVIDERS["gemini"]["base_url"], "AIza-test", "gemini-flash"))
+        self.assertEqual(seen[1], (niche_ai.EXTRA_PROVIDERS["gemini"]["base_url"], "AIza-test", "gemini-flash-lite"))
+        self.assertEqual(db.get_settings()["ai_niche_last_model"], "gemini:gemini-flash-lite")
+
+    def test_extra_provider_works_without_openrouter(self):
+        db.set_setting("ai_niche_free", "0")
+        db.set_setting("ai_api_key", "")
+        db.set_setting("ai_niche_gemini_on", "0")
+        with mock.patch.object(ai_client, "chat", side_effect=self._chat({})):
+            self.assertEqual(niche_ai.run_once(db), 2)
+        self.assertEqual(self.calls, ["groq:gpt-oss-120b".split(":", 1)[1]])
+
+    def test_api_keys_are_encrypted_hidden_and_clearable(self):
+        import app as app_module
+        from werkzeug.security import generate_password_hash
+        db.create_user("admin@test.dz", generate_password_hash("pass-12345"), role="admin")
+        c = app_module.app.test_client()
+        c.post("/api/auth/login", json={"email": "admin@test.dz", "password": "pass-12345"})
+        d = c.post("/api/ai/niches", json={"groq_key": "gsk-new-secret-999", "groq_models": "m1, m2,m1",
+                                            "groq_on": True}).get_json()
+        self.assertNotIn("gsk-new-secret-999", json.dumps(d))
+        self.assertNotEqual(db.get_settings()["ai_niche_groq_key"], "gsk-new-secret-999")
+        self.assertEqual(niche_ai.config()["extra"]["groq"]["key"], "gsk-new-secret-999")
+        self.assertEqual(d["providers"]["groq"]["models"], ["m1", "m2"])
+        d = c.post("/api/ai/niches", json={"groq_clear": True}).get_json()
+        self.assertFalse(d["providers"]["groq"]["key_set"])
+        with mock.patch.object(ai_client, "list_models", return_value=[
+                {"id": "models/gemini-x"}, {"id": "models/text-embedding-9"}]):
+            r = c.post("/api/ai/niches/models", json={"provider": "gemini"}).get_json()
+        self.assertEqual(r["models"], ["gemini-x"])
+        self.assertEqual(c.post("/api/ai/niches/models", json={"provider": "x"}).status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

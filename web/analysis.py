@@ -73,9 +73,36 @@ def api_ai_niches_save():
         if not isinstance(skip, list):
             return jsonify({"error": "قائمة الموديلات غير صالحة"}), 400
         db.set_setting("ai_niche_free_skip", ",".join(str(x).strip()[:200] for x in skip[:200] if str(x).strip()))
-    _audit("ai_niches_settings", ",".join(sorted(c)))
     import niche_ai
+    for name in niche_ai.EXTRA_PROVIDERS:
+        if c.get(f"{name}_clear"):
+            db.set_setting(f"ai_niche_{name}_key", "")
+        elif str(c.get(f"{name}_key") or "").strip():
+            db.set_setting(f"ai_niche_{name}_key", ai_client.encrypt_secret(str(c[f"{name}_key"]).strip()[:500]))
+        if f"{name}_models" in c:
+            db.set_setting(f"ai_niche_{name}_models", ",".join(niche_ai.split_models(c[f"{name}_models"])))
+        if f"{name}_on" in c:
+            db.set_setting(f"ai_niche_{name}_on", "1" if c[f"{name}_on"] else "0")
+    _audit("ai_niches_settings", ",".join(sorted(k for k in c if not k.endswith("_key"))))
     return jsonify(dict(niche_ai.status(db), ok=True))
+
+
+@bp.route("/api/ai/niches/models", methods=["POST"])
+@admin_required
+def api_ai_niches_models():
+    """Chat models of Gemini / Groq, with the typed key or the saved one."""
+    import niche_ai
+    c = request.get_json(force=True, silent=True) or {}
+    name = str(c.get("provider") or "")
+    if name not in niche_ai.EXTRA_PROVIDERS:
+        return jsonify({"error": "مزوّد غير معروف"}), 400
+    key = str(c.get("api_key") or "").strip() or niche_ai.config()["extra"][name]["key"]
+    if not key:
+        return jsonify({"error": "أدخل المفتاح أولاً"}), 400
+    try:
+        return jsonify({"models": niche_ai.list_provider_models(name, key)})
+    except ai_client.AIError as exc:
+        return jsonify({"error": str(exc)[:300]}), 502
 
 
 def _cfg() -> dict:

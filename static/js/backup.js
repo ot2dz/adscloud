@@ -12,6 +12,15 @@ async function naiLoad() {
   document.getElementById('nai-daily').value = d.daily;
   document.getElementById('nai-free').checked = !!d.free;
   naiRenderFree(d);
+  for (const [name, pv] of Object.entries(d.providers || {})) {
+    document.getElementById(`nai-${name}-on`).checked = !!pv.on;
+    document.getElementById(`nai-${name}-key`).value = '';
+    document.getElementById(`nai-${name}-models`).value = (pv.models || []).join(', ');
+    document.getElementById(`nai-${name}-status`).innerHTML = pv.key_unreadable
+      ? '<span class="text-rose-600 font-bold">⚠️ المفتاح لا يُقرأ — أدخله من جديد</span>'
+      : pv.key_set ? `✅ مفتاح محفوظ <span class="font-mono" dir="ltr">${escT(pv.key_hint)}</span>` : 'لا مفتاح';
+    document.getElementById(`nai-${name}-picks`).innerHTML = '';
+  }
   const btn = document.getElementById('nai-backfill-btn');
   btn.textContent = d.backfill ? '⏸ إيقاف تصنيف المنتجات القديمة' : 'صنّف كل المنتجات الموجودة أيضاً';
   btn.dataset.on = d.backfill ? '1' : '';
@@ -19,7 +28,7 @@ async function naiLoad() {
   if (d.ready_error) lines.push(`<div class="text-rose-700">⚠️ ${escT(d.ready_error)} — اضبط مفتاح OpenRouter والموديل أعلاه.</div>`);
   if (d.free && d.free_error) lines.push(`<div class="text-rose-700">⚠️ تعذّر جلب الموديلات المجانية: ${escT(d.free_error)}</div>`);
   lines.push(d.enabled
-    ? `<div>✅ مفعّل · ${d.free ? `🆓 ${naiFmt(d.free_active)} موديل مجاني · التالي: ` : 'الموديل: '}<span class="font-mono" dir="ltr">${escT(d.effective_model || '—')}</span> · ${d.backfill ? 'يصنّف كل المنتجات (القديمة والجديدة)' : 'يصنّف السحوبات الجديدة فقط' + (d.since ? ' (منذ ' + escT(String(d.since).slice(0, 10)) + ')' : '')}</div>`
+    ? `<div>✅ مفعّل · ${(d.chain || []).length > 1 ? `🔗 ${naiFmt(d.chain.length)} موديل في السلسلة · التالي: ` : 'الموديل: '}<span class="font-mono" dir="ltr">${escT(d.effective_model || '—')}</span> · ${d.backfill ? 'يصنّف كل المنتجات (القديمة والجديدة)' : 'يصنّف السحوبات الجديدة فقط' + (d.since ? ' (منذ ' + escT(String(d.since).slice(0, 10)) + ')' : '')}</div>`
     : '<div>⏸ معطّل — المنتجات الجديدة تُصنَّف بالكلمات المفتاحية فقط.</div>');
   lines.push(`<div>اليوم: <b class="num">${naiFmt(d.done_today)}</b> منتج من حد <b class="num">${naiFmt(d.daily)}</b>`
     + (d.cost_today ? ` · التكلفة ≈ <b class="num">$${Number(d.cost_today).toFixed(4)}</b>` : '')
@@ -71,7 +80,42 @@ function naiSave() {
     free: document.getElementById('nai-free').checked,
   };
   if (boxes.length) body.free_skip = boxes.filter(c => !c.checked).map(c => c.dataset.freeModel);
+  for (const name of ['gemini', 'groq']) {
+    body[name + '_on'] = document.getElementById(`nai-${name}-on`).checked;
+    body[name + '_models'] = document.getElementById(`nai-${name}-models`).value;
+    const key = document.getElementById(`nai-${name}-key`).value.trim();
+    if (key) body[name + '_key'] = key;
+  }
   return naiPost(body);
+}
+
+async function naiClearKey(name) {
+  if (!confirm('حذف المفتاح المحفوظ؟')) return;
+  await naiPost({[name + '_clear']: true});
+}
+
+async function naiLoadProviderModels(name, btn) {
+  btn.disabled = true;
+  const picks = document.getElementById(`nai-${name}-picks`);
+  picks.innerHTML = '<span class="text-slate-400">⏳ …</span>';
+  try {
+    const r = await fetch('/api/ai/niches/models', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: name, api_key: document.getElementById(`nai-${name}-key`).value.trim()})});
+    const d = await r.json();
+    if (!r.ok) { picks.innerHTML = `<span class="text-rose-600 w-full break-all text-[10px]" dir="ltr">❌ ${escT(String(d.error || 'فشل الجلب').slice(0, 160))}</span>`; return; }
+    document.getElementById(`nai-${name}-list`).innerHTML = d.models.map(m => `<option value="${escT(m)}">`).join('');
+    picks.innerHTML = d.models.map(m =>
+      `<button type="button" onclick="naiAddModel('${name}', this.textContent)" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-blue-100 font-mono text-[10px]">${escT(m)}</button>`).join('')
+      + '<span class="text-slate-400 text-[10px] w-full" dir="rtl">اضغط على موديل لإضافته للقائمة.</span>';
+  } finally { btn.disabled = false; }
+}
+
+function naiAddModel(name, model) {
+  const el = document.getElementById(`nai-${name}-models`);
+  const list = el.value.split(',').map(x => x.trim()).filter(Boolean);
+  if (!list.includes(model)) list.push(model);
+  el.value = list.join(', ');
+  if (typeof settingsMarkDirty === 'function') settingsMarkDirty('nai', 'ai');
 }
 
 function naiBackfill(btn) {

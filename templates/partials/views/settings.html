@@ -252,6 +252,48 @@
                 <div id="nai-free-list" class="grid sm:grid-cols-2 gap-1 text-[11px]" dir="ltr"></div>
               </div>
             </div>
+            <div class="srow block space-y-2">
+              <div>
+                <div class="srow-t">🔗 مزوّدون مجانيون إضافيون (يُجرَّبون قبل OpenRouter)</div>
+                <div class="srow-d">الترتيب: Gemini ← Groq ← OpenRouter. لكل مزوّد حدّه اليومي الخاص، فكلما أضفت مزوّداً زادت الحصة المجانية. المفاتيح تُحفظ مشفّرة ولا تدخل في النسخ الاحتياطية.</div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-lg p-2.5 space-y-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input type="checkbox" id="nai-gemini-on" class="rounded text-blue-600">
+                  <span class="font-bold text-[#102a56]">Google Gemini</span>
+                  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="text-[10px] text-[#174ea6] underline">احصل على مفتاح مجاني</a>
+                  <span id="nai-gemini-status" class="text-[10px] text-slate-500"></span>
+                  <button type="button" onclick="naiClearKey('gemini')" class="ms-auto text-[10px] text-rose-600 font-bold">حذف المفتاح</button>
+                </div>
+                <div class="grid md:grid-cols-2 gap-2">
+                  <input id="nai-gemini-key" type="password" dir="ltr" autocomplete="new-password" placeholder="AIza..." class="sinput font-mono">
+                  <div class="flex gap-1.5">
+                    <input id="nai-gemini-models" type="text" dir="ltr" list="nai-gemini-list" placeholder="موديل أو أكثر، مفصولة بفاصلة" class="sinput flex-1 font-mono">
+                    <button type="button" onclick="naiLoadProviderModels('gemini', this)" class="sbtn shrink-0 !px-2">📥 جلب</button>
+                  </div>
+                </div>
+                <datalist id="nai-gemini-list"></datalist>
+                <div id="nai-gemini-picks" class="flex flex-wrap gap-1" dir="ltr"></div>
+              </div>
+              <div class="bg-white border border-slate-200 rounded-lg p-2.5 space-y-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input type="checkbox" id="nai-groq-on" class="rounded text-blue-600">
+                  <span class="font-bold text-[#102a56]">Groq</span>
+                  <a href="https://console.groq.com/keys" target="_blank" rel="noopener" class="text-[10px] text-[#174ea6] underline">احصل على مفتاح مجاني</a>
+                  <span id="nai-groq-status" class="text-[10px] text-slate-500"></span>
+                  <button type="button" onclick="naiClearKey('groq')" class="ms-auto text-[10px] text-rose-600 font-bold">حذف المفتاح</button>
+                </div>
+                <div class="grid md:grid-cols-2 gap-2">
+                  <input id="nai-groq-key" type="password" dir="ltr" autocomplete="new-password" placeholder="gsk_..." class="sinput font-mono">
+                  <div class="flex gap-1.5">
+                    <input id="nai-groq-models" type="text" dir="ltr" list="nai-groq-list" placeholder="موديل أو أكثر، مفصولة بفاصلة" class="sinput flex-1 font-mono">
+                    <button type="button" onclick="naiLoadProviderModels('groq', this)" class="sbtn shrink-0 !px-2">📥 جلب</button>
+                  </div>
+                </div>
+                <datalist id="nai-groq-list"></datalist>
+                <div id="nai-groq-picks" class="flex flex-wrap gap-1" dir="ltr"></div>
+              </div>
+            </div>
             <div class="grid md:grid-cols-2 gap-3 text-xs">
               <label class="block"><span class="slabel" id="nai-model-label">موديل التصنيف</span>
                 <input id="nai-model" type="text" dir="ltr" list="ai-model-list" placeholder="فارغ = نفس موديل التحليل" class="sinput font-mono">
