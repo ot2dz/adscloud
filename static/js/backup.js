@@ -12,6 +12,8 @@ async function naiLoad() {
   document.getElementById('nai-daily').value = d.daily;
   document.getElementById('nai-free').checked = !!d.free;
   naiRenderFree(d);
+  naiLast = d;
+  naiRenderChain();
   for (const [name, pv] of Object.entries(d.providers || {})) {
     document.getElementById(`nai-${name}-on`).checked = !!pv.on;
     document.getElementById(`nai-${name}-key`).value = '';
@@ -44,6 +46,114 @@ async function naiPost(body) {
   if (!r.ok) { alert(d.error || 'فشل الحفظ'); return null; }
   naiLoad();
   return d;
+}
+
+// ── model tests (dry run on 10 products, nothing saved) ──
+let naiLast = {};
+const naiTests = {};  // model -> result | 'running'
+
+function naiProvider(id) {
+  const p = id.split(':')[0];
+  return p === 'gemini' ? 'Gemini' : p === 'groq' ? 'Groq' : 'OpenRouter';
+}
+
+function naiTestSummary(res) {
+  if (res === 'running') return '<span class="text-slate-500">⏳ جارٍ الفحص…</span>';
+  if (!res) return '';
+  if (!res.ok) return `<span class="text-rose-700 font-bold">❌ ${escT(String(res.error || 'لا جواب صالح').slice(0, 90))}</span>`;
+  const color = res.answered < res.total ? ' text-amber-700' : ' text-emerald-700';
+  return `<span class="font-bold${color}">✅ ${res.answered}/${res.total} · ${res.secs} ث</span>`
+    + (res.compared ? ` <span class="text-slate-500">· تطابق ${res.agree}/${res.compared} مع السابق</span>` : '');
+}
+
+function naiRenderChain() {
+  const box = document.getElementById('nai-chain');
+  if (!box) return;
+  const chain = naiLast.chain || [];
+  const rest = naiLast.resting || {};
+  box.innerHTML = chain.map((m, i) => {
+    const res = naiTests[m];
+    const r = rest[m];
+    const q = escT(JSON.stringify(m));
+    return `<div class="flex items-center gap-2 flex-wrap bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+      <span class="text-slate-400 w-5 text-center num">${i + 1}</span>
+      <span class="px-1.5 rounded bg-slate-100 text-[10px] font-bold text-slate-600">${naiProvider(m)}</span>
+      <span class="font-mono truncate max-w-[18rem]" dir="ltr" title="${escT(m)}">${escT(m)}</span>
+      ${m === naiLast.last_model ? '<span class="text-emerald-700">✓ آخر نجاح</span>' : ''}
+      ${r ? `<span class="text-amber-700">⏸ يرتاح ${Math.ceil(r / 60)} د</span>` : ''}
+      <span class="ms-auto">${naiTestSummary(res)}</span>
+      ${res && res !== 'running' ? `<button type="button" onclick="naiShowReport(${q})" class="text-[#174ea6] underline">التقرير</button>` : ''}
+      <button type="button" onclick="naiTest(${q})" ${res === 'running' ? 'disabled' : ''} class="sbtn !py-1 !px-2">🧪 فحص</button>
+    </div>`;
+  }).join('') || '<div class="text-slate-400">لا يوجد موديل جاهز — أضف مفتاحاً وموديلاً ثم احفظ.</div>';
+}
+
+async function naiTest(model) {
+  naiTests[model] = 'running';
+  naiRenderChain();
+  try {
+    const r = await fetch('/api/ai/niches/test', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                  body: JSON.stringify({model})});
+    const d = await r.json();
+    naiTests[model] = r.ok ? d : {ok: false, model, error: d.error || ('HTTP ' + r.status)};
+  } catch (err) {
+    naiTests[model] = {ok: false, model, error: err.message};
+  }
+  naiRenderChain();
+  naiShowReport(model);
+  return naiTests[model];
+}
+
+async function naiTestAll(btn) {
+  const chain = naiLast.chain || [];
+  if (!chain.length) return;
+  if (chain.length > 5 && !confirm(`فحص ${chain.length} موديلات واحداً بعد الآخر؟ كل فحص طلب واحد من حصتك المجانية.`)) return;
+  btn.disabled = true;
+  try { for (const m of chain) await naiTest(m); } finally { btn.disabled = false; }
+  const ok = chain.filter(m => naiTests[m] && naiTests[m].ok);
+  const box = document.getElementById('nai-test-report');
+  box.classList.remove('hidden');
+  box.className = 'p-3 rounded-xl text-xs border bg-slate-50 border-slate-200';
+  box.innerHTML = `<div class="font-bold text-[#102a56] mb-1">النتيجة العامة: ${ok.length} من ${chain.length} موديلات تعمل.</div>`
+    + chain.map(m => `<div class="flex gap-2"><span class="font-mono" dir="ltr">${escT(m)}</span><span class="ms-auto">${naiTestSummary(naiTests[m])}</span></div>`).join('')
+    + '<div class="text-slate-500 mt-1">اضغط «التقرير» بجانب أي موديل لترى تصنيفاته.</div>';
+}
+
+function naiShowReport(model) {
+  const res = naiTests[model];
+  const box = document.getElementById('nai-test-report');
+  if (!res || res === 'running') return;
+  box.classList.remove('hidden');
+  box.className = 'p-3 rounded-xl text-xs border ' + (res.ok ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200');
+  const head = `<div class="flex items-center gap-2 mb-2 flex-wrap"><b class="font-mono" dir="ltr">${escT(model)}</b>
+    <button type="button" onclick="document.getElementById('nai-test-report').classList.add('hidden')" class="ms-auto text-slate-500">✕</button></div>`;
+  if (!res.items) {
+    box.innerHTML = head + `<div class="text-rose-700 font-bold break-all" dir="auto">❌ ${escT(res.error || 'فشل')}</div>`
+      + (res.secs != null ? `<div class="text-slate-500 mt-1">بعد ${res.secs} ث</div>` : '');
+    return;
+  }
+  const facts = [
+    `أجاب عن <b>${res.answered}/${res.total}</b> منتج`,
+    `أعطى نيشاً لـ <b>${res.with_niche}</b>`,
+    `الوقت <b>${res.secs}</b> ث`,
+    res.compared ? `تطابق النيش الرئيسي مع التصنيف السابق: <b>${res.agree}/${res.compared}</b>` : '',
+    res.prompt_tokens != null ? `توكنات: ${res.prompt_tokens} دخول / ${res.completion_tokens} خروج` : '',
+    res.cost ? `التكلفة: $${Number(res.cost).toFixed(5)}` : 'التكلفة: مجاني',
+    res.finish_reason === 'length' ? '<span class="text-amber-700">⚠️ الجواب قُطع عند حد التوكنات</span>' : '',
+  ].filter(Boolean).join(' · ');
+  const rows = res.items.map((it, i) => `<tr class="border-t border-slate-200 align-top">
+      <td class="py-1 pe-2 text-slate-400 num">${i + 1}</td>
+      <td class="py-1 pe-2"><div class="text-slate-500 text-[10px]" dir="ltr">${escT(it.store)}</div><div dir="auto">${escT(it.text)}</div></td>
+      <td class="py-1 pe-2 font-bold whitespace-nowrap">${!it.answered ? '<span class="text-rose-600">لم يُجب</span>'
+        : it.niches.length ? it.niches.map(n => `${escT(n.name)} <span class="text-slate-400 num">${n.confidence}%</span>`).join('<br>')
+        : '<span class="text-slate-400">لا نيش مناسب</span>'}</td>
+      <td class="py-1 text-slate-500 whitespace-nowrap">${it.before.length ? escT(it.before.join('، ')) : '—'}</td>
+    </tr>`).join('');
+  box.innerHTML = head + `<div class="mb-2 leading-relaxed">${facts}</div>`
+    + (res.raw ? `<div class="mb-2 text-rose-700 break-all" dir="auto">جواب الموديل: ${escT(res.raw)}</div>` : '')
+    + `<div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-slate-500">
+        <th></th><th class="text-start">المنتج</th><th class="text-start">تصنيف الموديل</th><th class="text-start">التصنيف السابق</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
 }
 
 function naiRenderFree(d) {

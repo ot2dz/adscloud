@@ -87,6 +87,19 @@ def api_ai_niches_save():
     return jsonify(dict(niche_ai.status(db), ok=True))
 
 
+@bp.route("/api/ai/niches/test", methods=["POST"])
+@admin_required
+def api_ai_niches_test():
+    """Dry run of one chain model on 10 recent products (nothing saved)."""
+    import niche_ai
+    c = request.get_json(force=True, silent=True) or {}
+    model = str(c.get("model") or "").strip()[:200]
+    if not model:
+        return jsonify({"error": "اختر موديلاً"}), 400
+    _audit("ai_niches_test", model)
+    return jsonify(niche_ai.test_model(db, model))
+
+
 @bp.route("/api/ai/niches/models", methods=["POST"])
 @admin_required
 def api_ai_niches_models():

@@ -2142,6 +2142,14 @@ class Database:
                               tuple(params))
         return int((row or {}).get("n") or 0)
 
+    def niche_ai_test_products(self, limit: int = 10) -> list[str]:
+        """Recent product keys that have ad text (for a dry-run model test)."""
+        rows = self._query(
+            "SELECT product_key FROM meta_ads WHERE (market IS NULL OR market = 'dz') "
+            "AND COALESCE(product_key, '') <> '' AND COALESCE(body, '') <> '' "
+            f"GROUP BY product_key ORDER BY MAX(collected_at) DESC LIMIT {int(limit)}")
+        return [r["product_key"] for r in rows]
+
     def niche_ai_sample(self, product_key: str) -> Optional[dict]:
         """The product's richest ad text, for the classifier."""
         p = self._ph()

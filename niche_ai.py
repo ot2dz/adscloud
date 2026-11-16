@@ -416,3 +416,66 @@ def status(db) -> dict:
         "last_error": conf["last_error"],
         "niches": len(db.niche_list()),
     }
+
+
+TEST_PRODUCTS = 10
+
+
+def test_model(db, chain_id: str, n: int = TEST_PRODUCTS) -> dict:
+    """Dry run: classify n recent products with one model and report what it
+    answered. Nothing is saved. A model that passes stops resting."""
+    conf = config()
+    cfg = cfg_for(conf, chain_id)
+    name = chain_id.partition(":")[0]
+    if name in EXTRA_PROVIDERS and chain_id.partition(":")[2]:
+        p = conf["extra"][name]
+        if p["key_unreadable"]:
+            return {"ok": False, "model": chain_id, "error": "المفتاح المحفوظ لا يُقرأ (تغيّر SECRET_KEY) — أدخله من جديد"}
+        if not p["key"]:
+            return {"ok": False, "model": chain_id, "error": f"لا يوجد مفتاح {EXTRA_PROVIDERS[name]['label']} — أضفه واحفظ"}
+    why = ai_client.ready(cfg)
+    if why:
+        return {"ok": False, "model": chain_id, "error": why}
+    samples = []
+    for key in db.niche_ai_test_products(n):
+        s = db.niche_ai_sample(key)
+        if s:
+            samples.append(dict(s, product_key=key))
+    if not samples:
+        return {"ok": False, "model": chain_id, "error": "لا توجد منتجات بنصوص في القاعدة للفحص"}
+    niches = db.niche_list()
+    names = {x["slug"]: x.get("name_ar") or x["slug"] for x in niches}
+    t0 = time.time()
+    try:
+        r = ai_client.chat(cfg, build_messages(niches, samples),
+                           max_tokens=min(MAX_ANSWER_TOKENS, TOKENS_PER_PRODUCT * len(samples) + 400), timeout=120)
+    except ai_client.AIError as exc:
+        return {"ok": False, "model": chain_id, "error": str(exc)[:400], "secs": round(time.time() - t0, 1)}
+    secs = round(time.time() - t0, 1)
+    answer = parse_answer(r["text"], len(samples), {x["slug"] for x in niches})
+    items, agree, compared = [], 0, 0
+    for i, s in enumerate(samples, 1):
+        got = answer.get(i)
+        before = [k["slug"] for k in db.niche_ai_known(s["product_key"])]
+        if got and before:
+            compared += 1
+            agree += got[0]["slug"] == before[0]
+        items.append({
+            "text": " ".join(str(s.get("body") or "").split())[:140],
+            "store": s.get("store_domain") or s.get("page_name") or "",
+            "answered": got is not None,
+            "niches": [dict(x, name=names.get(x["slug"], x["slug"])) for x in (got or [])],
+            "before": [names.get(b, b) for b in before[:2]],
+        })
+    answered = len(answer)
+    if answered:
+        _rest.pop(chain_id, None)
+    return {
+        "ok": answered > 0, "model": chain_id, "answered_by": r.get("model"), "secs": secs,
+        "total": len(samples), "answered": answered,
+        "with_niche": sum(1 for x in items if x["niches"]),
+        "agree": agree, "compared": compared,
+        "prompt_tokens": r.get("prompt_tokens"), "completion_tokens": r.get("completion_tokens"),
+        "cost": r.get("cost"), "finish_reason": r.get("finish_reason"),
+        "items": items, "raw": "" if answered else str(r.get("text") or "")[:400],
+    }

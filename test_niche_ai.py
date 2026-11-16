@@ -337,5 +337,46 @@ class ExtraProvidersTest(unittest.TestCase):
         self.assertEqual(c.post("/api/ai/niches/models", json={"provider": "x"}).status_code, 400)
 
 
+class ModelTestTest(unittest.TestCase):
+    """The 🧪 button: a dry run on recent products that saves nothing."""
+
+    niches_of = NicheAITest.niches_of
+
+    def setUp(self):
+        ExtraProvidersTest.setUp(self)
+
+    def test_dry_run_reports_and_saves_nothing(self):
+        k = self.slugs[0]
+        niche_ai._rest["groq:gpt-oss-120b"] = 9e18
+        with mock.patch.object(ai_client, "chat", side_effect=_by_text({"سكين": [k]})) as chat:
+            r = niche_ai.test_model(db, "groq:gpt-oss-120b")
+        self.assertEqual(chat.call_args[0][0]["base_url"], niche_ai.EXTRA_PROVIDERS["groq"]["base_url"])
+        self.assertTrue(r["ok"])
+        self.assertEqual((r["total"], r["answered"], r["with_niche"]), (2, 2, 1))
+        names = [n["name"] for it in r["items"] for n in it["niches"]]
+        self.assertEqual(len(names), 1)
+        self.assertEqual(db._query_one("SELECT COUNT(*) AS n FROM meta_ads WHERE niche_ai_at IS NOT NULL")["n"], 0)
+        self.assertNotIn("groq:gpt-oss-120b", niche_ai._rest)  # passed: no longer resting
+
+    def test_failure_and_missing_key_are_reported(self):
+        with mock.patch.object(ai_client, "chat", side_effect=ai_client.AIError("HTTP 429 from provider: quota")):
+            r = niche_ai.test_model(db, "gemini:gemini-flash")
+        self.assertFalse(r["ok"])
+        self.assertIn("429", r["error"])
+        db.set_setting("ai_niche_groq_key", "")
+        self.assertFalse(niche_ai.test_model(db, "groq:gpt-oss-120b")["ok"])
+
+    def test_api(self):
+        import app as app_module
+        from werkzeug.security import generate_password_hash
+        db.create_user("admin@test.dz", generate_password_hash("pass-12345"), role="admin")
+        c = app_module.app.test_client()
+        c.post("/api/auth/login", json={"email": "admin@test.dz", "password": "pass-12345"})
+        with mock.patch.object(ai_client, "chat", side_effect=_by_text({})):
+            d = c.post("/api/ai/niches/test", json={"model": "a/one:free"}).get_json()
+        self.assertTrue(d["ok"])
+        self.assertEqual(c.post("/api/ai/niches/test", json={}).status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()
