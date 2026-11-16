@@ -35,7 +35,7 @@ function lanesRender() {
         <input type="checkbox" ${ln.enabled !== false ? 'checked' : ''} onchange="lanesData[${i}].enabled=this.checked; lanesRender()" title="تفعيل">
         <input value="${escT(ln.name || '')}" oninput="lanesData[${i}].name=this.value" placeholder="اسم الخط (مثلاً: خط العمل)" class="${inp} w-48">
         <span class="text-slate-600 font-semibold">${escT(LANE_SRC[ln.source] || ln.source)}</span>
-        <button onclick="lanesData.splice(${i},1); lanesRender()" class="ms-auto text-rose-600 font-bold">✕</button>
+        <button onclick="lanesData.splice(${i},1); lanesRender(); settingsMarkDirty('lanes')" class="ms-auto text-rose-600 font-bold">✕</button>
       </div>
       ${ln.source === 'status' && !lanesHasStatus ? '<div class="text-amber-700">⚠️ لا يوجد بروكسي مخصص لفحص الحالة في الإعدادات — هذا الخط سيُتجاهل.</div>' : ''}
       ${ln.source === 'custom' ? `<div class="grid md:grid-cols-3 gap-2">
@@ -51,12 +51,14 @@ function lanesAdd(source) {
   const names = {scrape: 'خط العمل', status: 'خط المحل (التابلت)', custom: 'خط ' + (lanesData.length + 1)};
   lanesData.push({source, name: names[source], enabled: true});
   lanesRender();
+  if (typeof settingsMarkDirty === 'function') settingsMarkDirty('lanes');
 }
 
 async function lanesSave() {
   const r = await fetch('/api/scrape-lanes', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                               body: JSON.stringify({lanes: lanesData})});
   const d = await r.json();
-  if (!r.ok) { alert(d.error || 'فشل الحفظ'); return; }
+  if (!r.ok) { alert(d.error || 'فشل الحفظ'); return false; }
   lanesLoad();
+  return true;
 }

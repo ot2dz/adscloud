@@ -541,6 +541,7 @@ async function aiLoadConfig() {
   ks.innerHTML = c.key_unreadable ? '<span class="text-rose-600 font-bold">⚠️ المفتاح المحفوظ لا يمكن فك تشفيره (تغيّر SECRET_KEY) — أدخله من جديد.</span>'
     : c.key_set ? `✅ مفتاح محفوظ (مشفّر): <span class="font-mono" dir="ltr">${escT(c.key_hint)}</span> — اتركه فارغاً للإبقاء عليه.`
     : 'لا يوجد مفتاح محفوظ.';
+  return c;
 }
 
 function aiProviderChanged() {
@@ -576,6 +577,7 @@ async function aiSave() {
   const d = await r.json();
   if (d.ok) { aiResult(true, '✅ تم حفظ إعدادات الذكاء الاصطناعي.'); aiLoadConfig(); }
   else aiResult(false, '❌ ' + escT(d.error || 'فشل الحفظ'));
+  return !!d.ok;
 }
 
 async function aiClearKey() {

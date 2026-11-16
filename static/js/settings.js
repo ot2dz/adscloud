@@ -1,9 +1,79 @@
-// ── Settings & Telegram Integration ──
+// ── Settings: one section at a time, one save bar for every section ──
+const SETTINGS_TABS = ['filters', 'auto', 'proxy', 'ai', 'alerts', 'accounts', 'backup'];
+const settingsDirty = new Set();  // save groups with changes: general | ai | nai | lanes
+let settingsWired = false;
+
+function settingsTab(name) {
+  if (!SETTINGS_TABS.includes(name)) name = 'filters';
+  document.querySelectorAll('#view-settings [data-spanel]').forEach(p => p.classList.toggle('hidden', p.dataset.spanel !== name));
+  document.querySelectorAll('#settings-nav [data-stab]').forEach(b => b.classList.toggle('active', b.dataset.stab === name));
+  try { localStorage.setItem('settingsTab', name); } catch (e) { /* private mode */ }
+}
+
+const settingsDirtyPanels = new Set();  // sections the user edited (for the dot in the menu)
+
+function settingsMarkDirty(group, panel) {
+  settingsDirty.add(group);
+  settingsDirtyPanels.add(panel || (group === 'lanes' ? 'proxy' : group === 'nai' ? 'ai' : ''));
+  settingsRefreshDirty();
+}
+
+function settingsRefreshDirty() {
+  if (!settingsDirty.size) settingsDirtyPanels.clear();
+  const n = [...settingsDirtyPanels].filter(Boolean).length;
+  document.querySelectorAll('#settings-nav [data-stab]').forEach(b => b.classList.toggle('dirty', settingsDirtyPanels.has(b.dataset.stab)));
+  document.getElementById('settings-savebar').classList.toggle('hidden', !settingsDirty.size);
+  document.getElementById('settings-savebar-text').textContent = n > 1
+    ? `لديك تغييرات غير محفوظة في ${n} أقسام` : 'لديك تغييرات غير محفوظة';
+}
+
+function settingsWire() {
+  if (settingsWired) return;
+  settingsWired = true;
+  const root = document.getElementById('view-settings');
+  const onEdit = e => {
+    const g = e.target.closest('[data-save]');
+    if (g) settingsMarkDirty(g.dataset.save, g.closest('[data-spanel]')?.dataset.spanel);
+  };
+  root.addEventListener('input', onEdit);
+  root.addEventListener('change', onEdit);
+  window.addEventListener('beforeunload', e => { if (settingsDirty.size) { e.preventDefault(); e.returnValue = ''; } });
+  let last = null;
+  try { last = localStorage.getItem('settingsTab'); } catch (e) { /* private mode */ }
+  settingsTab(last || 'filters');
+}
+
+function settingsBadge(id, state, title) {
+  const el = document.getElementById('sb-' + id);
+  if (el) { el.className = 'sbadge ' + state; el.title = title; }
+}
+
+function settingsBadges(s, ai) {
+  const on = (k, def) => (s[k] ?? def) === 'true';
+  const filters = [on('arabic_only', 'true'), on('cta_filter_enabled', 'true')].filter(Boolean).length;
+  settingsBadge('filters', filters ? 'ok' : 'warn', filters ? 'الفلاتر مفعّلة' : 'كل الفلاتر مطفأة');
+  const auto = [on('schedule_enabled', 'false'), on('month_rescan_enabled', 'true'), on('status_check_enabled', 'true')].filter(Boolean).length;
+  settingsBadge('auto', auto === 3 ? 'ok' : auto ? 'warn' : 'off', `${auto} من 3 مهام مفعّلة`);
+  const proxy = !!(s.meta_ads_proxy || s.env_meta_ads_proxy);
+  settingsBadge('proxy', proxy ? 'ok' : 'warn', proxy ? 'يوجد بروكسي' : 'السحب بدون بروكسي');
+  if (ai) settingsBadge('ai', ai.key_unreadable ? 'bad' : ai.key_set ? 'ok' : 'off',
+    ai.key_unreadable ? 'المفتاح لا يُقرأ — أدخله من جديد' : ai.key_set ? 'المفتاح محفوظ' : 'لا يوجد مفتاح');
+  const tg = on('notify_enabled', 'false') && s.telegram_token && s.telegram_chat_id;
+  settingsBadge('alerts', tg ? 'ok' : 'off', tg ? 'التنبيهات تعمل' : 'التنبيهات معطّلة');
+  const open = on('registration_open', 'false');
+  settingsBadge('accounts', open ? 'warn' : 'ok', open ? 'التسجيل الذاتي مفتوح' : 'التسجيل مغلق');
+}
+
 async function loadSettings() {
-  aiLoadConfig();
+  settingsWire();
+  settingsDirty.clear();
+  settingsRefreshDirty();
+  const aiP = aiLoadConfig();
   if (typeof naiLoad === 'function' && isAdmin()) naiLoad();
   if (typeof lanesLoad === 'function' && isAdmin()) lanesLoad();
   const r = await fetch('/api/settings'); const s = await r.json();
+  aiP.then(ai => settingsBadges(s, ai));
+  settingsBadges(s);
   document.getElementById('cfg-sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('cfg-entity-stats').checked = (s.entity_stats_enabled || 'true') === 'true';
   document.getElementById('cfg-registration-open').checked = s.registration_open === 'true';
@@ -39,7 +109,7 @@ async function loadSettings() {
   document.getElementById('last-sched-time').innerText = s.last_scheduled_at ? s.last_scheduled_at.slice(0, 16).replace('T', ' ') : 'لم تبدأ بعد';
 }
 
-async function saveAllSettings() {
+async function saveGeneralSettings() {
   const token = document.getElementById('cfg-tg-token').value.trim();
   const chat = document.getElementById('cfg-tg-chat').value.trim();
   const schedEn = document.getElementById('cfg-sched-enabled').checked;
@@ -72,13 +142,39 @@ async function saveAllSettings() {
       blocked_domains: (document.getElementById('cfg-blocked')?.value || '').trim()
     })
   });
-  const d = await r.json();
-  if (d.ok) {
-    let msg = '✅ تم حفظ جميع الإعدادات بنجاح!';
-    if (d.purged != null) msg += `\n🧹 حُذف ${d.purged} إعلانًا لشركات كبرى من القاعدة.`;
-    alert(msg);
-    loadSettings(); loadAds(); loadStats();  // CTA filter etc. apply immediately
+  return r.json();
+}
+
+// Saves every section with changes, then reloads the page values once.
+async function settingsSave(btn) {
+  btn.disabled = true; btn.textContent = '⏳ جارٍ الحفظ…';
+  const notes = [];
+  let failed = false;
+  try {
+    if (settingsDirty.has('ai')) { if (await aiSave()) settingsDirty.delete('ai'); else { failed = true; notes.push('❌ فشل حفظ إعدادات الذكاء الاصطناعي (التفاصيل في قسمه).'); } }
+    if (settingsDirty.has('nai')) { if (await naiSave()) settingsDirty.delete('nai'); else failed = true; }
+    if (settingsDirty.has('lanes')) { if (await lanesSave()) settingsDirty.delete('lanes'); else failed = true; }
+    if (settingsDirty.has('general')) {
+      const d = await saveGeneralSettings();
+      if (d.ok) {
+        settingsDirty.delete('general');
+        if (d.purged != null) notes.push(`🧹 حُذف ${d.purged} إعلانًا لشركات كبرى من القاعدة.`);
+        loadAds(); loadStats();  // CTA filter etc. apply immediately
+      } else { failed = true; notes.push('❌ ' + (d.error || 'فشل حفظ الإعدادات العامة')); }
+    }
+  } catch (err) {
+    failed = true; notes.push('❌ ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'حفظ';
   }
+  if (!failed) { await loadSettings(); btn.textContent = '✅ تم الحفظ'; setTimeout(() => { btn.textContent = 'حفظ'; }, 1500); }
+  else settingsRefreshDirty();
+  if (notes.length) alert(notes.join('\n'));
+}
+
+function settingsDiscard() {
+  if (!confirm('تجاهل كل التغييرات غير المحفوظة؟')) return;
+  loadSettings();
 }
 
 async function testProxy() {

@@ -1,344 +1,335 @@
-  <!-- VIEW: SETTINGS & TELEGRAM INTEGRATION -->
-  <section id="view-settings" class="hidden space-y-6">
-    <div class="grid md:grid-cols-2 gap-6">
+  <!-- VIEW: SETTINGS — one section at a time, one save bar for everything -->
+  <section id="view-settings" class="hidden pb-24">
+    <div class="flex flex-col md:flex-row gap-6 items-start">
 
-      <!-- Telegram Integration Card -->
-      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
-        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
-          <span class="text-2xl">✈️</span>
-          <div>
-            <h3 class="font-bold text-[#102a56] text-sm">ربط بوت التلجرام (Telegram Alerts)</h3>
-            <p class="text-xs text-slate-500">استقبل تنبيهات فورية عندما يطلق أي منافس إعلاناً جديداً أو يستمر كمنتج رابح.</p>
-          </div>
-        </div>
+      <!-- Section menu -->
+      <nav id="settings-nav" class="w-full md:w-64 shrink-0 md:sticky md:top-4 bg-white border border-[#cfe0f5] rounded-2xl p-2 shadow-[0_8px_20px_rgba(23,43,77,0.04)] flex md:flex-col gap-1 overflow-x-auto">
+        <button data-stab="filters" onclick="settingsTab('filters')" class="stab"><span>🎯</span><span class="flex-1">ما يُحفظ (الفلاتر)</span><i id="sb-filters" class="sbadge"></i></button>
+        <button data-stab="auto" onclick="settingsTab('auto')" class="stab"><span>⏰</span><span class="flex-1">المهام التلقائية</span><i id="sb-auto" class="sbadge"></i></button>
+        <button data-stab="proxy" onclick="settingsTab('proxy')" class="stab"><span>🌐</span><span class="flex-1">الاتصال والبروكسي</span><i id="sb-proxy" class="sbadge"></i></button>
+        <button data-stab="ai" onclick="settingsTab('ai')" class="stab"><span>🤖</span><span class="flex-1">الذكاء الاصطناعي</span><i id="sb-ai" class="sbadge"></i></button>
+        <button data-stab="alerts" onclick="settingsTab('alerts')" class="stab"><span>🔔</span><span class="flex-1">التنبيهات (تلجرام)</span><i id="sb-alerts" class="sbadge"></i></button>
+        <button data-stab="accounts" onclick="settingsTab('accounts')" class="stab"><span>👥</span><span class="flex-1">الحسابات والتسجيل</span><i id="sb-accounts" class="sbadge"></i></button>
+        <button data-stab="backup" onclick="settingsTab('backup')" class="stab"><span>💾</span><span class="flex-1">النسخ الاحتياطي</span></button>
+      </nav>
 
-        <div class="space-y-3.5 text-xs">
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">توكن البوت (Bot Token):</label>
-            <input id="cfg-tg-token" type="text" placeholder="مثال: 123456789:ABCdefGhIJKlmNoPQRstu..." class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-            <span class="text-[10px] text-slate-400 mt-1 block">تحصل عليه من BotFather عند إنشاء البوت.</span>
-          </div>
+      <div class="flex-1 min-w-0 w-full">
 
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">معرّف المحادثة أو القناة (Chat ID):</label>
-            <input id="cfg-tg-chat" type="text" placeholder="مثال: 987654321 أو -1001234567890" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-            <span class="text-[10px] text-slate-400 mt-1 block">آيدي حسابك الشخصي أو آيدي القناة/المجموعة التي ينشر فيها البوت.</span>
+        <!-- ═══ 1. FILTERS: what gets saved ═══ -->
+        <div data-spanel="filters" class="space-y-5">
+          <div class="spanel-head">
+            <h2>🎯 ما يُحفظ (الفلاتر)</h2>
+            <p>هذه الخيارات تقرّر أي إعلانات تدخل البنك. هي سبب الفرق بين «مفحوص» و«محفوظ» في كل سحب.</p>
           </div>
 
-          <div class="pt-1">
-            <label class="flex items-center gap-2 cursor-pointer text-slate-800 font-bold">
-              <input type="checkbox" id="cfg-notify-enabled" class="rounded text-blue-600">
-              <span>تفعيل إرسال التنبيهات تلقائياً</span>
-            </label>
-          </div>
-
-          <div class="pt-2 flex gap-2.5">
-            <button onclick="testTelegram()" id="btn-tg-test" class="flex-1 bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl py-2.5 font-bold transition text-xs shadow-sm">
-              🧪 فحص وإرسال رسالة تجريبية
-            </button>
-            <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">
-              حفظ
-            </button>
-          </div>
-
-          <div id="tg-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold"></div>
-
-          <div class="text-[11px] bg-[#f0f7ff] border border-[#9fbbe0] rounded-xl px-3 py-2 text-slate-700 leading-relaxed">
-            <b>السحب من الموبايل:</b> بعد الحفظ أرسل للبوت <code dir="ltr">/start</code>، ثم شارك أي رابط إعلان أو دومين أو كلمة مفتاحية — يُضاف سحب تلقائيًا.
-            الأوامر: <code dir="ltr">/status</code> · <code dir="ltr">/stop</code> · <code dir="ltr">/id</code>.
-          </div>
-        </div>
-      </div>
-
-      <!-- Auto Scheduler Settings Card -->
-      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)]">
-        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
-          <span class="text-2xl">⏰</span>
-          <div>
-            <h3 class="font-bold text-[#102a56] text-sm">إعدادات الجدولة التلقائية الذكية</h3>
-            <p class="text-xs text-slate-500">إدارة الفحص الدوري لجميع الأهداف والمنافسين المسجلين في النظام.</p>
-          </div>
-        </div>
-
-        <div class="space-y-4 text-xs">
-          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
-            <input type="checkbox" id="cfg-sched-enabled" class="rounded text-blue-600">
-            <div>
-              <div class="font-bold text-[#102a56]">تشغيل السحب المجدول الدوري</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">يفحص كل هدف في موعده المحدد بالساعات بنمط السحب التزايدي السريع.</div>
-            </div>
-          </label>
-
-          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
-            <input type="checkbox" id="cfg-arabic-only" class="rounded text-blue-600">
-            <div>
-              <div class="font-bold text-[#102a56]">الإعلانات العربية فقط</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">كل إعلان نصّه بحروف لاتينية (فرنسي، إنجليزي، دارجة بالحروف اللاتينية) يُحذف نهائياً ولا يُحفظ مستقبلاً. الإعلانات المختلطة التي فيها عربية تبقى.</div>
-            </div>
-          </label>
-
-          <div class="text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5] space-y-2">
-            <label class="flex items-center gap-3 cursor-pointer">
-              <input type="checkbox" id="cfg-cta-filter" class="rounded text-blue-600">
+          <div data-save="general" class="scard space-y-3">
+            <label class="srow">
+              <input type="checkbox" id="cfg-arabic-only" class="rounded text-blue-600">
               <div>
-                <div class="font-bold text-[#102a56]">عرض الإعلانات حسب زر الدعوة (CTA) فقط</div>
-                <div class="text-[11px] text-slate-500 mt-0.5">تُخفى من البنك والعدّادات والتصدير كل الإعلانات التي زرّها ليس في القائمة (الإعلانات تبقى محفوظة، ويمكن إظهارها بإطفاء الخيار).</div>
+                <div class="srow-t">الإعلانات العربية فقط</div>
+                <div class="srow-d">كل إعلان نصّه بحروف لاتينية (فرنسي، إنجليزي، دارجة بالحروف اللاتينية) يُحذف نهائياً ولا يُحفظ مستقبلاً. الإعلانات المختلطة التي فيها عربية تبقى.</div>
               </div>
             </label>
-            <input id="cfg-cta-allowlist" dir="ltr" placeholder="SHOP_NOW, ORDER_NOW, ..." class="w-full bg-white border border-[#b7c9e2] rounded-lg px-3 py-2 font-mono text-[11px] text-slate-800">
-          </div>
 
-          <div class="flex items-center gap-3 text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
-            <input type="checkbox" id="cfg-month-rescan" class="rounded text-blue-600 cursor-pointer">
-            <div class="flex-1">
-              <div class="font-bold text-[#102a56]">إعادة فحص يومية لإعلانات اليوم والأمس (كل السوق)</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">مرة يومياً بعد الساعة المحددة (توقيت الجزائر) يسحب الإعلانات الجديدة لليوم والأمس بالعربية — المتاجر فقط.
-                <span id="month-rescan-last" class="font-mono"></span></div>
+            <div class="srow block space-y-2">
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="cfg-cta-filter" class="rounded text-blue-600 mt-0.5">
+                <div>
+                  <div class="srow-t">الإعلانات حسب زر الدعوة (CTA) فقط</div>
+                  <div class="srow-d">تُخفى من البنك والعدّادات والتصدير كل الإعلانات التي زرّها ليس في القائمة (تبقى محفوظة، وتظهر بإطفاء الخيار).</div>
+                </div>
+              </label>
+              <input id="cfg-cta-allowlist" dir="ltr" placeholder="SHOP_NOW, ORDER_NOW, ..." class="sinput font-mono text-[11px]">
             </div>
-            <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
-              <input id="cfg-month-rescan-hour" type="number" min="0" max="23" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
+
+            <label class="srow">
+              <input type="checkbox" id="cfg-entity-stats" class="rounded text-blue-600">
+              <div>
+                <div class="srow-t">عدّ إعلانات الصفحات والمتاجر</div>
+                <div class="srow-d">يعرض في كل بطاقة كم إعلاناً نشطاً للصفحة وللمتجر على فيسبوك (طلب واحد لكل صفحة/متجر، يُحدَّث يومياً، ويعمل فقط عندما لا يوجد سحب).</div>
+              </div>
+            </label>
           </div>
 
-          <div class="text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5] space-y-2">
-            <div class="flex items-center gap-3">
-              <input type="checkbox" id="cfg-status-check" class="rounded text-blue-600 cursor-pointer">
-              <div class="flex-1">
-                <div class="font-bold text-[#102a56]">فحص يومي: هل الإعلان ما زال شغالاً؟</div>
-                <div class="text-[11px] text-slate-500 mt-0.5">مرة يومياً بعد الساعة المحددة يسأل Meta عن كل الصفحات التي لها إعلانات نشطة (50 صفحة في الطلب) ويعلّم المتوقفة. يتوقف تلقائياً إن لاحظ حجباً ولا يعلّم شيئاً حينها.</div>
+          <div data-save="general" class="scard space-y-2">
+            <div class="scard-t">🚫 استثناء الشركات الكبرى (حذف نهائي)</div>
+            <p class="text-xs text-slate-500">إعلانات هذه الدومينات تُحذف نهائيًا من القاعدة عند الحفظ ولا تُخزَّن مستقبلًا. افصل بفاصلة أو سطر جديد.</p>
+            <textarea id="cfg-blocked" rows="3" dir="ltr" placeholder="alibaba.com, temu.com, ..." class="sinput font-mono"></textarea>
+            <p class="text-[10px] text-slate-400 leading-relaxed">محذوف دائمًا: alibaba.com, temu.com, aliexpress.com, amazon.*, shein.com, ebay.*, wish.com, banggood.com, dhgate.com, made-in-china.com, joom.com</p>
+          </div>
+        </div>
+
+        <!-- ═══ 2. AUTOMATION ═══ -->
+        <div data-spanel="auto" class="hidden space-y-5">
+          <div class="spanel-head">
+            <h2>⏰ المهام التلقائية</h2>
+            <p>ما يعمله المحرك وحده: فحص المنافسين، سحب السوق اليومي، وفحص الإعلانات المتوقفة.</p>
+          </div>
+
+          <div data-save="general" class="scard space-y-3">
+            <label class="srow">
+              <input type="checkbox" id="cfg-sched-enabled" class="rounded text-blue-600">
+              <div>
+                <div class="srow-t">فحص المنافسين والأهداف دورياً</div>
+                <div class="srow-d">يفحص كل هدف في موعده بالسحب التزايدي السريع (يتوقف بعد 8 إعلانات مكررة).</div>
+              </div>
+            </label>
+            <div class="flex items-center gap-2 text-xs flex-wrap">
+              <span class="font-bold text-slate-700">التكرار الافتراضي:</span>
+              <input id="cfg-sched-interval" type="number" min="1" value="12" class="sinput w-20 text-center font-black">
+              <span class="text-slate-600">ساعة</span>
+              <span class="ms-auto text-[11px] text-slate-500">آخر فحص: <b id="last-sched-time" class="text-slate-900">-</b></span>
+            </div>
+            <button type="button" onclick="runScheduleNow()" class="sbtn">⚡ تشغيل دورة الفحص الآن</button>
+          </div>
+
+          <div data-save="general" class="scard">
+            <div class="flex items-center gap-3 flex-wrap">
+              <input type="checkbox" id="cfg-month-rescan" class="rounded text-blue-600 cursor-pointer">
+              <div class="flex-1 min-w-[14rem]">
+                <div class="srow-t">سحب السوق اليومي (إعلانات اليوم والأمس)</div>
+                <div class="srow-d">مرة يومياً بعد الساعة المحددة (توقيت الجزائر) — بالعربية، المتاجر فقط. <span id="month-rescan-last" class="font-mono"></span></div>
               </div>
               <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
-                <input id="cfg-status-check-hour" type="number" min="0" max="23" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
-              <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">كل (يوم)
-                <input id="cfg-status-check-interval" type="number" min="1" max="30" class="w-14 bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 text-center font-black"></label>
+                <input id="cfg-month-rescan-hour" type="number" min="0" max="23" class="sinput w-14 py-1 text-center font-black"></label>
             </div>
-            <div class="grid gap-2 sm:grid-cols-2">
-              <label class="text-[11px] font-bold text-slate-600">بروكسي الفحص (فارغ = نفس بروكسي السحب)
-                <input id="cfg-status-check-proxy" type="text" dir="ltr" autocomplete="off" class="mt-1 w-full bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 font-mono text-xs"></label>
-              <label class="text-[11px] font-bold text-slate-600">رابط تدوير الفحص (فارغ مع بروكسي الفحص = بلا تدوير)
-                <input id="cfg-status-check-rotate-url" type="text" dir="ltr" autocomplete="off" class="mt-1 w-full bg-white border border-[#b7c9e2] rounded-lg px-2 py-1 font-mono text-xs"></label>
+          </div>
+
+          <div data-save="general" class="scard space-y-2">
+            <div class="flex items-center gap-3 flex-wrap">
+              <input type="checkbox" id="cfg-status-check" class="rounded text-blue-600 cursor-pointer">
+              <div class="flex-1 min-w-[14rem]">
+                <div class="srow-t">فحص يومي: هل الإعلان ما زال شغالاً؟</div>
+                <div class="srow-d">يسأل Meta عن كل الصفحات التي لها إعلانات نشطة (50 صفحة في الطلب) ويعلّم المتوقفة. يتوقف تلقائياً إن لاحظ حجباً. بروكسي هذا الفحص في «الاتصال والبروكسي».</div>
+              </div>
+              <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">الساعة
+                <input id="cfg-status-check-hour" type="number" min="0" max="23" class="sinput w-14 py-1 text-center font-black"></label>
+              <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1">كل (يوم)
+                <input id="cfg-status-check-interval" type="number" min="1" max="30" class="sinput w-14 py-1 text-center font-black"></label>
             </div>
             <div class="flex items-center justify-between gap-2">
               <span id="status-check-summary" class="text-[11px] text-slate-500"></span>
-              <button type="button" onclick="startStatusCheck(this)" class="shrink-0 px-3 py-1.5 rounded-lg bg-white border border-[#9fbbe0] text-[#174ea6] font-bold hover:bg-[#e8f1ff]">🔎 افحص الآن</button>
+              <button type="button" onclick="startStatusCheck(this)" class="sbtn shrink-0">🔎 افحص الآن</button>
             </div>
           </div>
+        </div>
 
-          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
-            <input type="checkbox" id="cfg-extension-registration-open" class="rounded text-blue-600">
+        <!-- ═══ 3. PROXY & CONNECTION ═══ -->
+        <div data-spanel="proxy" class="hidden space-y-5">
+          <div class="spanel-head">
+            <h2>🌐 الاتصال والبروكسي</h2>
+            <p>كل ما يخص طريقة وصول السيرفر إلى مكتبة إعلانات Meta.</p>
+          </div>
+
+          <div data-save="general" class="scard space-y-3">
+            <div class="scard-t">بروكسي السحب</div>
             <div>
-              <div class="font-bold text-[#102a56]">فتح التسجيل من إضافة كروم</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">السماح للأصدقاء بإنشاء حساب من نافذة الإضافة مباشرة. مستقل تماماً عن تسجيل المنصة.</div>
+              <input id="cfg-proxy" type="text" dir="ltr" placeholder="host:port:user:pass" class="sinput font-mono">
+              <span class="text-[10px] text-slate-400 mt-1 block">عدة بروكسيات مفصولة بفاصلة تُدوَّر تلقائياً. فارغ = متغيّر البيئة META_ADS_PROXY إن وُجد. القيمة هنا تتقدّم عليه.</span>
+              <span id="cfg-proxy-env" class="hidden text-[10px] text-amber-600 mt-1 block"></span>
             </div>
-          </label>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button type="button" onclick="testProxy()" id="btn-proxy-test" class="sbtn">🧪 فحص البروكسي</button>
+              <button type="button" onclick="diagnoseProxy()" id="btn-diagnose" class="sbtn !border-amber-300 !text-amber-800 hover:!bg-amber-50">🩺 تشخيص السحب</button>
+              <button type="button" onclick="diagnoseProxy(true)" id="btn-diagnose-direct" class="sbtn !border-slate-300 !text-slate-700 hover:!bg-slate-50">🚫 تشخيص بدون بروكسي</button>
+            </div>
+            <div id="proxy-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
+            <div id="diag-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
+          </div>
 
-          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
-            <input type="checkbox" id="cfg-registration-open" class="rounded text-blue-600">
+          <div data-save="lanes" data-admin-only class="scard space-y-3">
             <div>
-              <div class="font-bold text-[#102a56]">السماح بالتسجيل الذاتي (حساب جديد)</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">معطّل افتراضياً للأمان. أثناء الإغلاق يُنشئ المدير الحسابات من «إدارة المستخدمين».</div>
+              <div class="scard-t">🚀 خطوط السحب المتوازي (سحب السوق كاملاً)</div>
+              <p class="text-xs text-slate-500 mt-1">كل خط يأخذ اليوم التالي غير المسحوب، فتُسحب أيام مختلفة في نفس الوقت. إذا حُظر خط ودوّر الـ IP، تكمل الخطوط الأخرى.</p>
             </div>
-          </label>
+            <div id="lanes-list" class="space-y-2 text-xs"></div>
+            <div class="flex gap-2 flex-wrap">
+              <button type="button" onclick="lanesAdd('scrape')" class="sbtn">➕ خط السحب الحالي</button>
+              <button type="button" onclick="lanesAdd('status')" class="sbtn">➕ خط فحص الحالة (التابلت)</button>
+              <button type="button" onclick="lanesAdd('custom')" class="sbtn">➕ بروكسي آخر</button>
+            </div>
+            <div id="lanes-active" class="p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700"></div>
+          </div>
 
-          <label class="flex items-center gap-3 cursor-pointer text-slate-800 bg-[#f8fbff] p-3.5 rounded-xl border border-[#cfe0f5]">
-            <input type="checkbox" id="cfg-entity-stats" class="rounded text-blue-600">
+          <div data-save="general" class="scard space-y-2">
+            <div class="scard-t">بروكسي فحص الحالة اليومي</div>
+            <div class="grid gap-3 sm:grid-cols-2 text-[11px] font-bold text-slate-600">
+              <label>البروكسي (فارغ = نفس بروكسي السحب)
+                <input id="cfg-status-check-proxy" type="text" dir="ltr" autocomplete="off" class="sinput mt-1 font-mono"></label>
+              <label>رابط تدوير الـ IP (فارغ = بلا تدوير)
+                <input id="cfg-status-check-rotate-url" type="text" dir="ltr" autocomplete="off" class="sinput mt-1 font-mono"></label>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ 4. AI ═══ -->
+        <div data-spanel="ai" class="hidden space-y-5">
+          <div class="spanel-head">
+            <h2>🤖 الذكاء الاصطناعي</h2>
+            <p>اتصال واحد (المزوّد والمفتاح) يستعمله تحليل المنافسين وتدقيق المنتجات وتصنيف النيشات.</p>
+          </div>
+
+          <div data-save="ai" class="scard space-y-4">
+            <div class="scard-t">الاتصال</div>
+            <div class="grid md:grid-cols-2 gap-4 text-xs">
+              <label class="block"><span class="slabel">المزوّد</span>
+                <select id="ai-provider" onchange="aiProviderChanged()" class="sinput font-bold">
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="opencode">OpenCode Zen</option>
+                  <option value="custom">Custom (OpenAI-compatible)</option>
+                </select></label>
+              <label class="block"><span class="slabel">مفتاح API</span>
+                <input id="ai-api-key" type="password" dir="ltr" autocomplete="new-password" placeholder="sk-or-..." class="sinput font-mono">
+                <span id="ai-key-status" class="text-[10px] text-slate-400 mt-1 block"></span></label>
+              <div class="md:col-span-2">
+                <span class="slabel">الموديل</span>
+                <div class="flex gap-2">
+                  <input id="ai-model" type="text" dir="ltr" list="ai-model-list" placeholder="anthropic/claude-sonnet-5.5" class="sinput flex-1 font-mono">
+                  <button type="button" onclick="aiLoadModels(this)" class="sbtn shrink-0">📥 جلب القائمة</button>
+                </div>
+                <datalist id="ai-model-list"></datalist>
+                <span id="ai-model-info" class="text-[10px] text-slate-400 mt-1 block"></span>
+              </div>
+            </div>
+            <div class="flex gap-2 flex-wrap">
+              <button type="button" onclick="aiTest(this)" class="sbtn">🧪 اختبار الاتصال</button>
+              <button type="button" onclick="aiClearKey()" class="sbtn ms-auto !border-rose-200 !text-rose-700 hover:!bg-rose-50">حذف المفتاح</button>
+            </div>
+            <div id="ai-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold" dir="auto"></div>
+
+            <div class="border-t border-slate-100 pt-4 space-y-3">
+              <div class="scard-t">تحليل المنافسين وتدقيق المنتجات</div>
+              <div class="grid sm:grid-cols-2 gap-3 text-xs">
+                <label class="block"><span class="slabel">حد يومي لكل مستخدم (0 = بلا حد)</span>
+                  <input id="ai-daily-limit" type="number" min="0" class="sinput"></label>
+                <label class="block"><span class="slabel">أقصى منتجات في التدقيق الواحد</span>
+                  <input id="ai-audit-max" type="number" min="1" max="25" class="sinput"></label>
+                <label class="block sm:col-span-2"><span class="slabel">بحث الويب في تدقيق المنتجات (OpenRouter فقط)</span>
+                  <select id="ai-web-search" class="sinput font-bold">
+                    <option value="1">مفعّل (~0.02$ إضافية لكل منتج)</option>
+                    <option value="0">معطّل (معرفة الموديل فقط)</option>
+                  </select></label>
+              </div>
+            </div>
+
+            <details class="sadv">
+              <summary>⚙️ خيارات متقدمة</summary>
+              <div class="grid sm:grid-cols-2 gap-3 text-xs pt-3">
+                <label class="block sm:col-span-2"><span class="slabel">Base URL (فارغ = رابط المزوّد الافتراضي)</span>
+                  <input id="ai-base-url" type="text" dir="ltr" placeholder="https://openrouter.ai/api/v1" class="sinput font-mono"></label>
+                <label class="block"><span class="slabel">أقصى توكنات للرد</span>
+                  <input id="ai-max-out" type="number" min="500" max="32000" step="500" class="sinput"></label>
+                <label class="block"><span class="slabel">أقصى نصوص فريدة تُرسل</span>
+                  <input id="ai-max-texts" type="number" min="10" max="600" class="sinput"></label>
+                <label class="block"><span class="slabel">Temperature</span>
+                  <input id="ai-temperature" type="number" min="0" max="1.5" step="0.1" class="sinput"></label>
+              </div>
+            </details>
+          </div>
+
+          <div data-save="nai" data-admin-only class="scard space-y-3">
             <div>
-              <div class="font-bold text-[#102a56]">عدّ إعلانات الصفحات والمتاجر</div>
-              <div class="text-[11px] text-slate-500 mt-0.5">يعرض في كل بطاقة كم إعلاناً نشطاً للصفحة وللمتجر على فيسبوك (طلب واحد لكل صفحة/متجر، يُحدَّث يومياً، ويعمل فقط عندما لا يوجد سحب).</div>
+              <div class="scard-t">🧩 تصنيف النيشات</div>
+              <p class="text-xs text-slate-500 mt-1 leading-relaxed">يصنّف كل منتج جديد يُسحب مرة واحدة (إعلاناته اللاحقة تأخذ نفس النيش مجاناً). يختار فقط من قائمة النيشات، ويحل محل تصنيف الكلمات المفتاحية.</p>
             </div>
-          </label>
+            <label class="srow">
+              <input id="nai-enabled" type="checkbox" class="rounded text-blue-600">
+              <div class="srow-t">تفعيل التصنيف التلقائي للسحوبات الجديدة</div>
+            </label>
+            <div class="grid md:grid-cols-2 gap-3 text-xs">
+              <label class="block"><span class="slabel">موديل التصنيف</span>
+                <input id="nai-model" type="text" dir="ltr" list="ai-model-list" placeholder="فارغ = نفس موديل التحليل" class="sinput font-mono">
+                <span class="text-[10px] text-slate-400 mt-1 block">اكتب موديلاً أرخص إن أردت.</span></label>
+              <label class="block"><span class="slabel">حد يومي (منتجات)</span>
+                <input id="nai-daily" type="number" min="0" class="sinput">
+                <span class="text-[10px] text-slate-400 mt-1 block">يحمي رصيدك في OpenRouter.</span></label>
+            </div>
+            <div id="nai-status" class="p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700 leading-relaxed"></div>
+            <button type="button" id="nai-backfill-btn" onclick="naiBackfill(this)" class="sbtn">صنّف كل المنتجات الموجودة أيضاً</button>
+          </div>
+        </div>
 
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">التكرار الافتراضي (ساعات):</label>
-            <div class="flex items-center gap-2">
-              <input id="cfg-sched-interval" type="number" min="1" value="12" class="w-20 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 text-center font-black">
-              <span class="text-slate-600 font-medium">ساعة (افتراضياً 12 ساعة)</span>
+        <!-- ═══ 5. TELEGRAM ═══ -->
+        <div data-spanel="alerts" class="hidden space-y-5">
+          <div class="spanel-head">
+            <h2>🔔 التنبيهات (تلجرام)</h2>
+            <p>تنبيه فوري عندما يطلق منافس إعلاناً جديداً أو يستمر منتج كرابح، والسحب من الموبايل عبر البوت.</p>
+          </div>
+
+          <div data-save="general" class="scard space-y-3.5 text-xs">
+            <label class="block"><span class="slabel">توكن البوت (Bot Token)</span>
+              <input id="cfg-tg-token" type="text" placeholder="123456789:ABCdefGhIJKlmNoPQRstu..." class="sinput font-mono">
+              <span class="text-[10px] text-slate-400 mt-1 block">تحصل عليه من BotFather عند إنشاء البوت.</span></label>
+            <label class="block"><span class="slabel">معرّف المحادثة أو القناة (Chat ID)</span>
+              <input id="cfg-tg-chat" type="text" placeholder="987654321 أو -1001234567890" class="sinput font-mono">
+              <span class="text-[10px] text-slate-400 mt-1 block">آيدي حسابك أو آيدي القناة/المجموعة التي ينشر فيها البوت.</span></label>
+            <label class="srow">
+              <input type="checkbox" id="cfg-notify-enabled" class="rounded text-blue-600">
+              <div class="srow-t">تفعيل إرسال التنبيهات تلقائياً</div>
+            </label>
+            <button type="button" onclick="testTelegram()" id="btn-tg-test" class="sbtn">🧪 فحص وإرسال رسالة تجريبية</button>
+            <div id="tg-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold"></div>
+            <div class="text-[11px] bg-[#f0f7ff] border border-[#9fbbe0] rounded-xl px-3 py-2 text-slate-700 leading-relaxed">
+              <b>السحب من الموبايل:</b> بعد الحفظ أرسل للبوت <code dir="ltr">/start</code>، ثم شارك أي رابط إعلان أو دومين أو كلمة مفتاحية — يُضاف سحب تلقائيًا.
+              الأوامر: <code dir="ltr">/status</code> · <code dir="ltr">/stop</code> · <code dir="ltr">/id</code>.
             </div>
           </div>
-
-          <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl p-3.5 space-y-1.5 text-[11px] text-slate-600">
-            <div>📅 آخر عملية فحص مجدولة: <b id="last-sched-time" class="text-slate-900">-</b></div>
-            <div>⚡ نمط السحب: <span class="text-emerald-700 font-bold">تزايدي ذكي (يتوقف تلقائياً بعد 8 إعلانات مكررة)</span></div>
-          </div>
-
-          <div class="pt-2 flex gap-2.5">
-            <button onclick="runScheduleNow()" class="flex-1 bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl py-2.5 font-bold transition text-xs shadow-sm">
-              ⚡ تشغيل دورة الفحص الآن
-            </button>
-            <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">
-              حفظ
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Meta Proxy Card -->
-      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
-        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
-          <span class="text-2xl">🌐</span>
-          <div>
-            <h3 class="font-bold text-[#102a56] text-sm">بروكسي السحب (Meta Proxy)</h3>
-            <p class="text-xs text-slate-500">تشغيل السحب عبر بروكسي لتجنّب حجب Meta. القيمة المحفوظة هنا تتقدّم على متغيّر البيئة.</p>
-          </div>
         </div>
 
-        <div class="space-y-3 text-xs">
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">البروكسي:</label>
-            <input id="cfg-proxy" type="text" dir="ltr" placeholder="host:port:user:pass" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-            <span class="text-[10px] text-slate-400 mt-1 block">يمكن وضع عدة بروكسيات مفصولة بفاصلة لتدويرها تلقائياً. اتركه فارغاً لاستخدام متغيّر البيئة META_ADS_PROXY إن وُجد.</span>
-            <span id="cfg-proxy-env" class="hidden text-[10px] text-amber-600 mt-1 block"></span>
+        <!-- ═══ 6. ACCOUNTS ═══ -->
+        <div data-spanel="accounts" class="hidden space-y-5">
+          <div class="spanel-head">
+            <h2>👥 الحسابات والتسجيل</h2>
+            <p>من يمكنه إنشاء حساب. لإضافة مستخدم أو تعديله استعمل «إدارة المستخدمين».</p>
           </div>
-
-          <div class="flex items-center gap-2.5 flex-wrap">
-            <button onclick="testProxy()" id="btn-proxy-test" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🧪 فحص البروكسي</button>
-            <button onclick="diagnoseProxy()" id="btn-diagnose" class="bg-white hover:bg-amber-50 border border-amber-300 text-amber-800 rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🩺 تشخيص السحب</button>
-            <button onclick="diagnoseProxy(true)" id="btn-diagnose-direct" class="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 rounded-xl px-4 py-2.5 font-bold transition text-xs shadow-sm">🚫 تشخيص بدون بروكسي</button>
-            <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ</button>
-          </div>
-
-          <div id="proxy-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
-          <div id="diag-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold whitespace-pre-line"></div>
-        </div>
-      </div>
-
-      <!-- Parallel scrape lanes -->
-      <div data-admin-only class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-3 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
-        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
-          <span class="text-2xl">🚀</span>
-          <div>
-            <h3 class="font-bold text-[#102a56] text-sm">خطوط السحب المتوازي (سحب السوق كاملاً)</h3>
-            <p class="text-xs text-slate-500">كل خط بروكسي يسحب أياماً مختلفة في نفس الوقت: كل خط يأخذ اليوم التالي غير المسحوب. إذا حُظر خط ودوّر الـ IP، تكمل الخطوط الأخرى. لكل خط سرعته وتدويره الخاص.</p>
+          <div data-save="general" class="scard space-y-3">
+            <label class="srow">
+              <input type="checkbox" id="cfg-registration-open" class="rounded text-blue-600">
+              <div>
+                <div class="srow-t">السماح بالتسجيل الذاتي في المنصة</div>
+                <div class="srow-d">معطّل افتراضياً للأمان. أثناء الإغلاق يُنشئ المدير الحسابات من «إدارة المستخدمين».</div>
+              </div>
+            </label>
+            <label class="srow">
+              <input type="checkbox" id="cfg-extension-registration-open" class="rounded text-blue-600">
+              <div>
+                <div class="srow-t">فتح التسجيل من إضافة كروم</div>
+                <div class="srow-d">السماح للأصدقاء بإنشاء حساب من نافذة الإضافة مباشرة. مستقل تماماً عن تسجيل المنصة.</div>
+              </div>
+            </label>
           </div>
         </div>
-        <div id="lanes-list" class="space-y-2 text-xs"></div>
-        <div class="flex gap-2 flex-wrap">
-          <button onclick="lanesAdd('scrape')" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 py-2 font-bold text-xs">➕ خط السحب الحالي</button>
-          <button onclick="lanesAdd('status')" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 py-2 font-bold text-xs">➕ خط فحص الحالة (التابلت)</button>
-          <button onclick="lanesAdd('custom')" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 py-2 font-bold text-xs">➕ بروكسي آخر</button>
-          <button onclick="lanesSave()" class="ms-auto bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2 font-bold text-white text-xs">حفظ الخطوط</button>
-        </div>
-        <div id="lanes-active" class="p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700"></div>
-      </div>
 
-      <!-- Big-marketplace blocklist -->
-      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-3 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
-        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
-          <span class="text-2xl">🚫</span>
-          <div>
-            <h3 class="font-bold text-[#102a56] text-sm">استثناء الشركات الكبرى (حذف نهائي)</h3>
-            <p class="text-xs text-slate-500">إعلانات هذه الدومينات تُحذف نهائيًا من قاعدة البيانات ولا تُخزَّن مستقبلًا.</p>
+        <!-- ═══ 7. BACKUP ═══ -->
+        <div data-spanel="backup" class="hidden space-y-5">
+          <div class="spanel-head">
+            <h2>💾 النسخ الاحتياطي والاستعادة</h2>
+            <p>ملف ZIP فيه كل جدول بصيغة JSON وملف ads.csv يفتح في Excel: الإعلانات، المنافسون، المنتجات الرابحة، التصنيفات، النيشات، التقارير والإعدادات. <b>لا يحتوي</b> حسابات المستخدمين ولا مفاتيح API.</p>
           </div>
-        </div>
-        <textarea id="cfg-blocked" rows="3" dir="ltr" placeholder="alibaba.com, temu.com, ..." class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"></textarea>
-        <p class="text-[10px] text-slate-400 leading-relaxed">افصل بين الدومينات بفاصلة أو سطر جديد. الافتراضي محذوف دائمًا: alibaba.com, temu.com, aliexpress.com, amazon.*, shein.com, ebay.*, wish.com, banggood.com, dhgate.com, made-in-china.com, joom.com</p>
-        <button onclick="saveAllSettings()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ وحذف</button>
-      </div>
-
-      <!-- AI competitor analysis -->
-      <div class="bg-white border border-[#cfe0f5] rounded-2xl p-6 space-y-4 shadow-[0_8px_20px_rgba(23,43,77,0.04)] md:col-span-2">
-        <div class="flex items-center gap-3 border-b border-slate-100 pb-3.5">
-          <span class="text-2xl">🤖</span>
-          <div>
-            <h3 class="font-bold text-[#102a56] text-sm">الذكاء الاصطناعي — تحليل المنافسين</h3>
-            <p class="text-xs text-slate-500">مزوّد متوافق مع OpenAI (OpenRouter أو OpenCode Zen أو رابط مخصص). المفتاح يُحفظ مشفّراً ولا يُعرض أبداً.</p>
+          <div class="scard space-y-3">
+            <a href="/api/backup/download" class="inline-block bg-[#174ea6] hover:bg-[#123f87] text-white rounded-xl px-6 py-2.5 font-bold text-xs">⬇️ تنزيل نسخة احتياطية كاملة</a>
           </div>
-        </div>
-        <div class="grid md:grid-cols-2 gap-4 text-xs">
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">المزوّد (Provider):</label>
-            <select id="ai-provider" onchange="aiProviderChanged()" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 font-bold text-xs">
-              <option value="openrouter">OpenRouter</option>
-              <option value="opencode">OpenCode Zen</option>
-              <option value="custom">Custom (OpenAI-compatible)</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">Base URL:</label>
-            <input id="ai-base-url" type="text" dir="ltr" placeholder="https://openrouter.ai/api/v1" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs">
-            <span class="text-[10px] text-slate-400 mt-1 block">اتركه فارغاً لاستخدام رابط المزوّد الافتراضي.</span>
-          </div>
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">مفتاح API:</label>
-            <input id="ai-api-key" type="password" dir="ltr" autocomplete="new-password" placeholder="sk-or-..." class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs">
-            <span id="ai-key-status" class="text-[10px] text-slate-400 mt-1 block"></span>
-          </div>
-          <div>
-            <label class="block text-slate-700 font-bold mb-1">الموديل (Model):</label>
-            <div class="flex gap-2">
-              <input id="ai-model" type="text" dir="ltr" list="ai-model-list" placeholder="anthropic/claude-sonnet-5.5" class="flex-1 bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 font-mono text-xs">
-              <button onclick="aiLoadModels(this)" class="shrink-0 bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-3 font-bold text-xs">📥 جلب القائمة</button>
+          <div class="scard space-y-2">
+            <div class="scard-t">استعادة من نسخة احتياطية</div>
+            <div class="text-[11px] text-rose-700 font-semibold leading-relaxed">⚠️ الاستعادة تستبدل البيانات الحالية بمحتوى النسخة (كل جدول موجود في النسخة يُفرغ ويُملأ منها). نزّل نسخة من الوضع الحالي أولاً. الحسابات والمفاتيح الحالية لا تتغير.</div>
+            <div class="flex gap-2 items-center flex-wrap">
+              <input id="restore-file" type="file" accept=".zip" class="text-xs">
+              <button type="button" onclick="restoreUpload(this)" class="sbtn">فحص الملف</button>
             </div>
-            <datalist id="ai-model-list"></datalist>
-            <span id="ai-model-info" class="text-[10px] text-slate-400 mt-1 block"></span>
-          </div>
-          <div class="grid grid-cols-2 gap-3 md:col-span-2">
-            <label class="block"><span class="block text-slate-700 font-bold mb-1">أقصى توكنات للرد</span>
-              <input id="ai-max-out" type="number" min="500" max="32000" step="500" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
-            <label class="block"><span class="block text-slate-700 font-bold mb-1">أقصى نصوص فريدة تُرسل</span>
-              <input id="ai-max-texts" type="number" min="10" max="600" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
-            <label class="block"><span class="block text-slate-700 font-bold mb-1">Temperature</span>
-              <input id="ai-temperature" type="number" min="0" max="1.5" step="0.1" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
-            <label class="block"><span class="block text-slate-700 font-bold mb-1">حد يومي لكل مستخدم (0 = بلا حد)</span>
-              <input id="ai-daily-limit" type="number" min="0" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
-            <label class="block"><span class="block text-slate-700 font-bold mb-1">بحث الويب في تدقيق المنتجات (OpenRouter فقط)</span>
-              <select id="ai-web-search" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs font-bold">
-                <option value="1">مفعّل (~0.02$ إضافية لكل منتج)</option>
-                <option value="0">معطّل (معرفة الموديل فقط)</option>
-              </select></label>
-            <label class="block"><span class="block text-slate-700 font-bold mb-1">أقصى منتجات في التدقيق الواحد</span>
-              <input id="ai-audit-max" type="number" min="1" max="25" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs"></label>
+            <div id="restore-box" class="hidden p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700 space-y-2"></div>
           </div>
         </div>
-        <div class="flex gap-2.5 flex-wrap">
-          <button onclick="aiTest(this)" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-5 py-2.5 font-bold transition text-xs shadow-sm">🧪 اختبار الاتصال</button>
-          <button onclick="aiSave()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white transition text-xs shadow-sm">حفظ إعدادات الذكاء الاصطناعي</button>
-          <button onclick="aiClearKey()" class="ms-auto bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-2.5 font-bold transition text-xs">حذف المفتاح</button>
-        </div>
-        <div id="ai-test-result" class="hidden p-3 rounded-xl text-xs leading-relaxed font-bold" dir="auto"></div>
-      </div>
 
-      <!-- AI niche classification -->
-      <div data-admin-only class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)] space-y-3">
-        <div>
-          <h3 class="font-extrabold text-[#102a56]">🧩 تصنيف النيشات بالذكاء الاصطناعي</h3>
-          <p class="text-xs text-slate-500 font-semibold mt-1 leading-relaxed">يصنّف كل منتج جديد يُسحب (مرة واحدة لكل منتج، وإعلاناته اللاحقة تأخذ نفس النيش مجاناً) عبر OpenRouter بمفتاح الإعدادات أعلاه. يختار فقط من قائمة النيشات، ويحل محل تصنيف الكلمات المفتاحية.</p>
-        </div>
-        <label class="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-          <input id="nai-enabled" type="checkbox" class="w-4 h-4 rounded text-blue-600"> تفعيل التصنيف التلقائي للسحوبات الجديدة
-        </label>
-        <div class="grid md:grid-cols-2 gap-3 text-xs">
-          <label class="block"><span class="block text-slate-700 font-bold mb-1">موديل التصنيف</span>
-            <input id="nai-model" type="text" dir="ltr" list="ai-model-list" placeholder="فارغ = نفس موديل التحليل"
-              class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 font-mono text-xs">
-            <span class="text-[10px] text-slate-400 mt-1 block">اتركه فارغاً لاستعمال موديل تحليل المنافس، أو اكتب موديلاً أرخص.</span></label>
-          <label class="block"><span class="block text-slate-700 font-bold mb-1">حد يومي (منتجات)</span>
-            <input id="nai-daily" type="number" min="0" class="w-full bg-[#f8fbff] border border-[#b7c9e2] rounded-xl px-3 py-2 text-xs">
-            <span class="text-[10px] text-slate-400 mt-1 block">يحمي رصيدك في OpenRouter.</span></label>
-        </div>
-        <div id="nai-status" class="p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700 leading-relaxed"></div>
-        <div class="flex gap-2.5 flex-wrap">
-          <button onclick="naiSave()" class="bg-emerald-600 hover:bg-emerald-700 rounded-xl px-6 py-2.5 font-bold text-white text-xs">حفظ</button>
-          <button id="nai-backfill-btn" onclick="naiBackfill(this)" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-4 py-2.5 font-bold text-xs">صنّف كل المنتجات الموجودة أيضاً</button>
-        </div>
       </div>
+    </div>
 
-      <!-- Backup / restore -->
-      <div data-admin-only class="bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)] space-y-3">
-        <div>
-          <h3 class="font-extrabold text-[#102a56]">💾 النسخ الاحتياطي والاستعادة</h3>
-          <p class="text-xs text-slate-500 font-semibold mt-1 leading-relaxed">نسخة كاملة من بيانات المنصة: الإعلانات، المنافسون، المنتجات الرابحة وملاحظاتها، التصنيفات، النيشات، التقارير، الإعدادات والسجلات — ملف ZIP فيه كل جدول بصيغة JSON وملف ads.csv يفتح في Excel. <b>لا تحتوي</b> حسابات المستخدمين ولا مفاتيح API (OpenRouter، تيليغرام…).</p>
-        </div>
-        <a href="/api/backup/download" class="inline-block bg-[#174ea6] hover:bg-[#123f87] text-white rounded-xl px-6 py-2.5 font-bold text-xs">⬇️ تنزيل نسخة احتياطية كاملة</a>
-        <div class="border-t border-slate-100 pt-3 space-y-2">
-          <div class="text-xs font-bold text-slate-700">استعادة من نسخة احتياطية</div>
-          <div class="text-[11px] text-rose-700 font-semibold leading-relaxed">⚠️ الاستعادة تستبدل البيانات الحالية بمحتوى النسخة (كل جدول موجود في النسخة يُفرغ ويُملأ منها). نزّل نسخة من الوضع الحالي أولاً. الحسابات والمفاتيح الحالية لا تتغير.</div>
-          <div class="flex gap-2 items-center flex-wrap">
-            <input id="restore-file" type="file" accept=".zip" class="text-xs">
-            <button onclick="restoreUpload(this)" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-xl px-4 py-2 font-bold text-xs">فحص الملف</button>
-          </div>
-          <div id="restore-box" class="hidden p-3 rounded-xl bg-slate-50 text-xs font-semibold text-slate-700 space-y-2"></div>
-        </div>
+    <!-- One save bar for every section: shows only when something changed -->
+    <div id="settings-savebar" class="hidden fixed bottom-4 inset-x-0 z-40 px-4 pointer-events-none">
+      <div class="pointer-events-auto max-w-2xl mx-auto bg-[#102a56] text-white rounded-2xl shadow-[0_12px_30px_rgba(16,42,86,0.35)] px-5 py-3 flex items-center gap-3">
+        <span class="text-lg">✏️</span>
+        <span id="settings-savebar-text" class="flex-1 text-sm font-bold">لديك تغييرات غير محفوظة</span>
+        <button type="button" onclick="settingsDiscard()" class="text-xs font-bold text-slate-200 hover:text-white px-3 py-2">تراجع</button>
+        <button type="button" id="settings-save-btn" onclick="settingsSave(this)" class="bg-emerald-500 hover:bg-emerald-600 rounded-xl px-6 py-2 font-bold text-sm">حفظ</button>
       </div>
-
     </div>
   </section>
