@@ -483,6 +483,16 @@ function setState(run) {
   document.getElementById('btn-start').disabled = run;
 }
 
+// The tablet check worker runs beside the scrapes: a small badge, not the bar.
+function renderCheckState(c) {
+  const el = document.getElementById('check-state');
+  if (!el) return;
+  el.classList.toggle('hidden', !c);
+  if (!c) return;
+  el.textContent = `📱 ${c.query || 'فحص'} — يعمل في الخلفية عبر التابلت`;
+  el.title = c.last || '';
+}
+
 // Poll engine status periodically (not while the tab is hidden: it resumes,
 // and reconciles a finished scrape, as soon as the tab is shown again).
 setInterval(async () => {
@@ -491,6 +501,7 @@ setInterval(async () => {
     const r = await fetch('/api/status');
     if (!r.ok) return;  // signed out / not allowed: not a scrape error
     const s = await r.json();
+    renderCheckState(s.check);
     if (s.running) {
       setState(true);
       liveScrapeState.active = true;

@@ -36,6 +36,31 @@ SLOW_QUERY_MS = float(os.environ.get("SLOW_QUERY_MS", "300"))
 # running whole-market scan. Bulk runs ("scan all", the schedule) do not.
 PRIORITY_SOURCES = frozenset({"manual", "manual_target", "new_competitor",
                               "manual_global", "manual_global_all"})
+# Queue priority (higher runs first; a running job of a lower level is paused
+# for a higher one when it can resume — see background.PREEMPTIBLE_MODES):
+#   3 a single scan the user asked for     2 scheduled competitor scans, checks
+#   1 the whole-market scan                0 page expansion
+PRIORITY_MANUAL, PRIORITY_SCHEDULED, PRIORITY_MARKET, PRIORITY_EXPAND = 3, 2, 1, 0
+_MODE_PRIORITY = {"month_days": PRIORITY_MARKET, "page_expand": PRIORITY_EXPAND}
+
+
+def job_priority(source: str, mode: str) -> int:
+    if not mode:
+        return PRIORITY_MANUAL if source in PRIORITY_SOURCES else PRIORITY_SCHEDULED
+    return _MODE_PRIORITY.get(mode, PRIORITY_SCHEDULED)
+
+
+def _mode_filter(only_modes=None, skip_modes=None) -> tuple[str, list]:
+    """SQL fragment (with ? / %s placeholders filled by the caller) limiting
+    jobs to some modes or leaving some out. '' = a plain scan."""
+    sql, params = "", []
+    if only_modes:
+        sql += " AND COALESCE(mode, '') IN ({})".format(", ".join(["{p}"] * len(only_modes)))
+        params += list(only_modes)
+    if skip_modes:
+        sql += " AND COALESCE(mode, '') NOT IN ({})".format(", ".join(["{p}"] * len(skip_modes)))
+        params += list(skip_modes)
+    return sql, params
 _CACHE_LOCK = threading.Lock()
 
 
@@ -3097,8 +3122,8 @@ class Database:
         p = self._ph()
         if priority is None:
             # A single scan the user asked for runs before queued background
-            # work and pauses a running whole-market scan.
-            priority = 1 if (source in PRIORITY_SOURCES and not mode) else 0
+            # work and pauses a running market scan / page expansion.
+            priority = job_priority(source, mode)
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -3128,14 +3153,17 @@ class Database:
     def list_jobs(self, limit: int = 50) -> list[dict]:
         return self._query(f"SELECT * FROM jobs ORDER BY id DESC LIMIT {limit}")
 
-    def claim_next_job(self, worker_id: str) -> Optional[dict]:
+    def claim_next_job(self, worker_id: str, only_modes=None, skip_modes=None) -> Optional[dict]:
         """Atomically mark the next pending job as running and return it:
-        priority jobs first (scans the user started by hand), then the oldest."""
+        priority jobs first (scans the user started by hand), then the oldest.
+        ``only_modes`` / ``skip_modes`` split the queue between workers
+        (the tablet worker takes the checks, the scrape worker the rest)."""
         p = self._ph()
         conn = self._connect()
         job = None
         claimed = ("status='running', worker_id={p}, started_at={p}, heartbeat_at={p}, "
                    "pause_requested='', paused_reason=''")
+        mf, mparams = _mode_filter(only_modes, skip_modes)
         try:
             cur = conn.cursor()
             if self.is_postgres:
@@ -3143,9 +3171,9 @@ class Database:
                 cur.execute(
                     f"UPDATE jobs SET {claimed.format(p='%s')} "
                     "WHERE id = (SELECT id FROM jobs WHERE status='pending' "
-                    "AND (retry_at IS NULL OR retry_at <= %s) "
+                    "AND (retry_at IS NULL OR retry_at <= %s)" + mf.format(p="%s") + " "
                     "ORDER BY COALESCE(priority, 0) DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-                    "RETURNING *", (worker_id, now, now, now))
+                    "RETURNING *", (worker_id, now, now, now, *mparams))
                 row = cur.fetchone()
                 if row:
                     cols = [c[0] for c in cur.description]
@@ -3153,8 +3181,8 @@ class Database:
             else:
                 now = _now()
                 cur.execute("SELECT id FROM jobs WHERE status='pending' "
-                            "AND (retry_at IS NULL OR retry_at <= ?) "
-                            "ORDER BY COALESCE(priority, 0) DESC, id LIMIT 1", (now,))
+                            "AND (retry_at IS NULL OR retry_at <= ?)" + mf.format(p="?") + " "
+                            "ORDER BY COALESCE(priority, 0) DESC, id LIMIT 1", (now, *mparams))
                 r = cur.fetchone()
                 if r:
                     jid = r[0]
@@ -3296,11 +3324,15 @@ class Database:
                       f"retry_at=NULL WHERE id={p} AND status='paused'", (job_id,))
         return True
 
-    def has_priority_pending(self) -> bool:
-        """True if a scan the user started by hand is waiting to run now."""
+    def has_priority_pending(self, above: int = PRIORITY_MARKET, skip_modes=None) -> bool:
+        """True if a job of a higher priority than ``above`` waits to run now
+        (``skip_modes``: jobs another worker runs, which never preempt)."""
+        p = self._ph()
+        mf, mparams = _mode_filter(None, skip_modes)
         return bool(self._query_one(
-            f"SELECT id FROM jobs WHERE status='pending' AND COALESCE(priority, 0) > 0 "
-            f"AND (retry_at IS NULL OR retry_at <= {self._ph()}) LIMIT 1", (_now(),)))
+            f"SELECT id FROM jobs WHERE status='pending' AND COALESCE(priority, 0) > {p} "
+            f"AND (retry_at IS NULL OR retry_at <= {p})" + mf.format(p=p) + " LIMIT 1",
+            (int(above), _now(), *mparams)))
 
     def get_job(self, job_id: int) -> Optional[dict]:
         return self._query_one(f"SELECT * FROM jobs WHERE id={self._ph()}", (job_id,))
@@ -3325,12 +3357,13 @@ class Database:
                 ("pending", row["id"]))
         return len(stale)
 
-    def has_pending_jobs(self) -> bool:
+    def has_pending_jobs(self, skip_modes=None) -> bool:
         """True if a job is waiting to run now (not one scheduled for later)."""
         p = self._ph()
+        mf, mparams = _mode_filter(None, skip_modes)
         return bool(self._query_one(
-            f"SELECT id FROM jobs WHERE status='pending' AND (retry_at IS NULL OR retry_at <= {p}) LIMIT 1",
-            (_now(),)))
+            f"SELECT id FROM jobs WHERE status='pending' AND (retry_at IS NULL OR retry_at <= {p})"
+            + mf.format(p=p) + " LIMIT 1", (_now(), *mparams)))
 
     def cancel_pending_jobs(self, source: str) -> int:
         """Cancel queued jobs of a source (incl. ones waiting to resume). A

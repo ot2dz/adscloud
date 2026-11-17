@@ -10,7 +10,7 @@ from db import db
 from pages import resolve_target_url
 from scrape_manager import (
     manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, WINNING_MODE,
-    EXPAND_MODE, _proxy_setting,
+    EXPAND_MODE, _proxy_setting, check_manager, CHECK_MODES, checks_have_own_line, tablet_lane_busy,
 )
 from telegram_bot import follow_watch_loop, telegram_bot_supervisor
 
@@ -160,7 +160,8 @@ def _page_expand_due() -> bool:
     import page_expand
     if not page_expand.config(db.get_settings())["enabled"]:
         return False
-    if manager.state.get("running") or db.has_pending_jobs() or db.has_open_mode_job(EXPAND_MODE):
+    if (manager.state.get("running") or db.has_pending_jobs(skip_modes=CHECK_MODES)
+            or db.has_open_mode_job(EXPAND_MODE)):
         return False
     if page_expand.room_today(db) <= 0:
         return False
@@ -321,12 +322,15 @@ JOB_CONTROL_CHECK_SEC = 3  # how often a running job re-reads its stop / pause f
 INPROC_WORKER_PREFIX = "inproc-"
 
 
-def run_claimed_job(job: dict) -> None:
-    """Run one job claimed from the queue to its end, retry, pause or failure."""
+def run_claimed_job(job: dict, mgr=None) -> None:
+    """Run one job claimed from the queue to its end, retry, pause or failure.
+    ``mgr``: the scrape manager of the worker that claimed it (the main one by
+    default; the tablet check worker passes its own)."""
+    mgr = mgr or manager
     jid = job.get("id")
     if job.get("stop_requested"):
         db.finish_job(jid, status="stopped", result_count=int(job.get("result_count") or 0))
-        manager._emit("log", {"text": f"⏹ المهمة #{jid} أُلغيت قبل البدء."})
+        mgr._emit("log", {"text": f"⏹ المهمة #{jid} أُلغيت قبل البدء."})
         return
     try:
         resume = json.loads(job.get("checkpoint") or "null")
@@ -342,7 +346,7 @@ def run_claimed_job(job: dict) -> None:
     d_min, d_max = job.get("start_date_min") or "", job.get("start_date_max") or ""
     logger.info("job %s: in-process scrape start (attempt %s, resume=%s)", jid, attempts + 1, resume)
     db.update_job_progress(jid, 1, "استئناف من آخر نقطة" if resume else "بدء السحب عبر HTTP")
-    manager._emit("log", {
+    mgr._emit("log", {
         "text": f"▶ بدء المهمة #{jid}: {job.get('query') or job.get('url') or ''} "
                 f"(محاولة {attempts + 1})"})
 
@@ -356,9 +360,9 @@ def run_claimed_job(job: dict) -> None:
         if now - last_write[0] >= CHECKPOINT_EVERY_SEC:
             last_write[0] = now
             db.save_checkpoint(_jid, json.dumps(cp) if cp else None,
-                               result_count=manager.state.get("scraped", 0))  # cumulative
+                               result_count=mgr.state.get("scraped", 0))  # cumulative
 
-    started = manager.start(
+    started = mgr.start(
         query=job.get("query") or "",
         country=job.get("country") or DEFAULT_COUNTRY,
         exact=bool(job.get("exact_phrase")),
@@ -376,10 +380,9 @@ def run_claimed_job(job: dict) -> None:
         mode=job.get("mode") or "",
         languages=[x for x in (job.get("languages") or "").split(",") if x],
         market=job.get("market") or "dz",
-        # Competitor scans (tracking tab, scan-all and the schedule)
-        # carry a target_id: route them through the dedicated status
-        # egress when one is configured.
-        egress="status" if job.get("target_id") else "scrape",
+        # Every scrape goes out through the work line; the tablet line is
+        # kept for the status / winning checks (their own worker).
+        egress="scrape",
         base_reported=int(base_reported) if base_reported is not None else None,
     )
     if not started:
@@ -389,34 +392,37 @@ def run_claimed_job(job: dict) -> None:
 
     last_stop_check = 0.0
     pause = ""  # '' | 'manual' | 'auto': why this run is being parked
-    while manager.state.get("running"):
+    while mgr.state.get("running"):
         # Re-read the job: the stop / pause flags are set by another request.
         if time.monotonic() - last_stop_check >= JOB_CONTROL_CHECK_SEC:
             last_stop_check = time.monotonic()
             fresh = db.get_job(jid)
             if fresh and fresh.get("stop_requested"):
-                manager.stop()
+                mgr.stop()
             elif not pause and fresh and fresh.get("pause_requested"):
                 pause = "manual"
-                manager._emit("log", {"text": f"⏸ إيقاف مؤقت للمهمة #{jid} — يُحفظ موضعها لتُستأنف لاحقاً."})
-                manager.stop()
-            elif not pause and job.get("mode") in (MONTH_MODE, EXPAND_MODE) and db.has_priority_pending():
-                # A scan the user just asked for: let it through, then
-                # carry on with the market from the same point.
+                mgr._emit("log", {"text": f"⏸ إيقاف مؤقت للمهمة #{jid} — يُحفظ موضعها لتُستأنف لاحقاً."})
+                mgr.stop()
+            elif (not pause and job.get("mode") in PREEMPTIBLE_MODES
+                  and db.has_priority_pending(above=db_job_priority(job), skip_modes=CHECK_MODES)):
+                # Something more urgent waits (a scan the user asked for, a
+                # competitor scan, the market before page expansion): let it
+                # through, then carry on from the same point.
                 pause = "auto"
-                manager._emit("log", {"text": f"⏸ إيقاف مؤقت لسحب السوق #{jid} لتنفيذ سحبك أولاً — "
-                                              f"سيُكمل تلقائياً من نفس النقطة بعد انتهائه."})
-                manager.stop()
+                what = "توسيع الصفحات" if job.get("mode") == EXPAND_MODE else "سحب السوق"
+                mgr._emit("log", {"text": f"⏸ إيقاف مؤقت لـ{what} #{jid} لتنفيذ مهمة أهم أولاً — "
+                                          f"سيُكمل تلقائياً من نفس النقطة بعد انتهائها."})
+                mgr.stop()
         time.sleep(1)
 
-    outcome = manager.state.get("outcome") or {"status": "done"}
-    count = manager.state.get("scraped", 0)
+    outcome = mgr.state.get("outcome") or {"status": "done"}
+    count = mgr.state.get("scraped", 0)
     cp = outcome.get("checkpoint")
     cp_json = json.dumps(cp) if cp else None
     status = outcome.get("status")
     scanned_total = base_scanned + int(outcome.get("scanned") or 0)
     completed = outcome.get("completed")  # None = not tracked for this mode
-    reported = manager.state.get("reported")
+    reported = mgr.state.get("reported")
     # Coverage written on every close; a run that did not finish
     # cannot be "completed" whatever the slices said.
     cov = {"scanned_count": scanned_total, "slices_total": outcome.get("slices_total"),
@@ -439,56 +445,84 @@ def run_claimed_job(job: dict) -> None:
 
     if pause and not stop_wins and status in ("stopped", "interrupted"):
         # Parked, not finished: same checkpoint, no retry attempt used.
-        manager.state["error"] = ""
+        mgr.state["error"] = ""
         db.pause_job(jid, pause, cp_json, result_count=count, scanned_count=scanned_total)
-        manager._emit("job", {"job_id": jid, "status": "paused" if pause == "manual" else "pending"})
-        manager._emit("log", {"text": (f"⏸ المهمة #{jid} متوقفة مؤقتاً بعد {count} إعلان — اضغط «استئناف» لتكمل."
+        mgr._emit("job", {"job_id": jid, "status": "paused" if pause == "manual" else "pending"})
+        mgr._emit("log", {"text": (f"⏸ المهمة #{jid} متوقفة مؤقتاً بعد {count} إعلان — اضغط «استئناف» لتكمل."
                                        if pause == "manual" else
                                        f"⏸ سحب السوق #{jid} ينتظر بعد {count} إعلان، ويُكمل بعد سحبك.")})
         logger.info("job %s: paused (%s) at %s", jid, pause, cp)
         return
 
+    if status == "interrupted" and job.get("mode") not in CHECK_MODES:
+        _alert_work_line_down(jid, outcome.get("error", ""))
     if status == "interrupted":
         if attempts < len(JOB_RETRY_DELAYS_MIN):
             delay = JOB_RETRY_DELAYS_MIN[attempts]
             db.schedule_retry(jid, delay, cp_json, result_count=count,
                               error=outcome.get("error", ""), scanned_count=scanned_total)
-            manager._emit("paused", {
+            mgr._emit("paused", {
                 "job_id": jid, "scraped": count, "delay_min": delay,
                 "attempt": attempts + 1, "max_attempts": len(JOB_RETRY_DELAYS_MIN),
                 "error": outcome.get("error", "")})
-            manager._emit("log", {
+            mgr._emit("log", {
                 "text": f"⏸ انقطع السحب بعد {count} إعلان وسيُستأنف تلقائياً من نفس النقطة بعد {delay} دقيقة "
                         f"(محاولة {attempts + 1}/{len(JOB_RETRY_DELAYS_MIN)})."})
             logger.info("job %s: interrupted, retry in %s min from %s", jid, delay, cp)
         else:
             db.finish_job(jid, status="failed", result_count=count,
                           error=outcome.get("error", ""), checkpoint=cp_json, **cov_unfinished)
-            manager._emit("log", {"text": f"⛔ توقف السحب نهائياً بعد {attempts + 1} محاولات: {outcome.get('error', '')}"})
+            mgr._emit("log", {"text": f"⛔ توقف السحب نهائياً بعد {attempts + 1} محاولات: {outcome.get('error', '')}"})
             logger.warning("job %s: failed after %s attempts", jid, attempts + 1)
     elif status == "failed":
         db.finish_job(jid, status="failed", result_count=count,
                       error=outcome.get("error", ""), checkpoint=cp_json, **cov_unfinished)
-        manager._emit("log", {"text": f"⛔ فشلت المهمة #{jid}: {outcome.get('error', '')}"})
+        mgr._emit("log", {"text": f"⛔ فشلت المهمة #{jid}: {outcome.get('error', '')}"})
     elif status == "stopped":
         db.finish_job(jid, status="stopped", result_count=count, **cov_unfinished)
-        manager.state["error"] = ""
-        manager._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان{summary}."})
+        mgr.state["error"] = ""
+        mgr._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان{summary}."})
     else:
         db.finish_job(jid, status="done", result_count=count, completed=completed, **cov)
         logger.info("job %s: done (%s ads, scanned=%s, reported=%s, completed=%s)",
                     jid, count, scanned_total, reported, completed)
-        manager._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان{summary}."})
+        mgr._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان{summary}."})
         if not resume:  # a resumed run only saw part of the page's ads
             _snapshot_page_target(job, outcome)
             _reconcile_target_scan(job, outcome, resumed=False)
 
 
+# Jobs a more urgent job may pause (they resume from their checkpoint).
+PREEMPTIBLE_MODES = (MONTH_MODE, EXPAND_MODE)
+
+
+def db_job_priority(job: dict) -> int:
+    from db.core import job_priority
+    return job_priority(job.get("source") or "", job.get("mode") or "")
+
+
+def _alert_work_line_down(jid, error: str) -> None:
+    """The scrape waits for the work line to come back: tell the user (at
+    most once an hour). Never moved onto the tablet line."""
+    try:
+        import notify
+        notify.notify_alert(db.get_settings(), "work_line_down",
+                            "⚠️ <b>AdsCloud: خط العمل لا يعمل</b>\n"
+                            f"توقف السحب #{jid} (حظر من Meta أو البروكسي لا يعود بعد تغيير الـ IP).\n"
+                            "السحوبات تنتظر وتُعاد تلقائياً — لا تنتقل إلى التابلت.\n"
+                            f"<code>{str(error or '')[:200]}</code>")
+    except Exception:
+        logger.exception("work line alert failed")
+
+
 def job_worker_loop() -> None:
+    """The scrape worker (work line): every job except the tablet checks
+    when those have their own line."""
     worker_id = f"{INPROC_WORKER_PREFIX}{os.getpid()}"
     while True:
         try:
-            job = db.claim_next_job(worker_id)
+            skip = CHECK_MODES if checks_have_own_line() else None
+            job = db.claim_next_job(worker_id, skip_modes=skip)
             if not job:
                 job_wakeup.wait(3)
                 job_wakeup.clear()
@@ -496,6 +530,26 @@ def job_worker_loop() -> None:
             run_claimed_job(job)
         except Exception:
             logger.exception("job worker loop error")
+            time.sleep(5)
+
+
+def check_worker_loop() -> None:
+    """The tablet worker: status / winning checks, in parallel with the
+    scrapes. Idle unless a dedicated status-check proxy is set (otherwise
+    the scrape worker runs the checks, one job at a time, as before)."""
+    worker_id = f"{INPROC_WORKER_PREFIX}{os.getpid()}-check"
+    while True:
+        try:
+            if not checks_have_own_line() or tablet_lane_busy.is_set():
+                time.sleep(5)  # a market lane is on the tablet: it leaves after its day
+                continue
+            job = db.claim_next_job(worker_id, only_modes=CHECK_MODES)
+            if not job:
+                time.sleep(5)
+                continue
+            run_claimed_job(job, check_manager)
+        except Exception:
+            logger.exception("check worker loop error")
             time.sleep(5)
 
 
@@ -674,6 +728,7 @@ def start_background_threads() -> None:
     threading.Thread(target=scheduler_loop, daemon=True).start()
     threading.Thread(target=entity_stats_loop, daemon=True).start()
     threading.Thread(target=job_worker_loop, daemon=True).start()
+    threading.Thread(target=check_worker_loop, daemon=True).start()
     threading.Thread(target=niches_loop, daemon=True).start()
     threading.Thread(target=niche_ai_loop, daemon=True).start()
     threading.Thread(target=hunter_backfill_once, daemon=True).start()

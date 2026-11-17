@@ -155,7 +155,7 @@ def _market_scan_running() -> bool:
     if not (manager.state.get("running") and jid):
         return False
     job = db.get_job(int(jid))
-    return bool(job and job.get("mode") == MONTH_MODE)
+    return bool(job and job.get("mode") in (MONTH_MODE, "page_expand"))
 
 
 @bp.route("/api/pause", methods=["POST"])
@@ -191,7 +191,13 @@ def api_stop():
 @bp.route("/api/status")
 @login_required
 def api_status():
-    return jsonify({**manager.state, "scrape_enabled": SCRAPE_ENABLED, "db": db.get_stats()})
+    from scrape_manager import check_manager
+    cs = check_manager.state
+    check = None
+    if cs.get("running"):
+        log = cs.get("log") or []
+        check = {"job_id": cs.get("job_id"), "query": cs.get("query"), "last": log[-1] if log else ""}
+    return jsonify({**manager.state, "check": check, "scrape_enabled": SCRAPE_ENABLED, "db": db.get_stats()})
 
 
 @bp.route("/api/stream")

@@ -79,6 +79,25 @@ def _webhook_send(url: str, payload: dict) -> bool:
         return False
 
 
+_last_alert: dict = {}
+
+
+def notify_alert(settings: dict, key: str, text: str, every_sec: float = 3600) -> bool:
+    """One operational alert (e.g. "the work line is blocked") to Telegram,
+    at most once per ``every_sec`` for the same ``key``. Needs the bot set up;
+    it is sent even when ad notifications are off."""
+    import time
+    token = (settings.get("telegram_token") or "").strip()
+    chat_id = (settings.get("telegram_chat_id") or "").strip()
+    if not (token and chat_id):
+        return False
+    now = time.time()
+    if now - _last_alert.get(key, 0) < every_sec:
+        return False
+    _last_alert[key] = now
+    return _telegram_send(token, chat_id, text)
+
+
 def notify_new_ads(settings: dict, target: str, new_ads: list[dict], total: int) -> dict:
     """Format and send a structured spy alert when new ads are detected."""
     if settings.get("notify_enabled", "false").lower() not in ("1", "true", "yes", "on"):

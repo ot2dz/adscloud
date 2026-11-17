@@ -136,7 +136,12 @@ def _month_resume(resume: dict) -> tuple[set, dict, Optional[int]]:
 
 
 class ScrapeManager:
-    def __init__(self):
+    def __init__(self, forward_logs_to: "Optional[ScrapeManager]" = None, log_prefix: str = ""):
+        # The tablet check worker has its own manager; its log lines are
+        # shown in the main live log with a prefix (nothing else is forwarded,
+        # so the scrape bar keeps showing the user's scrape).
+        self.forward_logs_to = forward_logs_to
+        self.log_prefix = log_prefix
         self.thread = None
         self.stop_event = threading.Event()
         self.events = queue.Queue()
@@ -156,6 +161,8 @@ class ScrapeManager:
                 q.put_nowait(item)
             except Exception:
                 pass
+        if self.forward_logs_to is not None and kind == "log":
+            self.forward_logs_to._emit("log", {**data, "text": self.log_prefix + str(data.get("text", ""))})
 
     def start(self, query: str, country: str = DEFAULT_COUNTRY, exact: bool = False,
               stores_only: bool = False, sort_mode: str = "total_impressions",
@@ -528,7 +535,12 @@ class ScrapeManager:
                     def lane_progress(msg, _n=name):
                         progress(f"[{_n}] {msg}" if len(lanes) > 1 else msg)
 
+                    tablet = lane.get("source") == "status"
                     while not self.stop_event.is_set():
+                        if tablet and tablet_wanted_by_checks():
+                            lane_progress("📱 خط التابلت يُترك لفحص الحالة — تكمل الخطوط الأخرى.")
+                            lane_state(name, status="yielded", pass_=None)
+                            return
                         with lock:
                             idx = todo.pop(0) if todo else None
                         if idx is None:
@@ -553,14 +565,20 @@ class ScrapeManager:
                                     day_yield[_i] = day_yield.get(_i, 0) + 1
                             on_ad(ad)
 
-                        r = scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
-                                   sort_mode="relevancy_monthly_grouped",
-                                   start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
-                                   content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
-                                   progress=lane_progress, on_ad=pass_ad, on_scanned=on_scanned,
-                                   should_stop=lambda: self.stop_event.is_set(), proxy=lane["proxy"],
-                                   rotate_url=lane["rotate_url"], rotate_token=lane["rotate_token"], pace=pace,
-                                   resume_cursor=cursors.get(idx), on_checkpoint=cp_fn)
+                        if tablet:
+                            tablet_lane_busy.set()
+                        try:
+                            r = scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
+                                       sort_mode="relevancy_monthly_grouped",
+                                       start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
+                                       content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
+                                       progress=lane_progress, on_ad=pass_ad, on_scanned=on_scanned,
+                                       should_stop=lambda: self.stop_event.is_set(), proxy=lane["proxy"],
+                                       rotate_url=lane["rotate_url"], rotate_token=lane["rotate_token"], pace=pace,
+                                       resume_cursor=cursors.get(idx), on_checkpoint=cp_fn)
+                        finally:
+                            if tablet:
+                                tablet_lane_busy.clear()
                         with lock:
                             outcome["scanned"] += int(r.scanned or 0)
                             if r.stopped or self.stop_event.is_set():
@@ -752,5 +770,25 @@ class ScrapeManager:
 
 
 manager = ScrapeManager()
+# Second worker: status / winning checks on the tablet line, beside the scrapes.
+check_manager = ScrapeManager(forward_logs_to=manager, log_prefix="[فحص التابلت] ")
+CHECK_MODES = (STATUS_MODE, WINNING_MODE)
+# Set while a market-scan lane is scraping through the tablet line: the
+# check worker waits for it, so the tablet never serves two jobs at once.
+tablet_lane_busy = threading.Event()
+
+
+def checks_have_own_line(settings: Optional[dict] = None) -> bool:
+    """True when a dedicated status-check proxy (the tablet) is set: checks
+    then run on their own worker, in parallel with the scrapes."""
+    s = settings if settings is not None else db.get_settings()
+    return bool(str(s.get("status_check_proxy") or "").strip())
+
+
+def tablet_wanted_by_checks() -> bool:
+    """A check runs or waits: the market scan leaves the tablet line to it."""
+    if not checks_have_own_line():
+        return False
+    return bool(check_manager.state.get("running")) or any(db.has_open_mode_job(m) for m in CHECK_MODES)
 # Set when a job is queued so the runner claims it at once (no polling delay).
 job_wakeup = threading.Event()

@@ -32,11 +32,11 @@ class QueueTest(unittest.TestCase):
         market = _market_job()
         status = db.create_job(query="فحص", source="schedule", mode=sm.STATUS_MODE)
         kw = db.create_job(query="ساعة", source="manual")
-        self.assertEqual(db.get_job(market)["priority"], 0)
-        self.assertEqual(db.get_job(status)["priority"], 0)
-        self.assertEqual(db.get_job(kw)["priority"], 1)
+        self.assertEqual(db.get_job(market)["priority"], 1)
+        self.assertEqual(db.get_job(status)["priority"], 2)
+        self.assertEqual(db.get_job(kw)["priority"], 3)
         self.assertTrue(db.has_priority_pending())
-        self.assertEqual([db.claim_next_job("w")["id"] for _ in range(3)], [kw, market, status])
+        self.assertEqual([db.claim_next_job("w")["id"] for _ in range(3)], [kw, status, market])
 
     def test_pause_queued_job_then_resume(self):
         jid = db.create_job(query="ساعة", source="schedule")
