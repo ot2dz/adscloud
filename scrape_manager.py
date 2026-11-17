@@ -663,9 +663,17 @@ class ScrapeManager:
                 progress(f"🔁 توسيع الصفحات: {len(pages)} صفحة لها إعلانات نشطة في Meta أكثر مما عندنا"
                          + (f" — استئناف من الصفحة {i + 1}" if i else "") + ".")
                 outcome["completed"] = True
+                expand_settings = db.get_settings()
                 while i < len(pages) and not self.stop_event.is_set():
                     pg = pages[i]
                     got = []
+                    if page_expand.too_big(pg.get("meta"), expand_settings):
+                        progress(f"⏭ تخطي {pg['name'] or pg['id']}: {pg.get('meta')} إعلاناً — صفحة كبيرة جداً.")
+                        db.mark_page_expanded(pg["id"], pg.get("meta"), 0, "skipped_big")
+                        i += 1
+                        outcome["slices_ok"] = i
+                        expand_cp()
+                        continue
 
                     def page_ad(ad, _got=got):
                         _got.append(1)

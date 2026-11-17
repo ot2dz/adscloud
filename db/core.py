@@ -2354,33 +2354,35 @@ class Database:
         return mixed[:limit]
 
     # ── page expansion: fetch every active ad of pages we only partly have ──
-    def _page_gap_sql(self, min_gap: int, recheck_days: float) -> tuple[str, list]:
+    def _page_gap_sql(self, min_gap: int, recheck_days: float, max_ads: int = 0) -> tuple[str, list]:
         p = self._ph()
         cut = (datetime.now(timezone.utc) - timedelta(days=recheck_days)).isoformat()
+        size = f"AND es.ent_ads <= {int(max_ads)} " if max_ads else ""  # huge pages: rarely COD stores
         sql = (f"FROM meta_ads m JOIN entity_stats es ON es.ent_kind = 'page' AND es.ent_key = m.page_id "
                f"LEFT JOIN page_expand pe ON pe.page_id = m.page_id "
                f"WHERE (m.market IS NULL OR m.market = 'dz') AND COALESCE(m.page_id, '') <> '' "
-               f"AND es.ent_status = 'ok' AND es.ent_ads IS NOT NULL "
+               f"AND es.ent_status = 'ok' AND es.ent_ads IS NOT NULL {size}"
                f"AND (pe.page_id IS NULL OR (pe.expanded_at < {p} AND es.ent_ads > COALESCE(pe.meta_ads, 0))) "
                f"GROUP BY m.page_id, es.ent_ads "
                f"HAVING es.ent_ads - SUM(COALESCE(m.is_active, 0)) >= {p}")
         return sql, [cut, int(min_gap)]
 
     def page_expand_candidates(self, limit: int = 30, min_gap: int = 3,
-                               recheck_days: float = 7.0) -> list[dict]:
+                               recheck_days: float = 7.0, max_ads: int = 0) -> list[dict]:
         """Pages whose Meta total is well above the active ads we hold, the
         biggest gap first. A page already expanded comes back only after
-        ``recheck_days`` and only if its Meta total grew since."""
-        sql, params = self._page_gap_sql(min_gap, recheck_days)
+        ``recheck_days`` and only if its Meta total grew since. ``max_ads``
+        leaves out pages running more ads than that (0 = no limit)."""
+        sql, params = self._page_gap_sql(min_gap, recheck_days, max_ads)
         return self._query(
             f"SELECT m.page_id, MAX(m.page_name) AS page_name, es.ent_ads AS meta_ads, "
             f"SUM(COALESCE(m.is_active, 0)) AS have {sql} "
             f"ORDER BY es.ent_ads - SUM(COALESCE(m.is_active, 0)) DESC, MIN(m.start_date) "
             f"LIMIT {int(limit)}", tuple(params))
 
-    def page_expand_pending(self, min_gap: int = 3, recheck_days: float = 7.0) -> dict:
+    def page_expand_pending(self, min_gap: int = 3, recheck_days: float = 7.0, max_ads: int = 0) -> dict:
         """{"pages": n, "missing": ads} still to expand."""
-        sql, params = self._page_gap_sql(min_gap, recheck_days)
+        sql, params = self._page_gap_sql(min_gap, recheck_days, max_ads)
         row = self._query_one(
             f"SELECT COUNT(*) AS pages, COALESCE(SUM(gap), 0) AS missing FROM ("
             f"SELECT es.ent_ads - SUM(COALESCE(m.is_active, 0)) AS gap {sql}) t",

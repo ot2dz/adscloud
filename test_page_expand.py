@@ -45,6 +45,12 @@ class CandidatesTest(unittest.TestCase):
                          [("501", 26, 1), ("503", 9, 2)])
         self.assertEqual(db.page_expand_pending(min_gap=3), {"pages": 2, "missing": 32})
 
+    def test_very_big_pages_are_left_out(self):
+        db.save_entity_stat("page", "501", 1348)  # a game app, not a COD store
+        self.assertEqual([r["page_id"] for r in page_expand.candidates(db)], ["503"])
+        db.set_setting("page_expand_max_page", "0")  # no limit
+        self.assertEqual([r["page_id"] for r in page_expand.candidates(db)], ["501", "503"])
+
     def test_expanded_page_comes_back_only_when_meta_grows_after_the_wait(self):
         db.mark_page_expanded("501", 26, 25)
         self.assertEqual([r["page_id"] for r in db.page_expand_candidates(min_gap=3)], ["503"])
@@ -106,6 +112,16 @@ class ExpandJobTest(unittest.TestCase):
         with mock.patch.object(sm, "scrape", side_effect=self.fake()):
             out, _ = self._run(resume=cp)
         self.assertEqual(len(self.urls), 2)  # the stopped page again, then the next
+        self.assertEqual(out["status"], "done")
+
+    def test_a_running_job_skips_a_big_page_it_listed_earlier(self):
+        cp = {"pages": [{"id": "501", "name": "Popcorn Game", "meta": 1348, "have": 1},
+                        {"id": "503", "name": "B", "meta": 9, "have": 2}], "i": 0, "found": 0}
+        with mock.patch.object(sm, "scrape", side_effect=self.fake()):
+            out, _ = self._run(resume=cp)
+        self.assertEqual(len(self.urls), 1)
+        self.assertIn("view_all_page_id=503", self.urls[0])
+        self.assertEqual(db._query_one("SELECT status FROM page_expand WHERE page_id='501'")["status"], "skipped_big")
         self.assertEqual(out["status"], "done")
 
     def test_nothing_to_expand_is_not_an_error(self):

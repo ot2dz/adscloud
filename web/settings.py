@@ -53,6 +53,7 @@ def api_get_settings():
         "page_expand_enabled": s.get("page_expand_enabled", "true"),
         "page_expand_daily": s.get("page_expand_daily", "300"),
         "page_expand_min_gap": s.get("page_expand_min_gap", "3"),
+        "page_expand_max_page": s.get("page_expand_max_page", "300"),
         "registration_open": s.get("registration_open", "false"),
         "extension_registration_open": s.get("extension_registration_open", "true"),
         "meta_ads_proxy": s.get("meta_ads_proxy", ""),
@@ -95,7 +96,8 @@ def api_set_settings():
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
     if "page_expand_enabled" in cfg:
         db.set_setting("page_expand_enabled", "true" if cfg["page_expand_enabled"] else "false")
-    for key, lo, hi in (("page_expand_daily", 0, 100000), ("page_expand_min_gap", 1, 1000)):
+    for key, lo, hi in (("page_expand_daily", 0, 100000), ("page_expand_min_gap", 1, 1000),
+                        ("page_expand_max_page", 0, 1000000)):
         if key in cfg:
             try:
                 db.set_setting(key, str(max(lo, min(hi, int(cfg[key])))))
