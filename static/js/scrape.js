@@ -118,7 +118,10 @@ function setScrapeMode(m) {
 function setScrapePreset(p) { scrapePreset = p; renderDateChips(); renderScrapeSummary(); }
 
 function renderDateChips() {
-  const chips = DATE_CHIPS.filter(([k]) => !(scrapeMode === 'market' && k === 'all'));
+  // Market mode: "all" = no date, from today back until the active ads run out.
+  const chips = scrapeMode === 'market'
+    ? [...DATE_CHIPS.filter(([k]) => k !== 'all'), ['all', 'كل التواريخ (حتى تنفد)']]
+    : DATE_CHIPS;
   const sel = document.getElementById('date-chips');
   sel.innerHTML = chips.map(([k, label]) => `<option value="${k}">${label}</option>`).join('');
   if (!chips.some(([k]) => k === scrapePreset)) scrapePreset = chips.length ? chips[0][0] : 'all';
@@ -149,6 +152,12 @@ function renderScrapeSummary() {
   const [a, b] = scrapeRange();
   const when = !a ? 'بدون تقييد تاريخ' : (a === b ? `انطلقت يوم <b>${a}</b>` : `انطلقت من <b>${a}</b> إلى <b>${b}</b>`);
   if (scrapeMode === 'market') {
+    if (scrapePreset === 'all') {
+      box.innerHTML = '🌍 سيُسحب: <b>كل إعلانات المتاجر العربية النشطة في الجزائر، بلا تاريخ</b>'
+        + ' — من اليوم إلى الخلف يوماً بيوم، ويتوقف وحده عندما تنفد الإعلانات (14 يوماً متتالية شبه فارغة).'
+        + '<br><span class="text-slate-500">المدة: ساعات على الأرجح (الأيام الحديثة ~10 دقائق لكل خط، القديمة أسرع). يمكنك إيقافه مؤقتاً، وأي سحب يدوي يوقفه مؤقتاً ثم يُكمل.</span>';
+      return;
+    }
     if (!a) { box.innerHTML = '⚠️ اختر يوماً أو فترة.'; return; }
     const days = Math.round((new Date(b) - new Date(a)) / 864e5) + 1;
     const mins = Math.max(1, Math.round(days * MARKET_ADS_PER_DAY / SCAN_PER_SEC / 60));
@@ -183,7 +192,10 @@ async function startEngine() {
   const body = { mode: scrapeMode === 'market' ? 'month_days' : 'targeted', date_preset: scrapePreset,
                  start_date_min: scrapePreset === 'day' ? document.getElementById('scrape-day').value : document.getElementById('scrape-custom-min').value,
                  start_date_max: document.getElementById('scrape-custom-max').value };
-  if (scrapeMode === 'market') {
+  if (scrapeMode === 'market' && scrapePreset === 'all') {
+    if (!confirm('سحب كل إعلانات المتاجر العربية النشطة في الجزائر بلا تاريخ؟\nيبدأ من اليوم ويرجع يوماً بيوم حتى تنفد الإعلانات — قد يستغرق ساعات.\nيمكنك إيقافه في أي وقت، ويُكمل تلقائياً عند الانقطاع.')) return;
+    body.open_ended = true;
+  } else if (scrapeMode === 'market') {
     if (!a) return alert('اختر يوماً أو فترة');
     const days = Math.round((new Date(b) - new Date(a)) / 864e5) + 1;
     if (!confirm(`سحب كل إعلانات المتاجر العربية في الجزائر لـ ${days} يوم (${a === b ? a : a + ' ← ' + b})؟\nيمكنك إيقافه في أي وقت، ويُكمل تلقائياً عند الانقطاع.`)) return;

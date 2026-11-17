@@ -281,12 +281,32 @@ function sizeTone(n) {
 function domainAdsUrl(dom) {
   return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=DZ&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + dom + '"')}&search_type=keyword_exact_phrase&sort_data[direction]=desc&sort_data[mode]=total_impressions`;
 }
+// One page, all its active ads (a normal targeted scrape by page ID).
+async function pullPageAds(pageId, btn) {
+  if (!/^\d{5,25}$/.test(pageId)) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/start', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                         body: JSON.stringify({mode: 'targeted', query: pageId, date_preset: 'all'})});
+    const d = await r.json();
+    if (!d.ok) { alert('⚠️ ' + (d.error || 'تعذّر بدء السحب')); btn.disabled = false; return; }
+    btn.textContent = d.queued ? '🕒 في الانتظار' : '⏳ يُسحب الآن';
+    if (typeof loadJobs === 'function') loadJobs();
+  } catch (err) {
+    alert('⚠️ ' + err.message);
+    btn.disabled = false;
+  }
+}
+
 function entityBadges(a) {
   const parts = [];
   if (a.page_id) {
     parts.push(a.page_total_ads != null
       ? `<a href="${pageAdsUrl(a.page_id)}" target="_blank" rel="noopener" title="كل إعلانات هذه الصفحة على فيسبوك" class="px-2 py-0.5 rounded-lg border font-bold ${sizeTone(a.page_total_ads)}">📄 <span class="num">${a.page_total_ads}</span> إعلان نشط للصفحة</a>`
       : `<span class="px-2 py-0.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 font-semibold" title="سيُحسب تلقائياً عند توقف السحب">📄 ⏳ عدّ إعلانات الصفحة…</span>`);
+    if (typeof isAdmin === 'function' && isAdmin()) {
+      parts.push(`<button type="button" onclick="event.stopPropagation(); pullPageAds('${escT(String(a.page_id))}', this)" title="اسحب كل إعلانات هذه الصفحة النشطة إلى البنك" class="px-2 py-0.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 font-bold hover:bg-emerald-100">📥 اسحب كل إعلاناتها</button>`);
+    }
   }
   if (a.store_domain) {
     const pagesNote = a.domain_pages > 1 ? ` · عبر ${a.domain_pages} صفحات` : '';

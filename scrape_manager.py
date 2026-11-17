@@ -23,6 +23,14 @@ FIXED_LANGS = ["ar"]
 # Whole-market monthly scrape (see slicing.build_day_passes).
 MONTH_MODE = "month_days"
 MONTH_LANGS = ["ar"]      # Arabic-language ads only
+EXPAND_MODE = "page_expand"  # every active ad of pages we only partly hold
+# Whole market with no date ("all dates"): walk back day by day from today and
+# stop once the active ads run out — this many days in a row with fewer than
+# MARKET_ALL_LOW_ADS ads each — or at the MARKET_ALL_MAX_DAYS safety floor.
+OPEN_SCOPE = "launch_open"
+MARKET_ALL_MAX_DAYS = int(os.environ.get("MARKET_ALL_MAX_DAYS", "730") or 730)
+MARKET_ALL_EMPTY_DAYS = int(os.environ.get("MARKET_ALL_EMPTY_DAYS", "14") or 14)
+MARKET_ALL_LOW_ADS = int(os.environ.get("MARKET_ALL_LOW_ADS", "3") or 3)
 MARKET_WILDCARD = '" "'   # Meta exact-phrase wildcard: matches every ad
 STATUS_MODE = "status_check"  # daily "is it still running?" check (status_check.py)
 WINNING_MODE = "winning_check"  # every 12 h: pages of the saved winning products
@@ -402,15 +410,105 @@ class ScrapeManager:
                 lock = threading.Lock()
                 lane_errors: list = []
                 self.state["lanes"] = {ln["name"]: {"pass": None, "label": "", "status": "waiting"} for ln in lanes}
-                progress(f"🗓️ سحب السوق يوماً بيوم: {start_date_min} ← {start_date_max} "
-                         f"({total_passes} شريحة = يوم × لغة، الأحدث أولاً، المتاجر فقط) — "
-                         f"{len(lanes)} خط سحب: {'، '.join(ln['name'] for ln in lanes)}.")
+                open_ended = date_scope == OPEN_SCOPE
+                # Ads of each pass's own launch day (open-ended scan: when the
+                # recent days go quiet, the active ads have run out).
+                day_yield = {int(k): int(v) for k, v in (resume.get("yield") or {}).items()}
+                open_state = {"checking": False, "final": False}
+                if open_ended:
+                    progress(f"🗓️ سحب كل السوق بلا تاريخ: من {start_date_max} إلى الخلف يوماً بيوم حتى تنفد "
+                             f"الإعلانات النشطة (يتوقف بعد {MARKET_ALL_EMPTY_DAYS} يوماً متتالية بأقل من "
+                             f"{MARKET_ALL_LOW_ADS} إعلانات، وأبعد حد {start_date_min}) — المتاجر فقط — "
+                             f"{len(lanes)} خط سحب: {'، '.join(ln['name'] for ln in lanes)}.")
+                else:
+                    progress(f"🗓️ سحب السوق يوماً بيوم: {start_date_min} ← {start_date_max} "
+                             f"({total_passes} شريحة = يوم × لغة، الأحدث أولاً، المتاجر فقط) — "
+                             f"{len(lanes)} خط سحب: {'، '.join(ln['name'] for ln in lanes)}.")
                 if done:
                     progress(f"↩️ استئناف: {len(done)}/{total_passes} شريحة منجزة سابقاً.")
+
+                day_groups: list = []  # [(day, [pass idx...])], newest day first
+                for i, p in enumerate(passes, 1):
+                    if day_groups and day_groups[-1][0] == p["day"]:
+                        day_groups[-1][1].append(i)
+                    else:
+                        day_groups.append((p["day"], [i]))
+
+                def quiet_run():
+                    """(quiet days in a row at the end of the finished prefix,
+                    their pass numbers, oldest finished day). Caller holds lock."""
+                    days, idxs, oldest = 0, [], None
+                    for day, group in day_groups:
+                        if not all(i in done for i in group):
+                            break
+                        oldest = day
+                        if sum(day_yield.get(i, 0) for i in group) < MARKET_ALL_LOW_ADS:
+                            days += 1
+                            idxs += group
+                        else:
+                            days, idxs = 0, []
+                    return days, idxs, oldest
+
+                def canary_ok(lane, pace) -> bool:
+                    """Does the line still see ads on the busiest finished day?
+                    A soft block also answers "0 ads", which must not end the scan."""
+                    with lock:
+                        best = max((i for i in done), key=lambda i: day_yield.get(i, 0), default=None)
+                    if best is None or day_yield.get(best, 0) < MARKET_ALL_LOW_ADS:
+                        return False
+                    p = passes[best - 1]
+                    got = []
+                    scrape(MARKET_WILDCARD, country=country, exact_phrase=True, sort_mode="relevancy_monthly_grouped",
+                           start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
+                           content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
+                           progress=lambda m: None, on_ad=lambda a: got.append(1), on_scanned=lambda n: None,
+                           should_stop=lambda: bool(got) or self.stop_event.is_set(), proxy=lane["proxy"],
+                           rotate_url=lane["rotate_url"], rotate_token=lane["rotate_token"], pace=pace)
+                    return bool(got)
+
+                def check_open_end(lane, pace, lane_progress) -> bool:
+                    """Open-ended scan: stop when the ads have run out. False =
+                    the line looks blocked and must leave (days go back to do)."""
+                    with lock:
+                        if open_state["final"] or open_state["checking"]:
+                            return True
+                        days, idxs, oldest = quiet_run()
+                        if days < MARKET_ALL_EMPTY_DAYS:
+                            return True
+                        open_state["checking"] = True
+                    lane_progress(f"🔎 {days} يوماً متتالية بلا إعلانات تقريباً — تحقق أن الخط غير محجوب…")
+                    try:
+                        ok = canary_ok(lane, pace)
+                    except Exception:  # noqa: BLE001 — treat as blocked, the queue retries
+                        logger.exception("open-ended canary failed")
+                        ok = False
+                    with lock:
+                        open_state["checking"] = False
+                        if ok:
+                            open_state["final"] = True
+                            todo.clear()
+                            outcome["auto_stop_day"] = oldest
+                            persist_month()
+                        else:
+                            for i in idxs:  # not trusted: scanned again later
+                                done.discard(i)
+                                day_yield.pop(i, None)
+                            todo.extend(i for i in idxs if i not in todo)
+                            todo.sort()
+                            lane_errors.append(f"{lane['name']}: الأيام الأخيرة فارغة ويوم معروف فارغ أيضاً (حجب مؤقت؟)")
+                            persist_month()
+                    if ok:
+                        progress(f"🏁 نفدت الإعلانات النشطة: آخر {days} يوماً بلا إعلانات تقريباً — "
+                                 f"أقدم يوم مسحوب {oldest}. انتهى سحب كل السوق.")
+                    else:
+                        lane_progress("⏸ يبدو الخط محجوباً (يوم معروف أعاد 0) — لن يُعتبر السوق منتهياً، تُعاد هذه الأيام لاحقاً.")
+                    return ok
 
                 def persist_month():
                     cp = {"v": 2, "done": sorted(done), "ok": outcome["slices_ok"],
                           "cursors": {str(k): v for k, v in cursors.items() if v}}
+                    if open_ended:
+                        cp["yield"] = {str(k): v for k, v in day_yield.items()}
                     outcome["checkpoint"] = cp
                     if on_checkpoint:
                         try:
@@ -449,11 +547,17 @@ class ScrapeManager:
                                     cursors[_i] = cursor
                                 persist_month()
 
+                        def pass_ad(ad, _i=idx, _day=p["day"]):
+                            if (getattr(ad, "start_date", "") or "")[:10] == _day:
+                                with lock:
+                                    day_yield[_i] = day_yield.get(_i, 0) + 1
+                            on_ad(ad)
+
                         r = scrape(MARKET_WILDCARD, country=country, exact_phrase=True,
                                    sort_mode="relevancy_monthly_grouped",
                                    start_date_min=p["day"], start_date_max=p["day"], date_scope="launch",
                                    content_languages=[p["lang"]] if p["lang"] else None, estimate=False,
-                                   progress=lane_progress, on_ad=on_ad, on_scanned=on_scanned,
+                                   progress=lane_progress, on_ad=pass_ad, on_scanned=on_scanned,
                                    should_stop=lambda: self.stop_event.is_set(), proxy=lane["proxy"],
                                    rotate_url=lane["rotate_url"], rotate_token=lane["rotate_token"], pace=pace,
                                    resume_cursor=cursors.get(idx), on_checkpoint=cp_fn)
@@ -481,6 +585,9 @@ class ScrapeManager:
                             persist_month()
                         if r.failed:
                             lane_progress(f"⚠️ تجاوز الشريحة {idx} بسبب خطأ دائم: {r.error}")
+                        if open_ended and not check_open_end(lane, pace, lane_progress):
+                            lane_state(name, status="paused", pass_=None)
+                            return
                     lane_state(name, status="stopped", pass_=None)
 
                 threads = []
@@ -501,10 +608,78 @@ class ScrapeManager:
                     outcome.update(status="interrupted", error=" | ".join(lane_errors)[:500]
                                    or "توقفت كل خطوط السحب")
                 ok, total = outcome["slices_ok"], total_passes
+                if open_state["final"]:
+                    total = outcome["slices_total"] = len(done)  # the days that had to be scanned
                 outcome["completed"] = ok >= total
                 if outcome["status"] == "done":
                     progress(f"🧩 الشرائح المكتملة: {ok}/{total}"
                              + ("" if ok >= total else f" — {total - ok} شريحة لم تكتمل"))
+
+            elif mode == EXPAND_MODE:
+                # Page expansion: every active ad of pages we only partly hold
+                # (see page_expand.py). The page list is fixed in the
+                # checkpoint, so a resumed job finishes the same pages.
+                import page_expand
+                from pages import resolve_target_url
+                pages = list(resume.get("pages") or [])
+                if not pages:
+                    pages = [{"id": str(r["page_id"]), "name": r.get("page_name") or "", "meta": r.get("meta_ads"),
+                              "have": int(r.get("have") or 0)}
+                             for r in page_expand.candidates(
+                                 db, limit=min(page_expand.BATCH, page_expand.room_today(db)) or page_expand.BATCH)]
+                i = int(resume.get("i") or 0)
+                found_total = int(resume.get("found") or 0)
+                outcome["slices_total"] = len(pages)
+                outcome["slices_ok"] = i
+
+                def expand_cp():
+                    cp = {"pages": pages, "i": i, "found": found_total}
+                    outcome["checkpoint"] = cp
+                    if on_checkpoint:
+                        try:
+                            on_checkpoint(cp)
+                        except Exception:
+                            logger.exception("checkpoint persist failed")
+
+                expand_cp()
+                progress(f"🔁 توسيع الصفحات: {len(pages)} صفحة لها إعلانات نشطة في Meta أكثر مما عندنا"
+                         + (f" — استئناف من الصفحة {i + 1}" if i else "") + ".")
+                outcome["completed"] = True
+                while i < len(pages) and not self.stop_event.is_set():
+                    pg = pages[i]
+                    got = []
+
+                    def page_ad(ad, _got=got):
+                        _got.append(1)
+                        on_ad(ad)
+
+                    progress(f"↪ صفحة {i + 1}/{len(pages)}: {pg['name'] or pg['id']} — Meta {pg.get('meta')}، "
+                             f"عندنا {pg.get('have')} نشط.")
+                    r = scrape("", country=country, url=resolve_target_url("page", pg["id"], country=country),
+                               exact_phrase=False, sort_mode="total_impressions", languages=languages,
+                               stores_only=stores_only, progress=progress, on_ad=page_ad,
+                               on_scanned=on_scanned, should_stop=lambda: self.stop_event.is_set(),
+                               date_scope="impressions", proxy=proxy_spec, rotate_url=rot_url,
+                               rotate_token=rot_token)
+                    outcome["scanned"] += int(r.scanned or 0)
+                    if r.stopped or self.stop_event.is_set():
+                        outcome["status"] = "stopped"
+                        outcome["completed"] = False
+                        break
+                    if r.interrupted:
+                        outcome.update(status="interrupted", error=r.error, completed=False)
+                        break
+                    found_total += len(got)
+                    db.mark_page_expanded(pg["id"], pg.get("meta"), len(got), "ok" if not r.failed else "error")
+                    page_expand.bump(db)
+                    i += 1
+                    outcome["slices_ok"] = i
+                    expand_cp()
+                db.set_setting("page_expand_last", datetime.now(timezone.utc).isoformat())
+                if outcome["status"] == "done":
+                    progress(f"🏁 توسيع الصفحات انتهى: {i} صفحة، {found_total} إعلان مستلم من Meta.")
+                if not pages:
+                    progress("لا توجد صفحات تحتاج توسيعاً الآن.")
 
             else:
                 if date_label:
@@ -529,7 +704,7 @@ class ScrapeManager:
             # Never finish silently on an empty run: Meta answers HTTP 200 with
             # zero results when the egress IP is soft-blocked, which looks like
             # "success" but means nothing was collected.
-            if ((base_count + len(seen_ad_ids)) == 0 and mode not in (STATUS_MODE, WINNING_MODE)
+            if ((base_count + len(seen_ad_ids)) == 0 and mode not in (STATUS_MODE, WINNING_MODE, EXPAND_MODE)
                     # "interrupted" (proxy down / transient error) must stay
                     # interrupted so the job queue retries it, not end as "empty".
                     and outcome.get("status") not in ("stopped", "failed", "interrupted")

@@ -475,6 +475,17 @@ class Database:
             PRIMARY KEY (ent_kind, ent_key)
         )
         """)
+        # Page expansion: pages whose every active ad was fetched once, with
+        # the Meta total at that time (re-fetched only when it grows).
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS page_expand (
+            page_id TEXT PRIMARY KEY,
+            expanded_at TEXT,
+            meta_ads INTEGER,
+            found INTEGER,
+            status TEXT DEFAULT 'ok'
+        )
+        """)
         # Ad lifecycle timeline: launched / stopped / resumed events. Kept apart
         # from meta_ads so history survives repeated status flips.
         cur.execute(f"""
@@ -2316,6 +2327,48 @@ class Database:
         for i in range(max(len(pages), len(doms))):
             mixed += pages[i:i + 1] + doms[i:i + 1]
         return mixed[:limit]
+
+    # ── page expansion: fetch every active ad of pages we only partly have ──
+    def _page_gap_sql(self, min_gap: int, recheck_days: float) -> tuple[str, list]:
+        p = self._ph()
+        cut = (datetime.now(timezone.utc) - timedelta(days=recheck_days)).isoformat()
+        sql = (f"FROM meta_ads m JOIN entity_stats es ON es.ent_kind = 'page' AND es.ent_key = m.page_id "
+               f"LEFT JOIN page_expand pe ON pe.page_id = m.page_id "
+               f"WHERE (m.market IS NULL OR m.market = 'dz') AND COALESCE(m.page_id, '') <> '' "
+               f"AND es.ent_status = 'ok' AND es.ent_ads IS NOT NULL "
+               f"AND (pe.page_id IS NULL OR (pe.expanded_at < {p} AND es.ent_ads > COALESCE(pe.meta_ads, 0))) "
+               f"GROUP BY m.page_id, es.ent_ads "
+               f"HAVING es.ent_ads - SUM(COALESCE(m.is_active, 0)) >= {p}")
+        return sql, [cut, int(min_gap)]
+
+    def page_expand_candidates(self, limit: int = 30, min_gap: int = 3,
+                               recheck_days: float = 7.0) -> list[dict]:
+        """Pages whose Meta total is well above the active ads we hold, the
+        biggest gap first. A page already expanded comes back only after
+        ``recheck_days`` and only if its Meta total grew since."""
+        sql, params = self._page_gap_sql(min_gap, recheck_days)
+        return self._query(
+            f"SELECT m.page_id, MAX(m.page_name) AS page_name, es.ent_ads AS meta_ads, "
+            f"SUM(COALESCE(m.is_active, 0)) AS have {sql} "
+            f"ORDER BY es.ent_ads - SUM(COALESCE(m.is_active, 0)) DESC, MIN(m.start_date) "
+            f"LIMIT {int(limit)}", tuple(params))
+
+    def page_expand_pending(self, min_gap: int = 3, recheck_days: float = 7.0) -> dict:
+        """{"pages": n, "missing": ads} still to expand."""
+        sql, params = self._page_gap_sql(min_gap, recheck_days)
+        row = self._query_one(
+            f"SELECT COUNT(*) AS pages, COALESCE(SUM(gap), 0) AS missing FROM ("
+            f"SELECT es.ent_ads - SUM(COALESCE(m.is_active, 0)) AS gap {sql}) t",
+            tuple(params))
+        return {"pages": int((row or {}).get("pages") or 0), "missing": int((row or {}).get("missing") or 0)}
+
+    def mark_page_expanded(self, page_id: str, meta_ads: Optional[int], found: int, status: str = "ok") -> None:
+        p = self._ph()
+        self._execute(
+            f"INSERT INTO page_expand (page_id, expanded_at, meta_ads, found, status) VALUES ({p},{p},{p},{p},{p}) "
+            f"ON CONFLICT (page_id) DO UPDATE SET expanded_at = excluded.expanded_at, "
+            f"meta_ads = excluded.meta_ads, found = excluded.found, status = excluded.status",
+            (str(page_id), _now(), meta_ads, int(found), status))
 
     def attach_entity_stats(self, ads: list[dict]) -> list[dict]:
         """Add page_total_ads / domain_total_ads (Meta totals) and

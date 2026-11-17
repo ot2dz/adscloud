@@ -52,8 +52,9 @@ function settingsBadges(s, ai) {
   const on = (k, def) => (s[k] ?? def) === 'true';
   const filters = [on('arabic_only', 'true'), on('cta_filter_enabled', 'true')].filter(Boolean).length;
   settingsBadge('filters', filters ? 'ok' : 'warn', filters ? 'الفلاتر مفعّلة' : 'كل الفلاتر مطفأة');
-  const auto = [on('schedule_enabled', 'false'), on('month_rescan_enabled', 'true'), on('status_check_enabled', 'true')].filter(Boolean).length;
-  settingsBadge('auto', auto === 3 ? 'ok' : auto ? 'warn' : 'off', `${auto} من 3 مهام مفعّلة`);
+  const auto = [on('schedule_enabled', 'false'), on('month_rescan_enabled', 'true'), on('status_check_enabled', 'true'),
+                on('page_expand_enabled', 'true')].filter(Boolean).length;
+  settingsBadge('auto', auto === 4 ? 'ok' : auto ? 'warn' : 'off', `${auto} من 4 مهام مفعّلة`);
   const proxy = !!(s.meta_ads_proxy || s.env_meta_ads_proxy);
   settingsBadge('proxy', proxy ? 'ok' : 'warn', proxy ? 'يوجد بروكسي' : 'السحب بدون بروكسي');
   if (ai) settingsBadge('ai', ai.key_unreadable ? 'bad' : ai.key_set ? 'ok' : 'off',
@@ -91,6 +92,10 @@ async function loadSettings() {
   document.getElementById('status-check-summary').innerText = statusCheckSummary(s.status_check_summary);
   document.getElementById('month-rescan-last').innerText = s.month_rescan_last ? `(آخر تشغيل: ${s.month_rescan_last})` : '';
   document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
+  document.getElementById('cfg-page-expand').checked = (s.page_expand_enabled || 'true') === 'true';
+  document.getElementById('cfg-page-expand-daily').value = s.page_expand_daily || 300;
+  document.getElementById('cfg-page-expand-gap').value = s.page_expand_min_gap || 3;
+  loadPageExpandStatus();
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
   document.getElementById('cfg-tg-token').value = s.telegram_token || '';
   document.getElementById('cfg-tg-chat').value = s.telegram_chat_id || '';
@@ -123,6 +128,9 @@ async function saveGeneralSettings() {
       schedule_enabled: schedEn,
       interval_hours: schedInt,
       entity_stats_enabled: document.getElementById('cfg-entity-stats').checked,
+      page_expand_enabled: document.getElementById('cfg-page-expand').checked,
+      page_expand_daily: parseInt(document.getElementById('cfg-page-expand-daily').value || '300'),
+      page_expand_min_gap: parseInt(document.getElementById('cfg-page-expand-gap').value || '3'),
       registration_open: document.getElementById('cfg-registration-open').checked,
       extension_registration_open: document.getElementById('cfg-extension-registration-open').checked,
       cta_filter_enabled: document.getElementById('cfg-cta-filter').checked,
@@ -280,6 +288,29 @@ async function testTelegram() {
     btn.disabled = false;
     btn.innerText = '🧪 فحص وإرسال رسالة تجريبية';
   }
+}
+
+async function loadPageExpandStatus() {
+  const el = document.getElementById('page-expand-summary');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/page-expand');
+    if (!r.ok) return;
+    const d = await r.json();
+    const fmt = n => Number(n || 0).toLocaleString('en-US');
+    el.textContent = `ينتظر التوسيع: ${fmt(d.pending_pages)} صفحة (~${fmt(d.missing_ads)} إعلان ناقص) · اليوم: ${fmt(d.done_today)}/${fmt(d.daily)} صفحة`
+      + (d.last ? ` · آخر تشغيل: ${String(d.last).slice(0, 16).replace('T', ' ')}` : '');
+  } catch (e) { /* offline */ }
+}
+
+async function runPageExpand(btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/page-expand/run', {method: 'POST'});
+    const d = await r.json();
+    alert(d.ok ? (d.queued ? '🕒 أُضيف توسيع الصفحات إلى قائمة الانتظار.' : '🔁 بدأ توسيع الصفحات.') : '⚠️ ' + (d.error || 'تعذّر البدء'));
+    if (typeof loadJobs === 'function') loadJobs();
+  } finally { btn.disabled = false; }
 }
 
 async function runScheduleNow() {

@@ -10,18 +10,25 @@ from db import db
 from pages import resolve_target_url
 from scrape_manager import (
     manager, job_wakeup, DEFAULT_COUNTRY, MONTH_MODE, MONTH_LANGS, STATUS_MODE, WINNING_MODE,
-    _proxy_setting,
+    EXPAND_MODE, _proxy_setting,
 )
 from telegram_bot import follow_watch_loop, telegram_bot_supervisor
 
 logger = logging.getLogger("web_app")
 
 
-def _queue_month_scrape(source: str, start: Optional[str] = None, end: Optional[str] = None):
+def _queue_month_scrape(source: str, start: Optional[str] = None, end: Optional[str] = None,
+                        open_ended: bool = False):
     """Queue the whole-market scrape (default: 1st of this month -> today,
-    Algeria time). Returns (job_id, queued_behind_another_job)."""
+    Algeria time). ``open_ended`` = no date: from today back until the active
+    ads run out (scrape_manager stops by itself). Returns (job_id, queued)."""
+    from datetime import timedelta
     from db import algeria_today
+    from scrape_manager import MARKET_ALL_MAX_DAYS, OPEN_SCOPE
     today = algeria_today()
+    if open_ended:
+        start = (today - timedelta(days=MARKET_ALL_MAX_DAYS - 1)).isoformat()
+        end = today.isoformat()
     start = start or today.replace(day=1).isoformat()
     end = end or today.isoformat()
     busy = bool(manager.state.get("running")) or db.has_pending_jobs()
@@ -29,10 +36,11 @@ def _queue_month_scrape(source: str, start: Optional[str] = None, end: Optional[
     job_id = db.create_job(
         query=f"{label} {start} ← {end}", country=DEFAULT_COUNTRY, exact_phrase=True,
         stores_only=True, sort_mode="relevancy_monthly_grouped", source=source,
-        start_date_min=start, start_date_max=end, date_scope="launch",
+        start_date_min=start, start_date_max=end, date_scope=OPEN_SCOPE if open_ended else "launch",
         mode=MONTH_MODE, languages=",".join(MONTH_LANGS))
     job_wakeup.set()
-    manager._emit("log", {"text": f"🗓️ أُضيف سحب السوق يوماً بيوم ({start} ← {end})"
+    manager._emit("log", {"text": (f"🗓️ أُضيف سحب كل السوق بلا تاريخ (من {end} إلى الخلف حتى تنفد الإعلانات)"
+                                   if open_ended else f"🗓️ أُضيف سحب السوق يوماً بيوم ({start} ← {end})")
                                   + (" إلى قائمة الانتظار." if busy else ".")})
     return job_id, busy
 
@@ -135,6 +143,30 @@ def _month_rescan_due(settings: dict) -> bool:
     return not db.has_open_mode_job(MONTH_MODE)
 
 
+def _queue_page_expand(source: str):
+    """Queue one page-expansion job. Returns (job_id, queued_behind)."""
+    import page_expand
+    busy = bool(manager.state.get("running")) or db.has_pending_jobs()
+    job_id = db.create_job(query=page_expand.LABEL, country=DEFAULT_COUNTRY, stores_only=True,
+                           source=source, mode=EXPAND_MODE)
+    job_wakeup.set()
+    manager._emit("log", {"text": "🔁 أُضيف توسيع الصفحات" + (" إلى قائمة الانتظار." if busy else ".")})
+    return job_id, busy
+
+
+def _page_expand_due() -> bool:
+    """Lowest priority: only when nothing runs or waits, within today's cap,
+    and when some page is still missing ads."""
+    import page_expand
+    if not page_expand.config(db.get_settings())["enabled"]:
+        return False
+    if manager.state.get("running") or db.has_pending_jobs() or db.has_open_mode_job(EXPAND_MODE):
+        return False
+    if page_expand.room_today(db) <= 0:
+        return False
+    return bool(page_expand.candidates(db, limit=1))
+
+
 def _auto_schedule_enabled() -> bool:
     """AUTO_SCHEDULE=off (local testing) stops the scheduler from queueing
     automatic jobs: daily status check, daily market re-scan and competitor
@@ -177,6 +209,8 @@ def scheduler_loop() -> None:
             if _winning_check_due(s):
                 _queue_winning_check("schedule")
                 db.set_setting("winning_check_last", datetime.now(timezone.utc).isoformat())
+            if _page_expand_due():
+                _queue_page_expand("page_expand")
             if s.get("schedule_enabled", "true").lower() in ("1", "true", "yes", "on"):
                 targets = [t for t in db.list_targets(market="dz") if t.get("enabled")]
                 now_utc = datetime.now(timezone.utc)
@@ -366,7 +400,7 @@ def run_claimed_job(job: dict) -> None:
                 pause = "manual"
                 manager._emit("log", {"text": f"⏸ إيقاف مؤقت للمهمة #{jid} — يُحفظ موضعها لتُستأنف لاحقاً."})
                 manager.stop()
-            elif not pause and job.get("mode") == MONTH_MODE and db.has_priority_pending():
+            elif not pause and job.get("mode") in (MONTH_MODE, EXPAND_MODE) and db.has_priority_pending():
                 # A scan the user just asked for: let it through, then
                 # carry on with the market from the same point.
                 pause = "auto"

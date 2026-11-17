@@ -112,6 +112,25 @@
               <button type="button" onclick="startStatusCheck(this)" class="sbtn shrink-0">🔎 افحص الآن</button>
             </div>
           </div>
+          <div data-save="general" class="scard space-y-2">
+            <div class="flex items-start gap-3 flex-wrap">
+              <input type="checkbox" id="cfg-page-expand" class="rounded text-blue-600 cursor-pointer mt-0.5">
+              <div class="flex-1 min-w-[14rem]">
+                <div class="srow-t">🔁 توسيع الصفحات: اسحب كل إعلانات الصفحات الناقصة</div>
+                <div class="srow-d">عندما تشغّل صفحة في Meta إعلانات نشطة أكثر مما عندنا (مثلاً 26 مقابل 1)، تُسحب كل إعلاناتها بالـ Page ID. الأكبر نقصاً أولاً، بأقل أولوية: يعمل فقط حين لا يوجد سحب آخر، ويتوقف مؤقتاً لأي سحب يدوي. يعتمد على «عدّ إعلانات الصفحات والمتاجر» في الفلاتر.</div>
+              </div>
+            </div>
+            <div class="flex items-center gap-3 flex-wrap text-[11px] font-bold text-slate-600">
+              <label class="flex items-center gap-1">حد يومي (صفحات)
+                <input id="cfg-page-expand-daily" type="number" min="0" max="100000" class="sinput w-20 py-1 text-center font-black"></label>
+              <label class="flex items-center gap-1">نقص لا يقل عن
+                <input id="cfg-page-expand-gap" type="number" min="1" max="1000" class="sinput w-16 py-1 text-center font-black"> إعلانات</label>
+            </div>
+            <div class="flex items-center justify-between gap-2 flex-wrap">
+              <span id="page-expand-summary" class="text-[11px] text-slate-500"></span>
+              <button type="button" onclick="runPageExpand(this)" class="sbtn shrink-0">🔁 وسّع الآن</button>
+            </div>
+          </div>
         </div>
 
         <!-- ═══ 3. PROXY & CONNECTION ═══ -->

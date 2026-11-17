@@ -50,6 +50,9 @@ def api_get_settings():
         "telegram_chat_id": s.get("telegram_chat_id", ""),
         "notify_webhook": s.get("notify_webhook", ""),
         "entity_stats_enabled": s.get("entity_stats_enabled", "true"),
+        "page_expand_enabled": s.get("page_expand_enabled", "true"),
+        "page_expand_daily": s.get("page_expand_daily", "300"),
+        "page_expand_min_gap": s.get("page_expand_min_gap", "3"),
         "registration_open": s.get("registration_open", "false"),
         "extension_registration_open": s.get("extension_registration_open", "true"),
         "meta_ads_proxy": s.get("meta_ads_proxy", ""),
@@ -90,6 +93,14 @@ def api_set_settings():
         db.set_setting("notify_webhook", cfg["notify_webhook"].strip())
     if "entity_stats_enabled" in cfg:
         db.set_setting("entity_stats_enabled", "true" if cfg["entity_stats_enabled"] else "false")
+    if "page_expand_enabled" in cfg:
+        db.set_setting("page_expand_enabled", "true" if cfg["page_expand_enabled"] else "false")
+    for key, lo, hi in (("page_expand_daily", 0, 100000), ("page_expand_min_gap", 1, 1000)):
+        if key in cfg:
+            try:
+                db.set_setting(key, str(max(lo, min(hi, int(cfg[key])))))
+            except (TypeError, ValueError):
+                pass
     if "registration_open" in cfg:
         db.set_setting("registration_open", "true" if cfg["registration_open"] else "false")
     if "extension_registration_open" in cfg:

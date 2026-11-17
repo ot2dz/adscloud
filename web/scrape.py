@@ -74,6 +74,11 @@ def api_start():
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
+    if mode in (MONTH_MODE, "market") and cfg.get("open_ended"):
+        job_id, queued = _queue_month_scrape("manual", open_ended=True)
+        return jsonify({"ok": True, "queued": queued, "job_id": job_id, "mode": MONTH_MODE,
+                        "open_ended": True, "date_label": "كل التواريخ (حتى تنفد الإعلانات)"})
+
     if mode in (MONTH_MODE, "market"):
         if not d_min:  # the whole market always needs a window
             d_min, d_max, label = resolve_date_range("this_month")
@@ -123,6 +128,25 @@ def api_start():
         manager._emit("log", {"text": f"🕒 أُضيف السحب «{query or url}» إلى قائمة الانتظار وسيبدأ بعد انتهاء السحب الحالي."})
     return jsonify({"ok": True, "queued": busy, "preempts": preempts, "job_id": job_id, "kind": kind, "value": value,
                     "start_date_min": d_min, "start_date_max": d_max, "date_label": label, "date_scope": date_scope})
+
+
+@bp.route("/api/page-expand", methods=["GET"])
+@admin_required
+def api_page_expand_status():
+    import page_expand
+    return jsonify(page_expand.status(db))
+
+
+@bp.route("/api/page-expand/run", methods=["POST"])
+@admin_required
+def api_page_expand_run():
+    """Queue one expansion batch now (the daily cap still applies to the batch size)."""
+    from background import _queue_page_expand
+    from scrape_manager import EXPAND_MODE
+    if db.has_open_mode_job(EXPAND_MODE):
+        return jsonify({"ok": False, "error": "توسيع الصفحات يعمل أو ينتظر في القائمة."}), 409
+    job_id, queued = _queue_page_expand("manual_expand")
+    return jsonify({"ok": True, "job_id": job_id, "queued": queued})
 
 
 def _market_scan_running() -> bool:
