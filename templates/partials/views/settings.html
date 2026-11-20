@@ -128,6 +128,10 @@
               <label class="flex items-center gap-1" title="صفحات الألعاب والعلامات الكبرى نادراً ما تكون متاجر COD، وكل واحدة تكلّف 100+ طلب. 0 = بلا حد. زر «اسحب كل إعلاناتها» في تفاصيل الإعلان يبقى متاحاً لها.">تخطَّ الصفحات الأكبر من
                 <input id="cfg-page-expand-max" type="number" min="0" max="1000000" class="sinput w-20 py-1 text-center font-black"> إعلان</label>
             </div>
+            <label class="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600">
+              <input type="checkbox" id="cfg-page-expand-cod" class="rounded text-blue-600 mt-0.5">
+              <span><b class="text-[#102a56]">متاجر COD فقط</b> — صفحة لها إعلان واحد على الأقل يذكر التوصيل أو الدفع عند الاستلام أو الولايات، أو متجرها على youcan / myecomsite / justsell. تُترك التطبيقات والمدارس وشركات الطيران.</span>
+            </label>
             <div class="flex items-center justify-between gap-2 flex-wrap">
               <span id="page-expand-summary" class="text-[11px] text-slate-500"></span>
               <button type="button" onclick="runPageExpand(this)" class="sbtn shrink-0">🔁 وسّع الآن</button>

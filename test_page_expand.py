@@ -20,13 +20,16 @@ def _setup():
         db._execute(f"DELETE FROM {t}")
     # page 501: 1 ad here, 26 on Meta -> gap 25
     db.save_ad(tc._ad("p1-a", "shop.myecomsite.net", "عرض 1", page_id="501"), query="q", country="DZ")
+    # page 505: an app with an "order" button, no delivery talk -> not a COD store
+    db.save_ad(tc._ad("p5-a", "indrive.com", "حدد سعرك واختار سائقك", page_id="505"), query="q", country="DZ")
+    db.save_entity_stat("page", "505", 56)
     # page 502: 5 here, 6 on Meta -> gap 1 (below the minimum)
     for i in range(5):
         db.save_ad(tc._ad(f"p2-{i}", "b.youcan.shop", f"منتج {i}", link_path=f"/p/{i}", page_id="502"),
                    query="q", country="DZ")
     # page 503: 2 here, 9 on Meta -> gap 7
     for i in range(2):
-        db.save_ad(tc._ad(f"p3-{i}", "c.youcan.shop", f"سلعة {i}", link_path=f"/c/{i}", page_id="503"),
+        db.save_ad(tc._ad(f"p3-{i}", "c.store.dz", f"سلعة {i} التوصيل 58 ولاية", link_path=f"/c/{i}", page_id="503"),
                    query="q", country="DZ")
     # page 504: no Meta count yet -> never a candidate
     db.save_ad(tc._ad("p4-a", "d.youcan.shop", "شيء", page_id="504"), query="q", country="DZ")
@@ -40,10 +43,17 @@ class CandidatesTest(unittest.TestCase):
         _setup()
 
     def test_biggest_gap_first_and_minimum_gap(self):
-        rows = db.page_expand_candidates(limit=10, min_gap=3)
+        rows = db.page_expand_candidates(limit=10, min_gap=3)  # raw: no COD filter
         self.assertEqual([(r["page_id"], int(r["meta_ads"]), int(r["have"])) for r in rows],
-                         [("501", 26, 1), ("503", 9, 2)])
-        self.assertEqual(db.page_expand_pending(min_gap=3), {"pages": 2, "missing": 32})
+                         [("505", 56, 1), ("501", 26, 1), ("503", 9, 2)])
+        self.assertEqual(db.page_expand_pending(min_gap=3), {"pages": 3, "missing": 87})
+        self.assertEqual(page_expand.status(db)["missing_ads"], 32)  # COD stores only
+
+    def test_only_cod_stores_unless_switched_off(self):
+        # 501: store on myecomsite (platform), 503: delivery words, 505: an app
+        self.assertEqual([r["page_id"] for r in page_expand.candidates(db)], ["501", "503"])
+        db.set_setting("page_expand_cod_only", "false")
+        self.assertEqual([r["page_id"] for r in page_expand.candidates(db)], ["505", "501", "503"])
 
     def test_very_big_pages_are_left_out(self):
         db.save_entity_stat("page", "501", 1348)  # a game app, not a COD store
@@ -53,9 +63,9 @@ class CandidatesTest(unittest.TestCase):
 
     def test_expanded_page_comes_back_only_when_meta_grows_after_the_wait(self):
         db.mark_page_expanded("501", 26, 25)
-        self.assertEqual([r["page_id"] for r in db.page_expand_candidates(min_gap=3)], ["503"])
+        self.assertEqual([r["page_id"] for r in page_expand.candidates(db)], ["503"])
         db.save_entity_stat("page", "501", 40)  # new launches, but expanded just now
-        self.assertEqual([r["page_id"] for r in db.page_expand_candidates(min_gap=3)], ["503"])
+        self.assertEqual([r["page_id"] for r in page_expand.candidates(db)], ["503"])
         db._execute("UPDATE page_expand SET expanded_at = '2000-01-01T00:00:00+00:00' WHERE page_id = '501'")
         self.assertIn("501", [r["page_id"] for r in db.page_expand_candidates(min_gap=3)])
         db.save_entity_stat("page", "501", 26)  # older and not grown: stays out
@@ -100,7 +110,7 @@ class ExpandJobTest(unittest.TestCase):
         self.assertEqual(db._query_one("SELECT COUNT(*) AS n FROM meta_ads WHERE ad_id LIKE 'new-%'")["n"], 6)
         self.assertEqual({r["page_id"] for r in db._query("SELECT page_id FROM page_expand")}, {"501", "503"})
         self.assertEqual(page_expand.config()["done_today"], 2)
-        self.assertEqual(db.page_expand_candidates(min_gap=3), [])
+        self.assertEqual(page_expand.candidates(db), [])
 
     def test_stop_keeps_the_page_list_and_resumes_after_it(self):
         with mock.patch.object(sm, "scrape", side_effect=self.fake(stop_after=1)):

@@ -14,6 +14,9 @@ Settings (settings table):
   page_expand_max_page skip pages running more ads than this (default 300, 0 =
                        no limit): game apps and big brands, rarely COD stores,
                        each costing 100+ requests. The ad's button still pulls one.
+  page_expand_cod_only "true" (default): only pages with an ad in the bank that
+                       talks about delivery / cash on delivery, or a store on a
+                       known COD platform — not apps, schools or airlines
   page_expand_day / page_expand_done   today's counter (Algeria day)
 A page is expanded again only after RECHECK_DAYS and only if its Meta total grew.
 """
@@ -25,6 +28,11 @@ BATCH = 30            # pages per job: short jobs, so other scans never wait lon
 DEFAULT_DAILY = 300
 DEFAULT_MIN_GAP = 3
 DEFAULT_MAX_PAGE = 300
+# What a COD store's ads say (Darija / Arabic / French) and where they link.
+# Checked on the ads already in the bank: one is enough for the page.
+COD_TEXT = ("توصيل", "التوصيل", "الدفع عند الاستلام", "عند الاستلام", "الدفع عند الإستلام",
+            "ولاية", "الولايات", "livraison", "paiement à la livraison")
+COD_HOSTS = ("youcan.shop", "youcan.store", "myecomsite.", "justsell.")
 RECHECK_DAYS = 7.0
 LABEL = "🔁 توسيع الصفحات"
 
@@ -52,6 +60,7 @@ def config(settings: Optional[dict] = None) -> dict:
         "daily": _int(s.get("page_expand_daily"), DEFAULT_DAILY, 0, 100000),
         "min_gap": _int(s.get("page_expand_min_gap"), DEFAULT_MIN_GAP, 1, 1000),
         "max_page": _int(s.get("page_expand_max_page"), DEFAULT_MAX_PAGE, 0, 1000000),
+        "cod_only": str(s.get("page_expand_cod_only") or "true").lower() in ("1", "true", "yes", "on"),
         "done_today": _int(s.get("page_expand_done"), 0, 0, 10**9) if day == _today() else 0,
     }
 
@@ -77,14 +86,19 @@ def too_big(meta_ads, settings: Optional[dict] = None) -> bool:
         return False
 
 
+def _cod(c: dict) -> dict:
+    return {"cod_text": COD_TEXT, "cod_hosts": COD_HOSTS} if c["cod_only"] else {}
+
+
 def candidates(db, limit: int = BATCH) -> list[dict]:
     c = config(db.get_settings())
     return db.page_expand_candidates(limit=limit, min_gap=c["min_gap"], recheck_days=RECHECK_DAYS,
-                                     max_ads=c["max_page"])
+                                     max_ads=c["max_page"], **_cod(c))
 
 
 def status(db) -> dict:
     c = config(db.get_settings())
-    pending = db.page_expand_pending(min_gap=c["min_gap"], recheck_days=RECHECK_DAYS, max_ads=c["max_page"])
+    pending = db.page_expand_pending(min_gap=c["min_gap"], recheck_days=RECHECK_DAYS, max_ads=c["max_page"],
+                                     **_cod(c))
     return dict(c, pending_pages=pending["pages"], missing_ads=pending["missing"],
                 last=str(db.get_settings().get("page_expand_last") or ""))

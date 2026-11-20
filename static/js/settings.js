@@ -96,6 +96,7 @@ async function loadSettings() {
   document.getElementById('cfg-page-expand-daily').value = s.page_expand_daily || 300;
   document.getElementById('cfg-page-expand-gap').value = s.page_expand_min_gap || 3;
   document.getElementById('cfg-page-expand-max').value = s.page_expand_max_page ?? 300;
+  document.getElementById('cfg-page-expand-cod').checked = (s.page_expand_cod_only || 'true') === 'true';
   loadPageExpandStatus();
   document.getElementById('cfg-notify-enabled').checked = s.notify_enabled === 'true';
   document.getElementById('cfg-tg-token').value = s.telegram_token || '';
@@ -133,6 +134,7 @@ async function saveGeneralSettings() {
       page_expand_daily: parseInt(document.getElementById('cfg-page-expand-daily').value || '300'),
       page_expand_min_gap: parseInt(document.getElementById('cfg-page-expand-gap').value || '3'),
       page_expand_max_page: parseInt(document.getElementById('cfg-page-expand-max').value || '0'),
+      page_expand_cod_only: document.getElementById('cfg-page-expand-cod').checked,
       registration_open: document.getElementById('cfg-registration-open').checked,
       extension_registration_open: document.getElementById('cfg-extension-registration-open').checked,
       cta_filter_enabled: document.getElementById('cfg-cta-filter').checked,
