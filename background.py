@@ -727,8 +727,11 @@ def start_background_threads() -> None:
         logger.info("AUTO_SCHEDULE=off: no automatic jobs will be queued")
     threading.Thread(target=scheduler_loop, daemon=True).start()
     threading.Thread(target=entity_stats_loop, daemon=True).start()
-    threading.Thread(target=job_worker_loop, daemon=True).start()
-    threading.Thread(target=check_worker_loop, daemon=True).start()
+    # JOB_WORKERS=off (the test suite): jobs are only run by explicit calls,
+    # so a job one test leaves queued never runs during another test.
+    if os.environ.get("JOB_WORKERS", "on").strip().lower() not in ("0", "off", "false", "no"):
+        threading.Thread(target=job_worker_loop, daemon=True).start()
+        threading.Thread(target=check_worker_loop, daemon=True).start()
     threading.Thread(target=niches_loop, daemon=True).start()
     threading.Thread(target=niche_ai_loop, daemon=True).start()
     threading.Thread(target=hunter_backfill_once, daemon=True).start()

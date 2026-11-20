@@ -18,6 +18,7 @@ os.environ.setdefault("ALLOW_INSECURE_SECRET_KEY", "1")
 os.environ.setdefault("SECRET_KEY", "x" * 40)
 os.environ["SESSION_COOKIE_SECURE"] = "0"
 os.environ["AUTO_SCHEDULE"] = "off"
+os.environ["JOB_WORKERS"] = "off"  # no background worker running other tests' jobs
 os.environ["TELEGRAM_BOT"] = "off"
 
 import ai_client  # noqa: E402
