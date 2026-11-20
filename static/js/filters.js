@@ -141,11 +141,25 @@ function groupedKeywordMenu(items) {
   }
   return [...groups.values()];
 }
+// Tags that are not words: a store domain, a link, a page number or the
+// extension. They are many and crowd out the keywords, so the menu leaves
+// them out (the market scan and page expansion stay). Ads keep their tags.
+function isSiteTag(label) {
+  const v = String(label || '').trim();
+  if (!v) return true;
+  if (/^https?:\/\//i.test(v) || /facebook\.com|fb\.com/i.test(v)) return true;   // a link
+  if (/^\d{5,25}$/.test(v)) return true;                                          // a page ID
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(v)) return true;               // a domain
+  return v === 'chrome_extension';
+}
+
 function renderKeywordMenu() {
   const box = document.getElementById('kw-items');
   if (!box) return;
   const q = ((document.getElementById('kw-search') || {}).value || '').trim().toLowerCase();
-  const items = groupedKeywordMenu(kwMenuItems).filter(x => !q || x.label.toLowerCase().includes(q));
+  const items = groupedKeywordMenu(kwMenuItems)
+    .filter(x => !isSiteTag(x.label))
+    .filter(x => !q || x.label.toLowerCase().includes(q));
   box.innerHTML = items.length ? items.map(x => `
     <label class="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer text-xs">
       <span class="flex items-center gap-2 min-w-0">
