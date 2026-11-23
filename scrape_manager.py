@@ -142,6 +142,7 @@ class ScrapeManager:
         # so the scrape bar keeps showing the user's scrape).
         self.forward_logs_to = forward_logs_to
         self.log_prefix = log_prefix
+        self.check_line = ""  # line of the running check ('' = the configured one)
         self.thread = None
         self.stop_event = threading.Event()
         self.events = queue.Queue()
@@ -357,8 +358,10 @@ class ScrapeManager:
                 # covers the saved products' pages (stopped ones too) and
                 # records ads that come back (relaunch / resume).
                 import status_check
+                from engine import _sleep_unless_stopped
                 winning = mode == WINNING_MODE
-                st = {}
+                # Totals carry on over a resume (line change, restart).
+                st = dict(resume.get("stats") or {})
 
                 def save_new(a):
                     if self.stop_event.is_set():
@@ -373,22 +376,34 @@ class ScrapeManager:
                     return stored
 
                 def status_cp(next_batch):
-                    outcome["checkpoint"] = {"pass": next_batch, "cursor": None}
+                    outcome["checkpoint"] = {"pass": next_batch, "cursor": None, "after": st.get("after") or "",
+                                             "stats": dict(st)}
+                    outcome["progressed"] = True
                     self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
                     if on_checkpoint:
                         on_checkpoint(outcome["checkpoint"])
 
-                check_proxy, rotate_url, rotate_token = _status_egress()
+                if self.check_line:
+                    import check_lines
+                    check_proxy, rotate_url, rotate_token = check_lines.egress(self.check_line)
+                else:
+                    check_proxy, rotate_url, rotate_token = _status_egress()
                 try:
                     outcome["status"] = status_check.run(
                         db, progress=progress, should_stop=lambda: self.stop_event.is_set(),
                         proxy=check_proxy, start_batch=max(1, int(resume.get("pass") or 1)),
                         on_checkpoint=status_cp, on_new_ad=save_new, stats=st,
                         rotate_url=rotate_url, rotate_token=rotate_token,
-                        pages=db.winning_pages() if winning else None, watch_returns=winning)
+                        sleep=lambda sec: _sleep_unless_stopped(sec, self.stop_event.is_set),
+                        pages=db.winning_pages() if winning else None, watch_returns=winning,
+                        after=str(resume.get("after") or ""))
                 except status_check.Blocked as exc:
-                    outcome.update(status="interrupted", error=f"Meta لا تُرجع نتائج (حجب مؤقت؟) — لم يُعلَّم أي إعلان: {exc}")
-                    progress("⏸ " + outcome["error"])
+                    if self.stop_event.is_set():  # cut short on purpose, not a block
+                        outcome["status"] = "stopped"
+                    else:
+                        outcome.update(status="interrupted", line_failed=True,
+                                       error=f"Meta لا تُرجع نتائج (حجب مؤقت؟) — لم يُعلَّم أي إعلان: {exc}")
+                        progress("⏸ " + outcome["error"])
                 self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
                 st["finished_at"] = datetime.now(timezone.utc).isoformat()
                 st["status"] = outcome["status"]
@@ -779,7 +794,7 @@ class ScrapeManager:
 
 manager = ScrapeManager()
 # Second worker: status / winning checks on the tablet line, beside the scrapes.
-check_manager = ScrapeManager(forward_logs_to=manager, log_prefix="[فحص التابلت] ")
+check_manager = ScrapeManager(forward_logs_to=manager, log_prefix="[فحص الحالة] ")
 CHECK_MODES = (STATUS_MODE, WINNING_MODE)
 # Set while a market-scan lane is scraping through the tablet line: the
 # check worker waits for it, so the tablet never serves two jobs at once.

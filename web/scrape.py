@@ -196,7 +196,8 @@ def api_status():
     check = None
     if cs.get("running"):
         log = cs.get("log") or []
-        check = {"job_id": cs.get("job_id"), "query": cs.get("query"), "last": log[-1] if log else ""}
+        check = {"job_id": cs.get("job_id"), "query": cs.get("query"), "last": log[-1] if log else "",
+                 "line": check_manager.check_line}
     return jsonify({**manager.state, "check": check, "scrape_enabled": SCRAPE_ENABLED, "db": db.get_stats()})
 
 

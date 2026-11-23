@@ -322,11 +322,15 @@ JOB_CONTROL_CHECK_SEC = 3  # how often a running job re-reads its stop / pause f
 INPROC_WORKER_PREFIX = "inproc-"
 
 
-def run_claimed_job(job: dict, mgr=None) -> None:
+def run_claimed_job(job: dict, mgr=None, line: str = "") -> None:
     """Run one job claimed from the queue to its end, retry, pause or failure.
     ``mgr``: the scrape manager of the worker that claimed it (the main one by
-    default; the tablet check worker passes its own)."""
+    default; the check worker passes its own). ``line``: the line a check uses
+    (check_lines); a failed line parks the check for another line, and never
+    counts as a failed attempt."""
+    import check_lines
     mgr = mgr or manager
+    is_check = job.get("mode") in CHECK_MODES
     jid = job.get("id")
     if job.get("stop_requested"):
         db.finish_job(jid, status="stopped", result_count=int(job.get("result_count") or 0))
@@ -357,7 +361,8 @@ def run_claimed_job(job: dict, mgr=None) -> None:
         # a DB write per page is not. The final checkpoint is always
         # written below from the outcome.
         now = time.monotonic()
-        if now - last_write[0] >= CHECKPOINT_EVERY_SEC:
+        # A check saves every batch: its position must survive anything.
+        if is_check or now - last_write[0] >= CHECKPOINT_EVERY_SEC:
             last_write[0] = now
             db.save_checkpoint(_jid, json.dumps(cp) if cp else None,
                                result_count=mgr.state.get("scraped", 0))  # cumulative
@@ -392,6 +397,7 @@ def run_claimed_job(job: dict, mgr=None) -> None:
 
     last_stop_check = 0.0
     pause = ""  # '' | 'manual' | 'auto': why this run is being parked
+    leave = ""  # why a check left its line
     while mgr.state.get("running"):
         # Re-read the job: the stop / pause flags are set by another request.
         if time.monotonic() - last_stop_check >= JOB_CONTROL_CHECK_SEC:
@@ -413,6 +419,11 @@ def run_claimed_job(job: dict, mgr=None) -> None:
                 mgr._emit("log", {"text": f"⏸ إيقاف مؤقت لـ{what} #{jid} لتنفيذ مهمة أهم أولاً — "
                                           f"سيُكمل تلقائياً من نفس النقطة بعد انتهائها."})
                 mgr.stop()
+            elif not pause and line:
+                leave = check_lines.should_leave(line)
+                if leave:
+                    pause = "auto"
+                    mgr.stop()
         time.sleep(1)
 
     outcome = mgr.state.get("outcome") or {"status": "done"}
@@ -443,6 +454,15 @@ def run_claimed_job(job: dict, mgr=None) -> None:
     except Exception:
         pass
 
+    if line and outcome.get("progressed"):
+        check_lines.worked(line)
+    if line and not pause and status == "interrupted" and outcome.get("line_failed"):
+        minutes = check_lines.failed(line)
+        leave = f"لا يعمل (يُجرَّب من جديد بعد {minutes} دقيقة)"
+        pause = "auto"
+        if line == check_lines.TABLET:
+            _alert_tablet_down(jid, outcome.get("error", ""))
+
     if pause and not stop_wins and status in ("stopped", "interrupted"):
         # Parked, not finished: same checkpoint, no retry attempt used.
         mgr.state["error"] = ""
@@ -450,11 +470,15 @@ def run_claimed_job(job: dict, mgr=None) -> None:
         mgr._emit("job", {"job_id": jid, "status": "paused" if pause == "manual" else "pending"})
         mgr._emit("log", {"text": (f"⏸ المهمة #{jid} متوقفة مؤقتاً بعد {count} إعلان — اضغط «استئناف» لتكمل."
                                        if pause == "manual" else
+                                       f"⏸ الفحص #{jid} ترك {check_lines.LABEL[line]}: {leave} — "
+                                       f"موضعه محفوظ ويُكمل منه على الخط المتاح."
+                                       if line else
                                        f"⏸ سحب السوق #{jid} ينتظر بعد {count} إعلان، ويُكمل بعد سحبك.")})
         logger.info("job %s: paused (%s) at %s", jid, pause, cp)
         return
 
-    if status == "interrupted" and job.get("mode") not in CHECK_MODES:
+    if status == "interrupted" and not is_check:
+        check_lines.failed(check_lines.SCRAPE)  # no check through a line that just failed
         _alert_work_line_down(jid, outcome.get("error", ""))
     if status == "interrupted":
         if attempts < len(JOB_RETRY_DELAYS_MIN):
@@ -515,39 +539,83 @@ def _alert_work_line_down(jid, error: str) -> None:
         logger.exception("work line alert failed")
 
 
+def _alert_tablet_down(jid, error: str) -> None:
+    """Told at most once an hour; the check itself carries on elsewhere."""
+    try:
+        import check_lines
+        import notify
+        notify.notify_alert(db.get_settings(), "tablet_down",
+                            "⚠️ <b>AdsCloud: خط التابلت لا يعمل</b>\n"
+                            + ("الفحص يُكمل من نفس النقطة عبر خط السحب كلما كان فارغاً، ويرجع للتابلت عندما يعود.\n"
+                               if check_lines.fallback_enabled() else
+                               "الفحص ينتظر عودة التابلت ويُكمل من نفس النقطة.\n")
+                            + f"<code>{str(error or '')[:200]}</code>")
+    except Exception:
+        logger.exception("tablet alert failed")
+
+
+def job_worker_step(worker_id: str) -> bool:
+    """Claim and run one scrape job. False = nothing to do. The scrape line
+    lock keeps a check off the line meanwhile (and waits for one to leave)."""
+    import check_lines
+    with check_lines.scrape_line_lock:
+        skip = CHECK_MODES if checks_have_own_line() else None
+        job = db.claim_next_job(worker_id, skip_modes=skip)
+        if not job:
+            return False
+        run_claimed_job(job)
+        return True
+
+
 def job_worker_loop() -> None:
-    """The scrape worker (work line): every job except the tablet checks
-    when those have their own line."""
+    """The scrape worker (work line): every job except the checks when those
+    have their own line."""
     worker_id = f"{INPROC_WORKER_PREFIX}{os.getpid()}"
     while True:
         try:
-            skip = CHECK_MODES if checks_have_own_line() else None
-            job = db.claim_next_job(worker_id, skip_modes=skip)
-            if not job:
+            if not job_worker_step(worker_id):
                 job_wakeup.wait(3)
                 job_wakeup.clear()
-                continue
-            run_claimed_job(job)
         except Exception:
             logger.exception("job worker loop error")
             time.sleep(5)
 
 
+def check_worker_step(worker_id: str) -> bool:
+    """Run one check on the line available now (tablet first, else the idle
+    scrape line). False = nothing to do or no line."""
+    import check_lines
+    if not checks_have_own_line() or not db.has_pending_jobs(only_modes=CHECK_MODES):
+        return False
+    line = check_lines.acquire()
+    if not line:
+        if not check_lines.tablet_ready() and not tablet_lane_busy.is_set():
+            _alert_tablet_down(None, "البروكسي لا يجيب")
+        return False
+    try:
+        job = db.claim_next_job(worker_id, only_modes=CHECK_MODES)
+        if not job:
+            return False
+        if line == check_lines.SCRAPE:
+            _alert_tablet_down(job.get("id"), "البروكسي لا يجيب أو محجوب")
+        check_manager.check_line = line
+        check_manager.log_prefix = f"[فحص الحالة · {check_lines.LABEL[line]}] "
+        run_claimed_job(job, check_manager, line=line)
+        return True
+    finally:
+        check_manager.check_line = ""
+        check_lines.release(line)
+
+
 def check_worker_loop() -> None:
-    """The tablet worker: status / winning checks, in parallel with the
+    """The check worker: status / winning checks, in parallel with the
     scrapes. Idle unless a dedicated status-check proxy is set (otherwise
     the scrape worker runs the checks, one job at a time, as before)."""
     worker_id = f"{INPROC_WORKER_PREFIX}{os.getpid()}-check"
     while True:
         try:
-            if not checks_have_own_line() or tablet_lane_busy.is_set():
-                time.sleep(5)  # a market lane is on the tablet: it leaves after its day
-                continue
-            job = db.claim_next_job(worker_id, only_modes=CHECK_MODES)
-            if not job:
+            if not check_worker_step(worker_id):
                 time.sleep(5)
-                continue
-            run_claimed_job(job, check_manager)
         except Exception:
             logger.exception("check worker loop error")
             time.sleep(5)
@@ -568,7 +636,9 @@ def entity_stats_loop() -> None:
     from engine import entity_ad_count, new_count_client
 
     def busy() -> bool:
-        return bool(manager.state.get("running")) or db.has_pending_jobs()
+        skip = CHECK_MODES if checks_have_own_line() else None
+        return (bool(manager.state.get("running")) or db.has_pending_jobs(skip_modes=skip)
+                or check_manager.check_line == "scrape")  # a check is using the scrape line
 
     while True:
         try:

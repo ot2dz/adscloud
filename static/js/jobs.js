@@ -66,7 +66,7 @@ async function loadJobs() {
       ${j.status === 'running' && j.pause_requested ? `
         <div class="text-xs text-amber-700 font-semibold">⏸ جارٍ الإيقاف المؤقت — يُحفظ الموضع…</div>` : ''}
       ${j.status === 'pending' && j.paused_reason === 'auto' ? `
-        <div class="text-xs text-amber-700 font-semibold">⏸ أُوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان لتنفيذ سحبك أولاً — سيُكمل تلقائياً من نفس النقطة بعده.</div>` : ''}
+        <div class="text-xs text-amber-700 font-semibold">⏸ ${['status_check', 'winning_check'].includes(j.mode) ? `ينتظر خطاً متاحاً (التابلت أو خط السحب وهو فارغ) — فُحص ${fmtN(j.result_count)} إعلان، ويُكمل من نفس النقطة.` : `أُوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان لتنفيذ مهمة أهم أولاً — سيُكمل تلقائياً من نفس النقطة بعدها.`}</div>` : ''}
       ${j.status === 'paused' ? `
         <div class="text-xs text-amber-700 font-semibold">⏸ متوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان — «استئناف» يكمل من نفس النقطة.</div>` : ''}
       ${j.status === 'pending' && j.retry_at ? `

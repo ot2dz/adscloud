@@ -3373,10 +3373,10 @@ class Database:
                 ("pending", row["id"]))
         return len(stale)
 
-    def has_pending_jobs(self, skip_modes=None) -> bool:
+    def has_pending_jobs(self, skip_modes=None, only_modes=None) -> bool:
         """True if a job is waiting to run now (not one scheduled for later)."""
         p = self._ph()
-        mf, mparams = _mode_filter(None, skip_modes)
+        mf, mparams = _mode_filter(only_modes, skip_modes)
         return bool(self._query_one(
             f"SELECT id FROM jobs WHERE status='pending' AND (retry_at IS NULL OR retry_at <= {p})"
             + mf.format(p=p) + " LIMIT 1", (_now(), *mparams)))

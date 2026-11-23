@@ -122,7 +122,8 @@ class CheckWorkerTest(unittest.TestCase):
         finally:
             sm.manager.subscribers.remove(q)
         self.assertEqual([i["type"] for i in items], ["log"])
-        self.assertEqual(items[0]["data"]["text"], "[فحص التابلت] دفعة 3/10")
+        self.assertEqual(items[0]["data"]["text"], sm.check_manager.log_prefix + "دفعة 3/10")
+        self.assertTrue(sm.check_manager.log_prefix.startswith("[فحص الحالة"))
 
     def test_market_scan_leaves_the_tablet_lane_to_a_waiting_check(self):
         db.set_setting("meta_ads_proxy", "work:3128")

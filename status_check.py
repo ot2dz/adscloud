@@ -76,13 +76,17 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         on_new_ad: Optional[Callable] = None, stats: Optional[dict] = None,
         fetch=active_ads_of_pages, sleep=time.sleep,
         rotate_url: Optional[str] = None, rotate_token: Optional[str] = None,
-        pages: Optional[list] = None, watch_returns: bool = False) -> str:
+        pages: Optional[list] = None, watch_returns: bool = False, after: str = "") -> str:
     """Check every page with active ads. Returns done | stopped | interrupted.
 
     ``pages`` replaces the default list (pages with active ads). With
     ``watch_returns`` (winning products check) a batch is fetched even when
     none of its pages has an ad marked active, and ``on_new_ad`` also gets the
     ads we hold as stopped that Meta shows again, so a relaunch is noticed.
+
+    ``after``: resume behind this page id. The list is rebuilt on every run and
+    loses the pages that stopped meanwhile, so a batch number alone would skip
+    pages never checked. ``stats["after"]`` is the last page done.
     """
     stats = stats if stats is not None else {}
     for k in ("pages", "batches", "requests", "confirmed", "stopped", "new", "skipped_batches"):
@@ -93,13 +97,29 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         stats["error"] = msg
         return "interrupted"
 
-    pages = list(pages) if pages is not None else db.status_check_pages()
+    pages = sorted(str(p) for p in (pages if pages is not None else db.status_check_pages()))
+    total_pages, done_batches = len(pages), 0
+    if after:
+        pages = [p for p in pages if p > after]
+        # Batches behind us, for the numbers shown only.
+        done_batches = max(0, start_batch - 1)
+        start_batch = 1
+    if after and not pages:
+        return "done"
     batches = [pages[i:i + BATCH_PAGES] for i in range(0, len(pages), BATCH_PAGES)]
-    stats["total_batches"] = len(batches)
+    n_batches = len(batches) + done_batches
+    stats["total_batches"] = n_batches
     what = "صفحة لمنتجات رابحة" if watch_returns else "صفحة لها إعلانات نشطة"
-    progress(f"🔎 فحص حالة الإعلانات: {len(pages)} {what} = {len(batches)} دفعة (50 صفحة لكل طلب).")
-    if start_batch > 1:
-        progress(f"↩️ استئناف من الدفعة {start_batch}/{len(batches)}.")
+    progress(f"🔎 فحص حالة الإعلانات: {total_pages} {what} = {n_batches} دفعة (50 صفحة لكل طلب).")
+    if start_batch > 1 or done_batches:
+        progress(f"↩️ استئناف من الدفعة {start_batch + done_batches}/{n_batches}.")
+
+    def passed(idx, batch):
+        """The batch is behind us: save the position."""
+        stats["after"] = batch[-1]
+        if on_checkpoint:
+            on_checkpoint(idx + done_batches + 1)
+
     # Two pages known to run many ads: one request, alive if either answers.
     canary: list[str] = db.top_active_pages(2)
 
@@ -121,8 +141,7 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             return "stopped"
         ours = db.active_ads_of_pages(batch)
         if not ours and not watch_returns:
-            if on_checkpoint:
-                on_checkpoint(idx + 1)
+            passed(idx, batch)
             continue
         # Rule 1: a page that ran ads in an earlier batch must still answer.
         if not canary_alive():
@@ -142,14 +161,19 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             ads, complete = fetch_ok(batch)
         if should_stop():
             return "stopped"
+        if not complete and ads and not canary_alive():
+            # The line died in the middle: the batch is not lost, it is done
+            # again later (possibly through another line).
+            if should_stop():
+                return "stopped"
+            raise Blocked("the line stopped answering in the middle of a batch")
         if not complete:
             stats["skipped_batches"] += 1
-            progress(f"⚠️ الدفعة {idx}/{len(batches)} لم تكتمل — تُركت بدون تغيير.")
+            progress(f"⚠️ الدفعة {idx + done_batches}/{n_batches} لم تكتمل — تُركت بدون تغيير.")
             if not ads:
                 ip_rotator.rotate(url=rotate_url, token=rotate_token)
                 raise Blocked("batch returned nothing twice")
-            if on_checkpoint:
-                on_checkpoint(idx + 1)
+            passed(idx, batch)
             continue
 
         confirmed, missing = _missing(ours, ads)
@@ -158,8 +182,7 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
             progress(f"⚠️ الدفعة {idx}: {len(missing)}/{len(ours)} اختفت دفعة واحدة — نتيجة مشبوهة، لم تُطبّق.")
             db.apply_status_check(confirmed, [])
             stats["confirmed"] += len(confirmed)
-            if on_checkpoint:
-                on_checkpoint(idx + 1)
+            passed(idx, batch)
             continue
 
         stopped: list[str] = []
@@ -197,9 +220,8 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
         if counts:
             canary = sorted(counts, key=counts.get, reverse=True)[:2]
 
-        progress(f"✅ دفعة {idx}/{len(batches)}: {len(confirmed)} مؤكد نشط، {len(stopped)} توقف"
+        progress(f"✅ دفعة {idx + done_batches}/{n_batches}: {len(confirmed)} مؤكد نشط، {len(stopped)} توقف"
                  f" — المجموع: {stats['confirmed']} نشط، {stats['stopped']} متوقف، {stats['requests']} طلب.")
-        if on_checkpoint:
-            on_checkpoint(idx + 1)
+        passed(idx, batch)
         sleep(BATCH_PAUSE_SEC)
     return "done"

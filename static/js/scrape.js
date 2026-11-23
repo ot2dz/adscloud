@@ -489,7 +489,7 @@ function renderCheckState(c) {
   if (!el) return;
   el.classList.toggle('hidden', !c);
   if (!c) return;
-  el.textContent = `📱 ${c.query || 'فحص'} — يعمل في الخلفية عبر التابلت`;
+  el.textContent = `📱 ${c.query || 'فحص'} — يعمل في الخلفية عبر ${c.line === 'scrape' ? 'خط السحب (التابلت متوقف)' : 'التابلت'}`;
   el.title = c.last || '';
 }
 

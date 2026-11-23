@@ -73,6 +73,7 @@ def api_get_settings():
         "status_check_proxy": s.get("status_check_proxy", ""),
         "status_check_rotate_url": s.get("status_check_rotate_url", ""),
         "status_check_last": s.get("status_check_last", ""),
+        "status_check_fallback": s.get("status_check_fallback", "true"),
         "status_check_summary": s.get("status_check_summary", ""),
     })
 
@@ -125,6 +126,8 @@ def api_set_settings():
             pass
     if "status_check_enabled" in cfg:
         db.set_setting("status_check_enabled", "true" if cfg["status_check_enabled"] else "false")
+    if "status_check_fallback" in cfg:
+        db.set_setting("status_check_fallback", "true" if cfg["status_check_fallback"] else "false")
     if "status_check_hour" in cfg:
         try:
             db.set_setting("status_check_hour", str(max(0, min(23, int(cfg["status_check_hour"])))))

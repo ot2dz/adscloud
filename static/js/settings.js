@@ -89,6 +89,7 @@ async function loadSettings() {
   document.getElementById('cfg-status-check-interval').value = s.status_check_interval_days || 1;
   document.getElementById('cfg-status-check-proxy').value = s.status_check_proxy || '';
   document.getElementById('cfg-status-check-rotate-url').value = s.status_check_rotate_url || '';
+  document.getElementById('cfg-status-check-fallback').checked = (s.status_check_fallback || 'true') === 'true';
   document.getElementById('status-check-summary').innerText = statusCheckSummary(s.status_check_summary);
   document.getElementById('month-rescan-last').innerText = s.month_rescan_last ? `(آخر تشغيل: ${s.month_rescan_last})` : '';
   document.getElementById('cfg-sched-interval').value = s.interval_hours || 12;
@@ -145,6 +146,7 @@ async function saveGeneralSettings() {
       status_check_enabled: document.getElementById('cfg-status-check').checked,
       status_check_hour: parseInt(document.getElementById('cfg-status-check-hour').value || '3'),
       status_check_interval_days: parseInt(document.getElementById('cfg-status-check-interval').value || '1'),
+      status_check_fallback: document.getElementById('cfg-status-check-fallback').checked,
       status_check_proxy: document.getElementById('cfg-status-check-proxy').value.trim(),
       status_check_rotate_url: document.getElementById('cfg-status-check-rotate-url').value.trim(),
       notify_enabled: notifEn,
