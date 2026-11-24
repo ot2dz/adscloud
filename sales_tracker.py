@@ -346,10 +346,16 @@ def _gql(session, host: str, code: str, query: str, variables: dict,
 
 
 def _proxy_url(proxy: Optional[str]) -> Optional[str]:
-    """Accept ``host:port:user:pass`` or a URL, return a curl-compatible URL."""
+    """Accept ``host:port:user:pass``, a URL, or a comma-separated pool, and
+    return one curl-compatible URL (a random entry when it is a pool)."""
     raw = (proxy or "").strip()
     if not raw:
         return None
+    if "," in raw:
+        choices = [p.strip() for p in raw.split(",") if p.strip()]
+        if not choices:
+            return None
+        raw = random.choice(choices)
     try:
         from meta_ads_collector.proxy_pool import parse_proxy
         return parse_proxy(raw)

@@ -6,6 +6,7 @@ number is obtained, the raw order numbers, errors, proxy/rotation) stays behind
 admin-only endpoints so a SaaS customer cannot learn the method.
 """
 import logging
+import os
 import threading
 import time
 
@@ -47,6 +48,15 @@ def _settings_vars() -> dict:
         "rotate": (s.get(SETTING_ROTATE) or "false").lower() in ("1", "true", "yes", "on"),
         "rotator": ip_rotator.enabled(),
     }
+
+
+def _probe_proxy() -> str:
+    """Egress for storefront calls: the admin-set proxy, else the scrape proxy.
+
+    A datacenter IP is often blocked by the storefront's CDN (HTTP 403), so the
+    production server reuses the residential proxy the scraper already has."""
+    cfg = _settings_vars()
+    return (cfg["proxy"] or (os.environ.get("META_ADS_PROXY") or "").strip())
 
 
 def _is_running(store_id: int) -> bool:
@@ -138,7 +148,7 @@ def probe_store(store: dict) -> dict:
     cfg = _settings_vars()
     with _PROBE_LOCK:
         db.update_lf_store(store_id, last_probe_status="running", last_error="")
-        proxy = cfg["proxy"] or None
+        proxy = _probe_proxy() or None
         if cfg["rotate"] and cfg["rotator"]:
             ip_rotator.rotate(min_interval=0)
             time.sleep(2)
@@ -197,12 +207,24 @@ def api_add_store():
     if not admin and db.count_lf_stores(uid) >= MAX_STORES_FREE:
         return jsonify({"ok": False, "error": f"يمكنك متابعة {MAX_STORES_FREE} متاجر كحد أقصى", "limit": True}), 400
 
+    cfg = None
     try:
         cfg = sales_tracker.detect(url)
-    except sales_tracker.SalesTrackError as exc:
-        # never explain the internals to a customer
-        msg = str(exc) if admin else "تعذّر التعرف على هذا المتجر. تأكد من أنه رابط منتج صحيح."
-        return jsonify({"ok": False, "error": msg, "code": exc.code if admin else "invalid"}), 400
+    except sales_tracker.SalesTrackError as direct_err:
+        proxy = _probe_proxy()
+        if proxy:
+            try:
+                cfg = sales_tracker.detect(url, proxy=proxy)
+            except sales_tracker.SalesTrackError as exc:
+                direct_err = exc
+        if cfg is None:
+            # never explain the internals to a customer
+            msg = str(direct_err) if admin else "تعذّر التعرف على هذا المتجر. تأكد من أنه رابط منتج صحيح."
+            if admin and "403" in str(direct_err):
+                msg = ("تعذّر الوصول إلى المتجر (HTTP 403). غالبًا الخادم محجوب من المتجر — "
+                       "اضبط «بروكسي القياس» في الإعدادات أو تأكد من META_ADS_PROXY.")
+            return jsonify({"ok": False, "error": msg,
+                            "code": getattr(direct_err, "code", "invalid") if admin else "invalid"}), 400
 
     # free plan: only the first store is measured automatically
     enabled = 1 if admin or db.count_enabled_lf_stores(uid) == 0 else 0
