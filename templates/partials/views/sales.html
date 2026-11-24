@@ -1,0 +1,73 @@
+  <!-- VIEW: STORE SALES (order counts only; the method is admin-only) -->
+  <section id="view-sales" class="hidden space-y-5">
+    <div class="scard">
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 class="text-lg font-extrabold text-[#102a56]">💰 مبيعات المتاجر</h2>
+          <p class="text-xs text-slate-500 font-semibold mt-1 leading-relaxed max-w-2xl">
+            تابع عدد طلبات المتاجر المنافسة يوميًا وأسبوعيًا. أضف رابط منتج من المتجر وسيظهر لك العدد ويتحدّث تلقائيًا.
+          </p>
+          <p id="sales-limits" class="text-[11px] text-slate-400 font-semibold mt-1"></p>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <select id="sales-days" onchange="loadSales()" class="text-xs bg-white text-slate-700 font-bold rounded-lg px-3 py-2 border border-[#b7c9e2]">
+            <option value="7">7 أيام</option>
+            <option value="14">14 يومًا</option>
+            <option value="30">30 يومًا</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mt-4 flex flex-col md:flex-row gap-2">
+        <input id="sales-url" placeholder="https://store.example.com/product" dir="ltr"
+               class="sinput flex-1 !text-left" onkeydown="if(event.key==='Enter')addSalesStore()">
+        <input id="sales-label" placeholder="اسم المتجر (اختياري)" class="sinput md:!w-52">
+        <button id="sales-add" onclick="addSalesStore(this)" class="sbtn !bg-[#174ea6] !text-white !border-[#174ea6] whitespace-nowrap">+ متابعة متجر</button>
+      </div>
+      <p id="sales-msg" class="text-xs font-semibold mt-2 min-h-[1rem]"></p>
+
+      <details id="sales-admin-panel" data-admin-only class="sadv mt-3 hidden">
+        <summary>⚙️ إعدادات القياس (للمدير فقط)</summary>
+        <div class="mt-3 grid gap-3 md:grid-cols-3">
+          <div>
+            <label class="slabel">بروكسي القياس (اختياري)</label>
+            <input id="sales-proxy" dir="ltr" placeholder="http://user:pass@host:port" class="sinput !text-left">
+          </div>
+          <label class="srow md:mt-6"><input id="sales-rotate" type="checkbox" class="mt-1">
+            <div><div class="srow-t">دوّر الـ IP قبل كل قياس</div>
+            <div class="srow-d">يستعمل IP_ROTATE_URL المضبوط في البيئة.</div></div></label>
+          <label class="srow md:mt-6"><input id="sales-auto" type="checkbox" class="mt-1">
+            <div><div class="srow-t">قياس تلقائي حسب الفاصل</div>
+            <div class="srow-d">ينشئ طلبيات القياس وحده — فعّله بوعي.</div></div></label>
+        </div>
+        <div class="mt-3 flex gap-2 flex-wrap">
+          <button onclick="saveSalesConfig(this)" class="sbtn">حفظ الإعدادات</button>
+          <button onclick="probeAllSales(this)" class="sbtn !text-[#174ea6]">📡 قِس كل المتاجر الآن</button>
+        </div>
+      </details>
+    </div>
+
+    <div class="grid gap-3 sm:grid-cols-3">
+      <div class="scard">
+        <div class="text-xs font-bold text-slate-500">مبيعات اليوم</div>
+        <div id="sales-today" class="text-3xl font-extrabold text-[#102a56] num mt-1">—</div>
+      </div>
+      <div class="scard">
+        <div class="text-xs font-bold text-slate-500">مبيعات الفترة</div>
+        <div id="sales-window" class="text-3xl font-extrabold text-[#174ea6] num mt-1">—</div>
+        <div id="sales-window-label" class="text-[11px] text-slate-400 font-semibold"></div>
+      </div>
+      <div class="scard">
+        <div class="text-xs font-bold text-slate-500">متاجر متابَعة</div>
+        <div id="sales-count" class="text-3xl font-extrabold text-slate-700 num mt-1">—</div>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <div class="jb-h !mb-0">📋 المتاجر</div>
+        <div id="sales-list-hint" class="text-[11px] text-slate-400 font-semibold"></div>
+      </div>
+      <div id="sales-list" class="mt-3 space-y-2"></div>
+    </div>
+  </section>

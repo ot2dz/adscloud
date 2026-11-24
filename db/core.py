@@ -794,6 +794,54 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_category_items_item ON category_items (kind, item_id)")
+        # LightFunnels sales tracker: one row per tracked storefront and one row
+        # per probe (order number read from the store's thank-you page).
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS lf_stores (
+            id {idcol},
+            store_host TEXT UNIQUE NOT NULL,
+            product_url TEXT,
+            label TEXT DEFAULT '',
+            account_id TEXT,
+            account_uid TEXT,
+            account_name TEXT,
+            funnel_id TEXT,
+            currency TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            interval_hours REAL DEFAULT 12.0,
+            created_by INTEGER,
+            created_at TEXT,
+            last_probed_at TEXT,
+            last_probe_status TEXT,
+            last_error TEXT,
+            last_order_number INTEGER,
+            last_checked_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lf_stores_enabled ON lf_stores (enabled)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lf_stores_owner ON lf_stores (created_by)")
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS lf_probes (
+            id {idcol},
+            store_id INTEGER NOT NULL,
+            store_host TEXT,
+            account_id TEXT,
+            funnel_id TEXT,
+            order_name TEXT,
+            order_number INTEGER,
+            order_id TEXT,
+            currency TEXT,
+            total REAL,
+            state TEXT,
+            city TEXT,
+            phone TEXT,
+            ip TEXT,
+            kind TEXT DEFAULT 'probe',
+            error TEXT,
+            probed_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lf_probes_store ON lf_probes (store_id, probed_at)")
         # kind: 'report' (strategy report) or 'audit' (per-product decision table);
         # audit: the audit rows as JSON.
         for col, ddl in (("kind", "TEXT DEFAULT 'report'"), ("audit", "TEXT")):
@@ -4362,6 +4410,174 @@ class Database:
 
     def delete_ai_report(self, rid: int) -> None:
         self._execute(f"DELETE FROM ai_reports WHERE id={self._ph()}", (int(rid),))
+
+    # ── LightFunnels sales tracker ────────────────────────────────────────
+    LF_STORE_FIELDS = ("label", "product_url", "account_id", "account_uid", "account_name",
+                       "funnel_id", "currency", "enabled", "interval_hours",
+                       "last_probed_at", "last_probe_status", "last_error",
+                       "last_order_number", "last_checked_at", "created_by")
+
+    def list_lf_stores(self, enabled_only: bool = False, owner_id: Optional[int] = None) -> list[dict]:
+        p = self._ph()
+        where, params = [], []
+        if enabled_only:
+            where.append("enabled=1")
+        if owner_id is not None:
+            where.append(f"created_by={p}")
+            params.append(int(owner_id))
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        return self._query(f"SELECT * FROM lf_stores {clause} ORDER BY COALESCE(last_order_number,0) DESC, id",
+                           tuple(params))
+
+    def count_lf_stores(self, owner_id: Optional[int] = None) -> int:
+        p = self._ph()
+        sql = "SELECT COUNT(*) AS n FROM lf_stores"
+        params: tuple = ()
+        if owner_id is not None:
+            sql += f" WHERE created_by={p}"
+            params = (int(owner_id),)
+        row = self._query_one(sql, params)
+        return int((row or {}).get("n") or 0)
+
+    def count_enabled_lf_stores(self, owner_id: int) -> int:
+        row = self._query_one(
+            f"SELECT COUNT(*) AS n FROM lf_stores WHERE enabled=1 AND created_by={self._ph()}",
+            (int(owner_id),))
+        return int((row or {}).get("n") or 0)
+
+    def get_lf_store(self, store_id: int) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM lf_stores WHERE id={self._ph()}", (int(store_id),))
+
+    def get_lf_store_by_host(self, host: str) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM lf_stores WHERE store_host={self._ph()}",
+                               (str(host or "").strip().lower(),))
+
+    def add_lf_store(self, *, store_host: str, product_url: str, label: str = "",
+                     account_id: str = "", account_uid: str = "", account_name: str = "",
+                     funnel_id: str = "", currency: str = "", interval_hours: float = 12.0,
+                     created_by: Optional[int] = None, enabled: int = 1) -> Optional[int]:
+        """Track a store. Returns None when another user already tracks this host."""
+        host = str(store_host or "").strip().lower()
+        existing = self.get_lf_store_by_host(host)
+        p = self._ph()
+        if existing:
+            owner = existing.get("created_by")
+            if owner is not None and created_by is not None and int(owner) != int(created_by):
+                return None  # someone else already tracks this storefront
+            self._execute(
+                f"UPDATE lf_stores SET product_url={p}, label={p}, account_id={p}, account_uid={p}, "
+                f"account_name={p}, funnel_id={p}, currency={p}, interval_hours={p} WHERE id={p}",
+                (product_url, label or existing.get("label") or "", account_id or existing.get("account_id") or "",
+                 account_uid or existing.get("account_uid") or "", account_name or existing.get("account_name") or "",
+                 funnel_id or existing.get("funnel_id") or "", currency or existing.get("currency") or "",
+                 float(interval_hours or 12.0), int(existing["id"])))
+            return int(existing["id"])
+        self._execute(
+            f"INSERT INTO lf_stores (store_host, product_url, label, account_id, account_uid, account_name, "
+            f"funnel_id, currency, enabled, interval_hours, created_by, created_at) "
+            f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+            (host, product_url, label or "", account_id, account_uid, account_name, funnel_id,
+             currency, 1 if enabled else 0, float(interval_hours or 12.0), created_by, _now()))
+        row = self.get_lf_store_by_host(host)
+        return int(row["id"]) if row else 0
+
+    def update_lf_store(self, store_id: int, **fields) -> None:
+        sets, params = [], []
+        p = self._ph()
+        for key, val in fields.items():
+            if key not in self.LF_STORE_FIELDS:
+                continue
+            sets.append(f"{key}={p}")
+            params.append(val)
+        if not sets:
+            return
+        params.append(int(store_id))
+        self._execute(f"UPDATE lf_stores SET {', '.join(sets)} WHERE id={p}", tuple(params))
+
+    def delete_lf_store(self, store_id: int) -> None:
+        p = self._ph()
+        self._execute(f"DELETE FROM lf_probes WHERE store_id={p}", (int(store_id),))
+        self._execute(f"DELETE FROM lf_stores WHERE id={p}", (int(store_id),))
+
+    def add_lf_probe(self, store_id: int, *, kind: str = "probe", store_host: str = "",
+                     account_id: str = "", funnel_id: str = "", order_name: str = "",
+                     order_number: Optional[int] = None, order_id: str = "", currency: str = "",
+                     total=None, state: str = "", city: str = "", phone: str = "", ip: str = "",
+                     error: str = "", probed_at: str = "") -> int:
+        p = self._ph()
+        at = probed_at or _now()
+        self._execute(
+            f"INSERT INTO lf_probes (store_id, store_host, account_id, funnel_id, order_name, order_number, "
+            f"order_id, currency, total, state, city, phone, ip, kind, error, probed_at) "
+            f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+            (int(store_id), store_host, account_id, funnel_id, order_name,
+             int(order_number) if order_number is not None else None, order_id, currency,
+             float(total) if total is not None else None, state, city, phone, ip, kind, error, at))
+        if kind == "probe" and order_number is not None:
+            self.update_lf_store(store_id, last_order_number=int(order_number), last_probe_status="ok",
+                                 last_probed_at=at, last_checked_at=at, last_error="")
+        else:
+            self.update_lf_store(store_id, last_probe_status=kind, last_checked_at=at, last_error=(error or "")[:500])
+        row = self._query_one("SELECT MAX(id) AS id FROM lf_probes")
+        return int((row or {}).get("id") or 0)
+
+    def lf_store_probes(self, store_id: int, days: int = 30) -> list[dict]:
+        since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
+        return self._query(
+            f"SELECT * FROM lf_probes WHERE store_id={self._ph()} AND probed_at>={self._ph()} "
+            "ORDER BY probed_at ASC, id ASC", (int(store_id), since))
+
+    @staticmethod
+    def lf_orders_by_day(probes: list[dict]) -> dict[str, int]:
+        """Real orders per Algeria day from consecutive probe numbers.
+
+        Every successful probe placed one order itself, so the jump between two
+        numbers is one bigger than the customers' orders."""
+        points = [p for p in probes if p.get("kind") == "probe" and p.get("order_number") is not None]
+        out: dict[str, int] = {}
+        for prev, cur in zip(points, points[1:]):
+            jump = int(cur["order_number"]) - int(prev["order_number"]) - 1
+            if jump <= 0:
+                continue
+            day = _to_algeria_date(cur.get("probed_at") or "")
+            if not day:
+                continue
+            out[day.isoformat()] = out.get(day.isoformat(), 0) + jump
+        return out
+
+    def lf_sales_overview(self, days: int = 7, owner_id: Optional[int] = None) -> list[dict]:
+        """Per-store totals for the dashboard."""
+        today = algeria_today()
+        horizon = today - timedelta(days=max(1, int(days)) - 1)
+        stores = self.list_lf_stores(owner_id=owner_id)
+        out = []
+        for s in stores:
+            probes = self.lf_store_probes(int(s["id"]), days=days + 1)
+            by_day = self.lf_orders_by_day(probes)
+            today_orders = by_day.get(today.isoformat(), 0)
+            window = sum(v for d, v in by_day.items() if d >= horizon.isoformat())
+            ok = [p for p in probes if p.get("kind") == "probe"]
+            out.append(dict(s, orders_today=today_orders, orders_window=window,
+                            window_days=days, probes_window=len(ok),
+                            days=dict(sorted(by_day.items())),
+                            last_error_short=(s.get("last_error") or "")[:160]))
+        return out
+
+    def lf_due_stores(self, now: Optional[datetime] = None) -> list[dict]:
+        """Enabled stores whose interval elapsed (auto-probe scheduler)."""
+        now = now or datetime.now(timezone.utc)
+        due = []
+        for s in self.list_lf_stores(enabled_only=True):
+            try:
+                last = datetime.fromisoformat(s["last_checked_at"]) if s.get("last_checked_at") else None
+            except (TypeError, ValueError):
+                last = None
+            if last is not None and last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            hours = float(s.get("interval_hours") or 12.0)
+            if last is None or (now - last).total_seconds() >= hours * 3600:
+                due.append(s)
+        return due
 
 
 db = Database()

@@ -769,6 +769,33 @@ def hunter_backfill_once() -> None:
         logger.exception("hunter_score backfill failed")
 
 
+SALES_PROBE_EVERY_SEC = float(os.environ.get("SALES_PROBE_EVERY_SEC", "600") or 600)
+
+
+def sales_probe_loop() -> None:
+    """Probe tracked LightFunnels stores when their interval elapsed.
+
+    On by default (``sales_auto_probe`` setting): a tracked store must refresh
+    on its own for the numbers to mean anything. Each probe creates one real
+    Cash-on-Delivery order at a competitor, so the admin can turn it off.
+    """
+    from web.sales import probe_store
+    time.sleep(120)
+    while True:
+        try:
+            s = db.get_settings()
+            if (s.get("sales_auto_probe") or "true").lower() in ("1", "true", "yes", "on"):
+                for store in db.lf_due_stores():
+                    try:
+                        probe_store(store)
+                    except Exception:
+                        logger.exception("auto sales probe failed for %s", store.get("store_host"))
+                    time.sleep(20)
+        except Exception:
+            logger.exception("sales probe loop failed")
+        time.sleep(SALES_PROBE_EVERY_SEC)
+
+
 def start_background_threads() -> None:
     global _bg_started
     if _bg_started:
@@ -817,6 +844,7 @@ def start_background_threads() -> None:
             manager._emit("log", {"text": "⚠️ بوت تلجرام معطّل (TELEGRAM_BOT=off) — لن يستقبل رسائل."})
         except Exception:
             pass
+    threading.Thread(target=sales_probe_loop, daemon=True).start()
 
 
 
