@@ -30,6 +30,8 @@
           <option value="most_collated">الأكثر انتشاراً (Scaling)</option>
           <option value="biggest_page">📄 أكبر المعلنين (إعلانات الصفحة)</option>
         <option value="hunter">القوة (Hunter)</option>
+          <option value="price_desc">💰 السعر: الأغلى أولاً</option>
+          <option value="price_asc">💰 السعر: الأرخص أولاً</option>
         </select>
 
         <button type="button" id="filters-toggle" onclick="toggleFiltersPanel()"
@@ -81,6 +83,21 @@
             <input id="min-product-ads" type="number" min="0" placeholder="—" onchange="setMinProductAds(this.value)"
               class="w-14 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-center text-slate-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500">
           </label>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap text-[11px] font-bold text-slate-600">
+          <span class="shrink-0 w-16">💰 السعر:</span>
+          <div id="price-btns" class="flex items-center gap-1.5 flex-wrap"></div>
+          <input id="price-min" type="number" min="0" step="100" placeholder="من" aria-label="أقل سعر" onchange="priceInputChanged()"
+            class="w-20 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-center text-slate-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <span class="text-slate-400">←</span>
+          <input id="price-max" type="number" min="0" step="100" placeholder="إلى" aria-label="أعلى سعر" onchange="priceInputChanged()"
+            class="w-20 bg-[#f8fbff] border border-[#b7c9e2] rounded-lg px-2 py-1.5 text-center text-slate-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <span>دج</span>
+        </div>
+        <div id="price-auto" class="hidden flex items-center gap-2 flex-wrap text-[11px] font-semibold text-slate-600 bg-[#f8fbff] border border-[#cfe0f5] rounded-lg px-3 py-2">
+          <label class="flex items-center gap-1.5 font-bold cursor-pointer"><input id="price-auto-toggle" type="checkbox" class="accent-blue-600" onchange="priceAutoSet(this.checked)"> قراءة الأسعار تلقائياً من متصفحي</label>
+          <span id="price-auto-msg"></span>
         </div>
 
         <div class="flex items-center gap-2 flex-wrap">

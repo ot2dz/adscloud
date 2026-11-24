@@ -232,7 +232,7 @@ function anProductsHtml(products) {
           oninput="localStorage.setItem('an-kg-rate', this.value); anRecalcAll()" class="w-24 ${inp}"> دج</label>
       <button type="button" onclick="anFetchPrices(this)" class="bg-white hover:bg-[#eef6ff] border border-[#9fbbe0] text-[#174ea6] rounded-lg px-3 py-1.5 font-bold text-xs">🏷️ جلب أسعار المنافس</button>
     </div>
-    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">«سقف الكلفة» = أقصى كلفة واصلة (شراء + شحن) تترك لك ربح 800 دج بسعر المنافس، بعد ${anFmt(anCostModel.overhead)} دج للتأكيد والريتور والإعلان. ابحث بالصورة في 1688 وأدخل السعر والوزن لتحسب ربحك الحقيقي — أرقامك تُحفظ في متصفحك وتُرسل للتدقيق ولـ Gemini. ${anExt ? `<span class="text-emerald-700">🧩 إضافة Chrome متصلة (v${escT(anExt.version || '')}): أسعار المنافس تُجلب من متصفحك.</span>` : 'بدون إضافة Chrome تُجلب أسعار المنافس من الخادم، وبعض المتاجر تحجبه.'}</div>
+    <div class="text-[11px] text-slate-500 font-semibold leading-relaxed">«سقف الكلفة» = أقصى كلفة واصلة (شراء + شحن) تترك لك ربح 800 دج بسعر المنافس، بعد ${anFmt(anCostModel.overhead)} دج للتأكيد والريتور والإعلان. ابحث بالصورة في 1688 وأدخل السعر والوزن لتحسب ربحك الحقيقي — أرقامك تُحفظ في متصفحك وتُرسل للتدقيق ولـ Gemini. ${anExt ? `<span class="text-emerald-700">🧩 إضافة Chrome متصلة (v${escT(anExt.version || '')}): أسعار المنافس تُجلب من متصفحك.</span>` : 'أسعار المنافس تُقرأ من متصفحك: ثبّت إضافة Chrome، أو اكتب السعر يدوياً.'}</div>
     <div class="overflow-x-auto"><table class="w-full text-xs"><tbody id="an-products">${rows}</tbody></table></div>
   </div>`;
 }
@@ -241,7 +241,7 @@ function anFmtRaw(v) { const n = parseFloat(v); return Number.isFinite(n) ? Stri
 
 // The AdsCloud Chrome extension (adlibrary/) announces itself on this page and
 // can read prices from the user's own browser, where stores that refuse the
-// server's IP open normally. Without it, the server fetches.
+// server's IP open normally. The server never fetches prices.
 let anExt = null;  // {version} once the extension answered
 const anExtWaiters = {};
 window.addEventListener('message', ev => {
@@ -261,16 +261,6 @@ function anExtFetchPrices(urls) {
     anExtWaiters[id] = m => { clearTimeout(timer); m.ok ? resolve(m.results || []) : reject(new Error(m.error || 'فشل')); };
     window.postMessage({source: 'adscloud-page', type: 'fetch-prices', id, urls}, window.location.origin);
   });
-}
-
-async function anServerFetchPrices(trs) {
-  const r = await fetch('/api/analysis/prices', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({store: anStoreValue(), paths: trs.map(tr => tr.dataset.path)})
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error || 'فشل الجلب');
-  return d.prices || [];
 }
 
 function anCollectPrices() {
@@ -301,7 +291,8 @@ async function anFetchPrices(btn) {
       const byUrl = Object.fromEntries(res.map(x => [x.url, x]));
       list = withUrl.map(x => Object.assign({}, byUrl[x.a.href] || {status: 'error'}, {path: x.path}));
     } else {
-      list = await anServerFetchPrices(trs);
+      // Prices are never read from the server's IP.
+      throw new Error('قراءة الأسعار تتم من متصفحك: ثبّت إضافة Chrome ثم أعد تحميل الصفحة، أو اكتب السعر يدوياً');
     }
     const byPath = Object.fromEntries(list.map(x => [x.path, x]));
     let ok = 0, blocked = 0;

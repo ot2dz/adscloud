@@ -14,7 +14,6 @@ from flask import Blueprint, g, jsonify, request
 
 import ai_client
 import competitor
-import price_fetch
 import product_audit
 from db import db
 from web.common import _audit, _scope_user_id, admin_required, login_required
@@ -564,18 +563,9 @@ def api_analysis_import():
 @bp.route("/api/analysis/prices", methods=["POST"])
 @login_required
 def api_analysis_prices():
-    """Read each product's price from its landing page (no bot-check bypass:
-    protected pages come back as 'blocked' and are typed by hand)."""
-    payload = request.get_json(force=True, silent=True) or {}
-    store = competitor.resolve_store(str(payload.get("store") or ""), db)
-    if store["error"] or not store["domains"]:
-        return jsonify({"error": STORE_ERRORS.get(store["error"], "لا توجد إعلانات لهذا المتجر.")}), 400
-    ads = db.store_ads_for_analysis(store["domains"], user_id=_scope_user_id())
-    links = competitor.product_links(ads)
-    wanted = [str(x) for x in (payload.get("paths") or [])][:30] or list(links)[:30]
-    pairs = [(p, links[p]) for p in wanted if links.get(p)]
-    results = {r["url"]: r for r in price_fetch.fetch_prices([u for _, u in pairs])}
-    return jsonify({"prices": [dict(results.get(u) or {}, path=p) for p, u in pairs]})
+    """Retired: product pages are only opened by the user's own browser (the
+    Chrome extension), never from the server's IP."""
+    return jsonify({"error": "قراءة الأسعار تتم من متصفحك عبر إضافة Chrome."}), 410
 
 
 def _own_report(rid: int):

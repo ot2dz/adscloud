@@ -794,6 +794,20 @@ class Database:
         )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_category_items_item ON category_items (kind, item_id)")
+        # Product selling prices (DZD), read from the product page by the admin's
+        # own browser (Chrome extension) or typed by hand. Never by the server.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS product_prices (
+            product_key TEXT PRIMARY KEY,
+            host TEXT,
+            price INTEGER,
+            source TEXT,
+            how TEXT,
+            status TEXT,
+            checked_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_product_prices_price ON product_prices (price)")
         # LightFunnels sales tracker: one row per tracked storefront and one row
         # per probe (order number read from the store's thank-you page).
         cur.execute(f"""
@@ -1854,7 +1868,8 @@ class Database:
                            min_product_ads: int = 0,
                            keywords: Optional[list[str]] = None,
                            niches: Optional[list[str]] = None,
-                           market: str = "dz") -> tuple[str, list]:
+                           market: str = "dz", price_min: int = 0, price_max: int = 0,
+                           price_state: str = "") -> tuple[str, list]:
         p = self._ph()
         where = []
         params: list = []
@@ -1931,6 +1946,19 @@ class Database:
             where.append(f"start_date <= {p}")
             params.append(start_date_max)
 
+        if price_min or price_max or price_state in ("has", "none"):
+            cond, args = ["price IS NOT NULL"], []
+            if price_min and price_state != "none":
+                cond.append(f"price >= {p}")
+                args.append(int(price_min))
+            if price_max and price_state != "none":
+                cond.append(f"price <= {p}")
+                args.append(int(price_max))
+            exists = ("EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_key = meta_ads.product_key "
+                      "AND " + " AND ".join(cond) + ")")
+            where.append(("NOT " if price_state == "none" else "") + exists)
+            params.extend(args)
+
         if search:
             like = "%" + search + "%"
             where.append(f"(body LIKE {p} OR page_name LIKE {p} OR store_domain LIKE {p})")
@@ -1956,7 +1984,8 @@ class Database:
                 min_product_ads: int = 0,
                 keywords: Optional[list[str]] = None,
                 niches: Optional[list[str]] = None,
-                market: str = "dz") -> list[dict]:
+                market: str = "dz", price_min: int = 0, price_max: int = 0,
+                price_state: str = "") -> list[dict]:
         p = self._ph()
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
@@ -1965,6 +1994,7 @@ class Database:
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
             keywords=keywords, niches=niches, market=market,
+            price_min=price_min, price_max=price_max, price_state=price_state,
         )
 
         order_map = {
@@ -1974,6 +2004,8 @@ class Database:
             "collected_at": "collected_at DESC",
             "biggest_page": "COALESCE(es.ent_ads, -1) DESC, collected_at DESC",
             "hunter": "COALESCE(hunter_score, 0) DESC, collected_at DESC",
+            "price_desc": self._price_order("meta_ads", desc=True),
+            "price_asc": self._price_order("meta_ads", desc=False),
         }
         order_clause = order_map.get(sort_by, "collected_at DESC")
         join = self._PAGE_STATS_JOIN if sort_by == "biggest_page" else ""
@@ -2493,6 +2525,31 @@ class Database:
             a["domain_pages"] = dom_pages.get(a.get("store_domain") or "", 0)
         return ads
 
+    @staticmethod
+    def _price_order(table: str, desc: bool) -> str:
+        """Order by product price; products without one always come last."""
+        missing = "-1" if desc else "2000000000"
+        return (f"COALESCE((SELECT pp.price FROM product_prices pp WHERE pp.product_key = "
+                f"{table}.product_key), {missing}) {'DESC' if desc else 'ASC'}")
+
+    def attach_prices(self, ads: list[dict]) -> list[dict]:
+        """Add price_dzd / price_source / price_checked_at to each ad."""
+        keys = sorted({str(a.get("product_key") or "") for a in ads} - {""})
+        found: dict = {}
+        p = self._ph()
+        for i in range(0, len(keys), 400):
+            chunk = keys[i:i + 400]
+            for r in self._query(f"SELECT * FROM product_prices WHERE product_key IN "
+                                 f"({', '.join([p] * len(chunk))})", tuple(chunk)):
+                found[r["product_key"]] = r
+        for a in ads:
+            r = found.get(str(a.get("product_key") or "")) or {}
+            a["price_dzd"] = r.get("price")
+            a["price_source"] = r.get("source") or ""
+            a["price_status"] = r.get("status") or ""
+            a["price_checked_at"] = r.get("checked_at") or ""
+        return ads
+
     # ── product groups (same advertiser + same product) ───────────────────
     _GROUP_ORDER = {
         "longest_running": "max_days DESC, active DESC",
@@ -2682,13 +2739,16 @@ class Database:
         if self._summary_ready(filters):
             # Default view: read the precomputed product summary (an indexed
             # ORDER BY … LIMIT) instead of grouping the whole ads table.
-            order = self._SUMMARY_ORDER.get(sort_by, self._SUMMARY_ORDER["collected_at"])
+            order = (self._price_order("pg", sort_by == "price_desc") if sort_by in ("price_desc", "price_asc")
+                     else self._SUMMARY_ORDER.get(sort_by, self._SUMMARY_ORDER["collected_at"]))
             groups = self._query(
                 f"SELECT pg.*, COALESCE(es.ent_ads, -1) AS page_ads FROM product_groups pg "
                 f"LEFT JOIN entity_stats es ON es.ent_kind = 'page' AND es.ent_key = pg.page_id "
                 f"ORDER BY {order}, pg.product_key LIMIT {p} OFFSET {p}", (limit, offset))
         else:
-            order = self._GROUP_ORDER.get(sort_by, self._GROUP_ORDER["collected_at"])
+            order = (self._price_order("meta_ads", sort_by == "price_desc")
+                     if sort_by in ("price_desc", "price_asc")
+                     else self._GROUP_ORDER.get(sort_by, self._GROUP_ORDER["collected_at"]))
             groups = self._query(
                 f"SELECT product_key, COUNT(*) AS ads_count, SUM(is_active) AS active, "
                 f"MIN(start_date) AS first_launch, MAX(start_date) AS last_launch, "
@@ -2786,7 +2846,8 @@ class Database:
                   min_days_active: int = 0, target_id: Optional[int] = None,
                   user_id: Optional[int] = None, min_product_ads: int = 0,
                   keywords: Optional[list[str]] = None,
-                  niches: Optional[list[str]] = None, market: str = "dz") -> int:
+                  niches: Optional[list[str]] = None, market: str = "dz",
+                  price_min: int = 0, price_max: int = 0, price_state: str = "") -> int:
         clause, params = self._build_ads_filter(
             search=search, stores_only=stores_only, query=query,
             store_domain=store_domain, page_id=page_id, preset=preset,
@@ -2794,13 +2855,15 @@ class Database:
             start_date_max=start_date_max, min_days_active=min_days_active,
             target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
             keywords=keywords, niches=niches, market=market,
+            price_min=price_min, price_max=price_max, price_state=price_state,
         )
         filters = dict(search=search, stores_only=stores_only, query=query,
                        store_domain=store_domain, page_id=page_id, preset=preset,
                        active_only=active_only, start_date_min=start_date_min,
                        start_date_max=start_date_max, min_days_active=min_days_active,
                        target_id=target_id, user_id=user_id, min_product_ads=min_product_ads,
-                       keywords=keywords, niches=niches, market=market)
+                       keywords=keywords, niches=niches, market=market,
+                       price_min=price_min, price_max=price_max, price_state=price_state)
         if self._summary_ready(filters):
             # Default view: the summary already counts every grouped ad; only
             # ads without a product key (none normally) are counted live.

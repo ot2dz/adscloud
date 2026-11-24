@@ -321,15 +321,10 @@ class GeminiExportTest(unittest.TestCase):
         self.assertIn("2900 (manual)", d2["data"])
         self.assertTrue(d["filename"].startswith("shiba.youcan.store-"))
 
-    def test_prices_endpoint_reports_each_path(self):
-        fake = [{"url": "https://shiba.youcan.store/products/p0", "price": 2900, "status": "ok", "how": "meta"},
-                {"url": "https://shiba.youcan.store/products/p1", "price": None, "status": "blocked"}]
-        with mock.patch.object(price_fetch, "fetch_prices", return_value=fake):
-            d = self.c.post("/api/analysis/prices", json={"store": "shiba.youcan.store",
-                                                          "paths": ["/products/p0", "/products/p1"]}).get_json()
-        by = {x["path"]: x for x in d["prices"]}
-        self.assertEqual(by["/products/p0"]["price"], 2900)
-        self.assertEqual(by["/products/p1"]["status"], "blocked")
+    def test_server_never_reads_prices(self):
+        with mock.patch.object(price_fetch, "_get", side_effect=AssertionError("server fetch")):
+            r = self.c.post("/api/analysis/prices", json={"store": "shiba.youcan.store"})
+        self.assertEqual(r.status_code, 410)
 
     def test_preview_lists_products_with_lifecycle(self):
         with mock.patch.object(ai_client, "model_info", return_value=None):

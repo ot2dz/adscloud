@@ -54,6 +54,10 @@ def api_ads():
     sort_by = request.args.get("sort_by", "collected_at")
     min_days_active = max(0, _int_arg("min_days_active", 0))
     min_product_ads = max(0, _int_arg("min_product_ads", 0))
+    price_min = max(0, min(_int_arg("price_min", 0), 1_000_000))
+    price_max = max(0, min(_int_arg("price_max", 0), 1_000_000))
+    price_state = request.args.get("price_state", "")
+    price_state = price_state if price_state in ("has", "none") else ""
     target_id = request.args.get("target_id")
     target_id_val = int(target_id) if target_id and target_id.isdigit() else None
     keywords = [k.strip() for k in (request.args.get("keywords") or "").split(",") if k.strip()]
@@ -66,6 +70,7 @@ def api_ads():
         start_date_max=start_date_max, min_days_active=min_days_active,
         target_id=target_id_val, user_id=_scope_user_id(),
         min_product_ads=min_product_ads, keywords=keywords, niches=niches,
+        price_min=price_min, price_max=price_max, price_state=price_state,
     )
     total_ads = db.count_ads(**filters)
     if request.args.get("group", "0") == "1":
@@ -80,16 +85,16 @@ def api_ads():
                 db.get_ad_groups(limit=pool, offset=0, sort_by="collected_at", **filters)))
             rows.sort(key=lambda r: (r.get("hunter", {}).get("score", 0),
                                      (r.get("group") or {}).get("active", 0)), reverse=True)
-            return jsonify({"ads": rows[offset:offset + limit],
+            return jsonify({"ads": db.attach_prices(rows[offset:offset + limit]),
                             "total": db.count_ad_groups(**filters),
                             "total_ads": total_ads, "grouped": True,
                             "ranked": "hunter", "ranked_pool": len(rows)})
         items = scoring.attach(db.attach_entity_stats(
             db.get_ad_groups(limit=limit, offset=offset, sort_by=sort_by, **filters)))
-        return jsonify({"ads": items, "total": db.count_ad_groups(**filters),
+        return jsonify({"ads": db.attach_prices(items), "total": db.count_ad_groups(**filters),
                         "total_ads": total_ads, "grouped": True})
     ads = scoring.attach(db.attach_entity_stats(db.get_ads(limit=limit, offset=offset, sort_by=sort_by, **filters)))
-    return jsonify({"ads": ads, "total": total_ads, "total_ads": total_ads, "grouped": False})
+    return jsonify({"ads": db.attach_prices(ads), "total": total_ads, "total_ads": total_ads, "grouped": False})
 
 
 @bp.route("/api/link-stats")
@@ -115,7 +120,7 @@ def api_ads_group():
         ads = db.attach_entity_stats(db.get_group_ads(key, market="global"))
     else:
         ads = db.attach_entity_stats(db.get_group_ads(key, user_id=_scope_user_id()))
-    return jsonify({"ads": ads})
+    return jsonify({"ads": db.attach_prices(ads)})
 
 
 @bp.route("/api/video")

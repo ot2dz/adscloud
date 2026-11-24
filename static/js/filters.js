@@ -34,6 +34,7 @@ function updateFiltersCount() {
   const mdays = document.getElementById('min-days');
   if (mdays && parseInt(mdays.value || 0) > 0) n++;
   if (typeof minProductAds !== 'undefined' && minProductAds > 1) n++;
+  if (typeof priceFilterActive === 'function' && priceFilterActive()) n++;
   const badge = document.getElementById('filters-count');
   if (badge) {
     badge.innerText = n;

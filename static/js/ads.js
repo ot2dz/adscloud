@@ -192,6 +192,7 @@ async function loadAds(opts = {}) {
   updateFiltersCount();
 
   let url = `/api/ads?search=${encodeURIComponent(q)}&preset=${currentPreset}&start_date_min=${encodeURIComponent(dmin)}&start_date_max=${encodeURIComponent(dmax)}&min_days_active=${mdays}&sort_by=${sort}`;
+  url += priceFilterParams();
   if (minProductAds > 1) url += `&min_product_ads=${minProductAds}`;
   if (currentKeywords.length) url += `&keywords=${encodeURIComponent(currentKeywords.join(','))}`;
   if (currentNiches.length) url += `&niche=${encodeURIComponent(currentNiches.join(','))}`;
@@ -729,6 +730,7 @@ function adCardHtml(raw, opts = {}) {
         </div>
 
         <div class="flex items-center gap-3 text-[11.5px] text-slate-600 flex-wrap">
+          ${opts.noPrice ? '' : priceBadgeHtml(raw)}
           ${a.start_date ? `<span title="تاريخ الإطلاق">📅 ${fmtDayAr(a.start_date)}</span>` : ''}
           <span title="الأيام النشطة">⏱️ <b class="num text-slate-800">${days}</b> ${days === 1 ? 'يوم' : 'أيام'}</span>
           ${a.domain_total_ads != null ? `<span title="إجمالي إعلانات المتجر">🏪 <b class="num text-slate-800">${a.domain_total_ads}</b> للمتجر</span>` : ''}
