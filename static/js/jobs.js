@@ -1,87 +1,189 @@
-// ── Jobs loop ──
-const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف', paused:'متوقف مؤقتاً' };
-// Below this share of Meta's estimate, a run that Meta "finished" most likely
-// hit Meta's pagination limit rather than the real end of the results.
-const JOB_COVERAGE_OK = 0.9;
+// ── Jobs section: what runs now, what waits, and a history per kind.
+// Page expansion has its own tab, so it never hides the user's jobs.
 const fmtN = n => Number(n || 0).toLocaleString('en-US');
+const JOB_KIND = { keyword: '🔤 كلمة', page: '📄 صفحة', store: '🏪 متجر', link: '🔗 رابط', market: '🌍 سحب السوق',
+                   check: '🔎 فحص', expand: '🔁 توسيع' };
+const JOB_SOURCE = { manual: 'أنت', manual_target: 'أنت (منافس)', new_competitor: 'منافس جديد', manual_all: 'فحص كل المنافسين',
+                     schedule_manual: 'فحص كل المنافسين', manual_global: 'أنت (السوق الخارجي)', manual_global_all: 'أنت (السوق الخارجي)',
+                     manual_expand: 'أنت', schedule: 'مجدول تلقائياً', daily: 'يومي تلقائي', daily_rescan: 'يومي تلقائي', page_expand: 'تلقائي' };
+const JOB_GROUPS = [['mine', '👤 مهامي'], ['checks', '🔎 الفحوصات'], ['auto', '⏰ المجدولة'], ['expand', '🔁 توسيع الصفحات']];
+const JOB_VERDICT = { ok: '✅ نجحت', partial: '⚠️ ناقصة', empty: '∅ بلا نتائج', failed: '❌ فشلت', stopped: '⏹ أُوقفت' };
+const CHECK_LINE = { tablet: 'خط التابلت', scrape: 'خط السحب (التابلت متوقف)' };
+const jobsUi = { group: 'mine', verdict: '', q: '', limit: 30, busy: false, again: false, timer: null };
 
-// Meta estimate vs. what Meta really returned, and whether the run reached
-// the end (whole market: how many day x language slices did). Empty for
-// jobs that do not track it (old jobs, status check).
-function jobCoverage(j) {
-  const reported = j.reported_count == null ? null : Number(j.reported_count);
-  const scanned = Number(j.scanned_count || 0);
-  const slicesTotal = Number(j.slices_total || 0);
-  const slicesOk = Number(j.slices_ok || 0);
-  const finished = ['done', 'stopped', 'failed'].includes(j.status);
-  if (reported == null && !scanned && !slicesTotal) return '';
-  const nums = `<span class="num">${reported != null ? 'Meta: ' + fmtN(reported) + ' · ' : ''}مفحوص: ${fmtN(scanned)} · محفوظ: ${fmtN(j.result_count)}${slicesTotal ? ` · شرائح: ${slicesOk}/${slicesTotal}` : ''}</span>`;
-  let verdict = '';
-  if (finished && slicesTotal) {
-    verdict = Number(j.completed) === 1
-      ? `<span class="text-emerald-700">✅ اكتملت كل الشرائح</span>`
-      : `<span class="text-amber-700">⚠️ ${slicesTotal - slicesOk} شريحة لم تكتمل</span>`;
-  } else if (finished && j.completed != null) {
-    if (Number(j.completed) !== 1) {
-      verdict = `<span class="text-amber-700">⚠️ لم يكتمل — توقف قبل نهاية النتائج</span>`;
-    } else if (reported && scanned < reported * JOB_COVERAGE_OK) {
-      verdict = `<span class="text-orange-700" title="Meta أوقفت الصفحات قبل الوصول لعددها التقديري">🟠 Meta توقفت عند ${fmtN(scanned)} من ${fmtN(reported)} (${Math.round(scanned / reported * 100)}%) — غالباً حد Meta</span>`;
-    } else {
-      verdict = `<span class="text-emerald-700">✅ اكتمل — Meta لم تعد تعطي نتائج</span>`;
-    }
+function jobClock(iso) {
+  return iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Algiers' }) : '';
+}
+function jobDay(iso) { return iso ? new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Africa/Algiers' }) : ''; }
+function jobDayLabel(day) {
+  const t = todayDZ();
+  return day === t ? 'اليوم' : day === shiftDay(t, -1) ? 'أمس' : day;
+}
+function jobDuration(from, to) {
+  if (!from) return '';
+  const s = Math.max(0, Math.round((new Date(to || Date.now()) - new Date(from)) / 1000));
+  if (s < 60) return s + ' ث';
+  if (s < 3600) return Math.round(s / 60) + ' د';
+  return Math.floor(s / 3600) + ' س ' + Math.round((s % 3600) / 60) + ' د';
+}
+function jobBtn(fn, id, text, cls) { return `<button onclick="${fn}(${Number(id)})" class="jb-act ${cls}">${text}</button>`; }
+function jobMeta(j) {
+  return [JOB_KIND[j.kind] || '', JOB_SOURCE[j.source] || escT(j.source || ''), j.market === 'global' ? 'السوق الخارجي' : '',
+          j.kind !== 'market' && j.start_date_min ? `<span dir="ltr">${escT(j.start_date_min)} → ${escT(j.start_date_max || '')}</span>` : '',
+          '#' + Number(j.id)].filter(Boolean).join(' · ');
+}
+// Numbers of a finished job, in the words of its kind.
+function jobNumbers(j) {
+  const s = j.summary;
+  if (j.kind === 'check') {
+    if (!s) return `${fmtN(j.result_count)} إعلان فُحص`;
+    return `<b class="text-emerald-700">${fmtN(s.confirmed)} نشط</b> · <b class="text-rose-700">${fmtN(s.stopped)} توقف</b> · ${fmtN(s.new)} جديد · ${fmtN(s.pages)} صفحة`;
   }
-  return `<div class="text-[11px] text-slate-600 font-semibold flex flex-wrap gap-x-2">📊 ${nums}${verdict ? ' · ' + verdict : ''}</div>`;
+  if (j.kind === 'expand') return `${fmtN(j.slices_ok)}/${fmtN(j.slices_total)} صفحة · ${fmtN(j.result_count)} إعلان`;
+  const out = [`<b class="text-[#102a56]">${fmtN(j.result_count)} إعلان محفوظ</b>`];
+  if (Number(j.scanned_count)) out.push(`فُحص ${fmtN(j.scanned_count)}${j.reported_count ? ' من ' + fmtN(j.reported_count) + ' حسب Meta' : ''}`);
+  if (Number(j.slices_total)) out.push(`شرائح ${fmtN(j.slices_ok)}/${fmtN(j.slices_total)}`);
+  return out.join(' · ');
+}
+// Why a job is not a plain success, in one sentence.
+function jobWhy(j) {
+  if (j.verdict === 'failed') return j.error ? escT(j.error) : 'فشلت بلا سبب مسجَّل.';
+  if (j.verdict === 'empty') return j.error ? escT(j.error) : 'انتهت دون أي إعلان محفوظ (لا نتائج مطابقة، أو كلها خارج الفلتر).';
+  if (j.verdict !== 'partial') return '';
+  if (j.kind === 'check') return `${fmtN(j.summary && j.summary.skipped_batches)} دفعة لم تُفحص كاملة — إعلاناتها بقيت كما هي.`;
+  if (Number(j.slices_total) && Number(j.completed) !== 1) return `${fmtN(j.slices_total - j.slices_ok)} شريحة لم تكتمل.`;
+  if (j.completed != null && Number(j.completed) !== 1) return 'توقفت قبل نهاية النتائج.';
+  return `Meta توقفت عند ${fmtN(j.scanned_count)} من ${fmtN(j.reported_count)} (${Math.round(j.scanned_count / j.reported_count * 100)}%) — غالباً حدّ Meta وليس خطأً عندك.`;
+}
+
+function jobNowCard(j, live, label) {
+  const l = live[String(j.id)] || {};
+  const steps = l.steps && l.steps[1] ? l.steps : null;
+  const scanned = Number(l.scanned || 0), rep = Number(l.reported || 0);
+  const pct = steps ? Math.round(steps[0] / steps[1] * 100)
+    : (['keyword', 'page', 'store', 'link'].includes(j.kind) && rep && scanned ? Math.min(100, Math.round(scanned / rep * 100)) : null);
+  const unit = { check: 'دفعة', expand: 'صفحة', market: 'شريحة' }[j.kind] || '';
+  const nums = [`${fmtN(l.scraped != null ? l.scraped : j.result_count)} إعلان`];
+  if (steps) nums.push(`${fmtN(steps[0])}/${fmtN(steps[1])} ${unit}`);
+  else if (rep) nums.push(`فُحص ${fmtN(scanned)} من ${fmtN(rep)}`);
+  nums.push(`منذ ${jobDuration(j.started_at)}`);
+  const state = j.stop_requested ? '⏹ جارٍ الإيقاف…' : j.pause_requested ? '⏸ جارٍ الإيقاف المؤقت، يُحفظ الموضع…' : '';
+  return `<div class="jb-now ${j.kind === 'expand' ? 'bg' : ''}">
+    <div class="flex justify-between gap-2"><span class="jb-line">${escT(j.kind === 'check' && l.line ? '🔎 ' + (CHECK_LINE[l.line] || l.line) : label)}</span>
+      <span class="shrink-0">${state ? '' : jobBtn('pauseJob', j.id, '⏸ مؤقت', 'text-amber-700') + jobBtn('stopJob', j.id, '⏹ إيقاف', 'text-rose-600')}</span></div>
+    <div class="jb-title">${escT(j.title)}</div><div class="jb-sub">${jobMeta(j)}</div>
+    <div class="jb-bar"><i class="${pct == null ? 'animate-pulse' : ''}" style="width:${pct == null ? 100 : Math.max(2, pct)}%"></i></div>
+    <div class="jb-sub num">${pct == null ? '' : `<b class="text-blue-700">${pct}%</b> · `}${nums.join(' · ')}</div>
+    ${state ? `<div class="jb-why partial">${state}</div>` : l.last ? `<div class="jb-sub truncate" title="${escT(l.last)}">${escT(l.last)}</div>` : ''}
+  </div>`;
+}
+function jobIdle(label, text) {
+  return `<div class="jb-now idle"><span class="jb-line">${label}</span><div class="jb-sub">${text}</div></div>`;
+}
+function renderNow(d) {
+  const isCheck = j => j.kind === 'check';
+  const scrapes = d.running.filter(j => !isCheck(j)), checks = d.running.filter(isCheck);
+  const overScrape = checks.some(j => (d.live[String(j.id)] || {}).line === 'scrape');
+  return (scrapes.length ? scrapes.map(j => jobNowCard(j, d.live, '📥 خط السحب')).join('')
+      : jobIdle('📥 خط السحب', overScrape ? 'يستعمله الفحص الآن، ويتركه فور وصول أي سحب.' : 'فارغ — جاهز لأي سحب.'))
+    + (checks.length ? checks.map(j => jobNowCard(j, d.live, '🔎 الفحص')).join('')
+      : jobIdle('🔎 الفحص', d.waiting.some(isCheck) ? 'لا يعمل الآن — فحص في الانتظار.' : 'لا فحص يعمل الآن.'));
+}
+function jobWaitReason(j) {
+  if (j.status === 'paused') return '⏸ أوقفتها مؤقتاً — «استئناف» يكمل من نفس النقطة.';
+  if (j.retry_at && new Date(j.retry_at) > new Date()) return `🔌 انقطعت — تُستأنف ${jobClock(j.retry_at)} من نفس النقطة (إعادة ${Number(j.attempts) || 1} من 3).${j.error ? ' ' + escT(j.error) : ''}`;
+  if (j.kind === 'check') return j.paused_reason === 'auto' ? 'تنتظر خطاً متاحاً، وتكمل من نفس النقطة.' : 'تنتظر خط الفحص.';
+  if (j.paused_reason === 'auto') return 'تركت الدور لمهمة أهم، وتكمل وحدها من نفس النقطة.';
+  return 'تنتظر دورها على خط السحب.';
+}
+function renderQueue(rows) {
+  let n = 0;
+  return rows.map(j => `<div class="jb-row"><span class="jb-n num shrink-0">${j.status === 'paused' ? '⏸' : ++n}</span>
+    <div class="jb-main"><div class="jb-title">${escT(j.title)}</div>
+      <div class="jb-sub">${jobMeta(j)}${Number(j.result_count) ? ` · ${fmtN(j.result_count)} إعلان حتى الآن` : ''}</div>
+      <div class="jb-sub text-amber-700">${jobWaitReason(j)}</div></div>
+    <div class="shrink-0">${j.status === 'paused' ? jobBtn('resumeJob', j.id, '▶ استئناف', 'text-emerald-700') : jobBtn('pauseJob', j.id, '⏸ مؤقت', 'text-amber-700')}${jobBtn('stopJob', j.id, '✕ إلغاء', 'text-rose-600')}</div></div>`).join('');
+}
+function renderHistoryRow(j) {
+  const why = jobWhy(j), end = j.finished_at;
+  const again = j.verdict === 'failed' && j.resumable ? '▶ أكمل من حيث توقفت' : '↻ أعدها';
+  return `<div class="jb-row"><span class="jb-v ${j.verdict}">${JOB_VERDICT[j.verdict] || ''}</span>
+    <div class="jb-main"><div class="jb-title">${escT(j.title)}</div><div class="jb-sub">${jobMeta(j)}</div>
+      <div class="jb-sub num">${jobNumbers(j)}</div>${why ? `<div class="jb-why ${j.verdict}">${why}</div>` : ''}</div>
+    <div class="shrink-0 text-end"><div class="jb-sub num" title="بدأت ${jobClock(j.started_at)}">${jobClock(end)}${j.started_at && end ? ' · ' + jobDuration(j.started_at, end) : ''}</div>
+      ${j.kind === 'expand' && j.verdict !== 'failed' ? '' : jobBtn('retryJob', j.id, again, 'text-blue-700')}</div></div>`;
+}
+function renderHistory(h) {
+  if (!h.jobs.length) return `<div class="text-slate-400 text-sm font-semibold py-8 text-center">${jobsUi.q || jobsUi.verdict ? 'لا مهام تطابق هذا البحث.' : 'لا مهام منتهية هنا بعد.'}</div>`;
+  let day = null;
+  return h.jobs.map(j => {
+    const d = jobDay(j.finished_at || j.created_at);
+    const head = d !== day ? `<div class="jb-day">${jobDayLabel(d)}</div>` : '';
+    day = d;
+    return head + renderHistoryRow(j);
+  }).join('');
+}
+function renderExpandDays(days) {
+  if (!days.length) return '';
+  return `<div class="jb-sub pb-1">حصيلة كل يوم (آخر 14 يوماً):</div><div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 pb-2">` + days.map(d =>
+    `<div class="srow !block !cursor-default"><div class="srow-t">${jobDayLabel(d.day)}</div>
+     <div class="jb-sub num">${fmtN(d.pages)} صفحة · ${fmtN(d.ads)} إعلان · ${fmtN(d.runs)} مهمة${d.failed ? ` · <b class="text-rose-700">${fmtN(d.failed)} فشلت</b>` : ''}</div></div>`).join('') + '</div>';
+}
+
+// Only touches the page when something changed (keeps scroll and selection).
+function jobsSet(id, html) {
+  const el = document.getElementById(id);
+  if (el && el._html !== html) { el._html = html; el.innerHTML = html; }
 }
 async function loadJobs() {
-  const r = await fetch('/api/jobs'); const d = await r.json();
-  const el = document.getElementById('jobs');
-  if (!d.jobs.length) { el.innerHTML = '<div class="text-slate-400 text-sm font-semibold py-4 text-center">لا أوامر بعد.</div>'; return; }
-  const color = {
-    pending:'text-slate-700 bg-slate-100 border-slate-300',
-    running:'text-sky-700 bg-sky-50 border-sky-300',
-    done:'text-emerald-700 bg-emerald-50 border-emerald-300',
-    failed:'text-rose-700 bg-rose-50 border-rose-300',
-    stopped:'text-amber-700 bg-amber-50 border-amber-300',
-    paused:'text-amber-800 bg-amber-100 border-amber-400',
-    stopping:'text-amber-700 bg-amber-50 border-amber-300'
-  };
-  el.innerHTML = d.jobs.map(j => `
-    <div class="bg-[#f8fbff] border border-[#cfe0f5] rounded-xl px-4 py-3 text-sm space-y-1.5 shadow-sm">
-      <div class="flex items-center justify-between gap-2">
-        <div class="truncate">
-          <span class="font-bold text-[#102a56]">${j.query ? escT(j.query) : '🔗 رابط مخصص'}</span>
-          <span class="text-[11px] text-slate-500 font-medium"> · ${j.source === 'schedule' ? 'مجدول تلقائي' : 'يدوي'}</span>
-        </div>
-        <div class="flex items-center gap-2 shrink-0">
-          ${(j.status === 'done' || j.status === 'stopped') ? `<span class="text-xs text-emerald-700 font-bold num">${j.result_count || 0} إعلان</span>` : ''}
-          <span class="text-[11px] px-2.5 py-0.5 rounded-full border font-bold ${color[j.status] || 'bg-slate-100'}">${JOB_AR[j.status] || escT(j.status)}</span>
-          ${j.status === 'paused' ? `<button onclick="resumeJob(${j.id})" class="text-xs text-emerald-700 hover:underline font-bold">▶ استئناف</button>` : ''}
-          ${((j.status === 'running' && !j.pause_requested) || (j.status === 'pending' && !j.paused_reason)) ? `<button onclick="pauseJob(${j.id})" class="text-xs text-amber-700 hover:underline font-bold">⏸ إيقاف مؤقت</button>` : ''}
-          ${(j.status === 'running' || j.status === 'pending' || j.status === 'paused') ? `<button onclick="stopJob(${j.id})" class="text-xs text-rose-600 hover:underline font-bold">⏹ إيقاف</button>` : ''}
-        </div>
-      </div>
-      ${j.status === 'running' ? `
-        <div class="text-xs text-sky-700 font-semibold">📥 ${Number(j.progress) || 0} إعلان مسحوب ${j.progress_note ? ('· ' + escT(j.progress_note)) : ''}</div>
-        <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full bg-blue-600 animate-pulse" style="width:100%"></div></div>` : ''}
-      ${j.status === 'running' && j.pause_requested ? `
-        <div class="text-xs text-amber-700 font-semibold">⏸ جارٍ الإيقاف المؤقت — يُحفظ الموضع…</div>` : ''}
-      ${j.status === 'pending' && j.paused_reason === 'auto' ? `
-        <div class="text-xs text-amber-700 font-semibold">⏸ ${['status_check', 'winning_check'].includes(j.mode) ? `ينتظر خطاً متاحاً (التابلت أو خط السحب وهو فارغ) — فُحص ${fmtN(j.result_count)} إعلان، ويُكمل من نفس النقطة.` : `أُوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان لتنفيذ مهمة أهم أولاً — سيُكمل تلقائياً من نفس النقطة بعدها.`}</div>` : ''}
-      ${j.status === 'paused' ? `
-        <div class="text-xs text-amber-700 font-semibold">⏸ متوقف مؤقتاً بعد ${fmtN(j.result_count)} إعلان — «استئناف» يكمل من نفس النقطة.</div>` : ''}
-      ${j.status === 'pending' && j.retry_at ? `
-        <div class="text-xs text-amber-700 font-semibold">⏸ انقطع بعد ${j.result_count || 0} إعلان · سيُستأنف من نفس النقطة ${new Date(j.retry_at).toLocaleTimeString('ar-DZ', {hour: '2-digit', minute: '2-digit'})} (محاولة ${j.attempts || 1})</div>` : ''}
-      ${jobCoverage(j)}
-      ${j.status === 'failed' && j.error ? `
-        <div class="text-xs text-rose-700 font-semibold truncate" title="${escT(j.error)}">⚠️ ${escT(j.error)}</div>` : ''}
-    </div>`).join('');
+  const view = document.getElementById('view-jobs');
+  if (!view || view.classList.contains('hidden')) return;  // loaded when opened
+  if (jobsUi.busy) { jobsUi.again = true; return; }
+  jobsUi.busy = true;
+  try {
+    const r = await fetch('/api/jobs?' + new URLSearchParams({ group: jobsUi.group, verdict: jobsUi.verdict, q: jobsUi.q, limit: jobsUi.limit }));
+    if (!r.ok) return;
+    const d = await r.json(), h = d.history;
+    if (h.group !== jobsUi.group) return;  // the user moved to another tab meanwhile
+    jobsSet('jobs-now', renderNow(d));
+    document.getElementById('jobs-queue-box').classList.toggle('hidden', !d.waiting.length);
+    jobsSet('jobs-queue-n', String(d.waiting.length));
+    jobsSet('jobs-queue', renderQueue(d.waiting));
+    jobsSet('jobs-groups', JOB_GROUPS.map(([k, label]) => `<button onclick="jobsGroup('${k}')" class="jb-chip ${k === jobsUi.group ? 'on' : ''}">${label} <span class="num opacity-70">${fmtN(d.groups[k].total)}</span>${d.groups[k].failed ? `<b class="bad num" title="فشلت في آخر 48 ساعة">${d.groups[k].failed}</b>` : ''}</button>`).join(''));
+    const all = Object.values(h.counts).reduce((a, b) => a + b, 0);
+    jobsSet('jobs-verdicts', [['', 'الكل', all], ...Object.entries(JOB_VERDICT).map(([k, t]) => [k, t, h.counts[k] || 0])]
+      .filter(([k, , n]) => !k || n || k === jobsUi.verdict)
+      .map(([k, t, n]) => `<button onclick="jobsVerdict('${k}')" class="jb-chip ${k === jobsUi.verdict ? 'on' : ''}">${t} <span class="num opacity-70">${fmtN(n)}</span></button>`).join(''));
+    jobsSet('jobs-history', (jobsUi.q || jobsUi.verdict ? '' : renderExpandDays(d.expand_days)) + renderHistory(h));
+    document.getElementById('jobs-more').classList.toggle('hidden', h.jobs.length >= h.total || jobsUi.limit >= 200);
+  } catch (_e) { /* the next refresh tries again */ } finally {
+    jobsUi.busy = false;
+    if (jobsUi.again) { jobsUi.again = false; loadJobs(); }
+  }
 }
-async function pauseJob(id){ await fetch('/api/jobs/'+id+'/pause',{method:'POST'}); loadJobs(); }
-async function resumeJob(id){
-  const r = await fetch('/api/jobs/'+id+'/resume',{method:'POST'}); const d = await r.json().catch(() => ({}));
+function jobsGroup(g) { Object.assign(jobsUi, { group: g, verdict: '', limit: 30 }); loadJobs(); }
+function jobsVerdict(v) { Object.assign(jobsUi, { verdict: v, limit: 30 }); loadJobs(); }
+function jobsMore() { jobsUi.limit = Math.min(200, jobsUi.limit + 30); loadJobs(); }
+function jobsSearch() {
+  clearTimeout(jobsUi.timer);
+  jobsUi.timer = setTimeout(() => { jobsUi.q = document.getElementById('jobs-q').value.trim(); jobsUi.limit = 30; loadJobs(); }, 300);
+}
+async function jobPost(id, what) {
+  const r = await fetch('/api/jobs/' + id + '/' + what, { method: 'POST' });
+  return r.json().catch(() => ({}));
+}
+async function pauseJob(id) { await jobPost(id, 'pause'); loadJobs(); }
+async function resumeJob(id) {
+  const d = await jobPost(id, 'resume');
   if (!d.ok) alert('⚠️ ' + (d.error || 'تعذّر الاستئناف'));
-  else if (d.queued) alert('🕒 أُعيدت المهمة إلى الطابور — تُكمل بعد انتهاء السحب الحالي.');
   loadJobs();
 }
-async function stopJob(id){ await fetch('/api/jobs/'+id+'/stop',{method:'POST'}); loadJobs(); }
-
+async function stopJob(id) {
+  if (!confirm('إيقاف هذه المهمة نهائياً؟ ما جُمع منها يبقى محفوظاً.')) return;
+  await jobPost(id, 'stop'); loadJobs();
+}
+async function retryJob(id) {
+  const d = await jobPost(id, 'retry');
+  if (!d.ok) alert('⚠️ ' + (d.error || 'تعذّرت الإعادة'));
+  loadJobs();
+}

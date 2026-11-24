@@ -578,6 +578,10 @@ class Database:
             ("priority", "INTEGER DEFAULT 0"),
             ("pause_requested", "TEXT DEFAULT ''"),
             ("paused_reason", "TEXT DEFAULT ''"),
+            # started_at restarts on every resume; this one is the first start.
+            ("first_started_at", "TEXT"),
+            # Final numbers of a check (JSON), shown in the jobs section.
+            ("summary", "TEXT"),
         ]:
             try:
                 if self.is_postgres:
@@ -3178,7 +3182,8 @@ class Database:
         conn = self._connect()
         job = None
         claimed = ("status='running', worker_id={p}, started_at={p}, heartbeat_at={p}, "
-                   "pause_requested='', paused_reason=''")
+                   "pause_requested='', paused_reason='', "
+                   "first_started_at=COALESCE(first_started_at, {p})")
         mf, mparams = _mode_filter(only_modes, skip_modes)
         try:
             cur = conn.cursor()
@@ -3189,7 +3194,7 @@ class Database:
                     "WHERE id = (SELECT id FROM jobs WHERE status='pending' "
                     "AND (retry_at IS NULL OR retry_at <= %s)" + mf.format(p="%s") + " "
                     "ORDER BY COALESCE(priority, 0) DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-                    "RETURNING *", (worker_id, now, now, now, *mparams))
+                    "RETURNING *", (worker_id, now, now, now, now, *mparams))
                 row = cur.fetchone()
                 if row:
                     cols = [c[0] for c in cur.description]
@@ -3203,7 +3208,7 @@ class Database:
                 if r:
                     jid = r[0]
                     cur.execute(f"UPDATE jobs SET {claimed.format(p='?')} WHERE id=?",
-                                (worker_id, now, now, jid))
+                                (worker_id, now, now, now, jid))
                     conn.commit()
                     job = self._query_one("SELECT * FROM jobs WHERE id=?", (jid,))
         finally:
@@ -3219,7 +3224,8 @@ class Database:
     def finish_job(self, job_id: int, status: str = "done", result_count: int = 0,
                    error: str = "", checkpoint: Optional[str] = None,
                    scanned_count: Optional[int] = None, completed: Optional[bool] = None,
-                   slices_total: Optional[int] = None, slices_ok: Optional[int] = None) -> None:
+                   slices_total: Optional[int] = None, slices_ok: Optional[int] = None,
+                   summary: Optional[str] = None) -> None:
         """Close a job. ``checkpoint`` is kept on failure so it can be resumed.
 
         The coverage fields (scanned / completed / slices) are only written
@@ -3235,10 +3241,10 @@ class Database:
         if completed is not None:
             sets.append(f"completed={p}")
             vals.append(1 if completed else 0)
-        for col, val in (("slices_total", slices_total), ("slices_ok", slices_ok)):
+        for col, val in (("slices_total", slices_total), ("slices_ok", slices_ok), ("summary", summary)):
             if val is not None:
                 sets.append(f"{col}={p}")
-                vals.append(int(val))
+                vals.append(val if col == "summary" else int(val))
         vals.append(job_id)
         self._execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id={p}", tuple(vals))
 
@@ -3295,6 +3301,18 @@ class Database:
 
     def request_stop(self, job_id: int) -> None:
         self._execute(f"UPDATE jobs SET stop_requested={self._ph()} WHERE id={self._ph()}", (1, job_id))
+
+    def cancel_job_if_pending(self, job_id: int) -> None:
+        """Close a job nobody runs yet (a claimed one sees its stop flag)."""
+        p = self._ph()
+        self._execute(f"UPDATE jobs SET status='stopped', finished_at={p}, retry_at=NULL, paused_reason='' "
+                      f"WHERE id={p} AND status='pending'", (_now(), job_id))
+
+    def reopen_job(self, job_id: int) -> None:
+        """Queue a failed job again from its checkpoint, with fresh attempts."""
+        self._execute("UPDATE jobs SET status='pending', attempts=0, error='', finished_at=NULL, retry_at=NULL, "
+                      "stop_requested=0, pause_requested='', paused_reason='', worker_id=NULL, started_at=NULL "
+                      f"WHERE id={self._ph()} AND status='failed'", (job_id,))
 
     def request_pause(self, job_id: int) -> Optional[str]:
         """Pause a job by hand. A queued job is parked at once; a running one is

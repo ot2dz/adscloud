@@ -168,11 +168,11 @@ def run(db, *, progress: Callable[[str], None], should_stop: Callable[[], bool],
                 return "stopped"
             raise Blocked("the line stopped answering in the middle of a batch")
         if not complete:
-            stats["skipped_batches"] += 1
             progress(f"⚠️ الدفعة {idx + done_batches}/{n_batches} لم تكتمل — تُركت بدون تغيير.")
             if not ads:
                 ip_rotator.rotate(url=rotate_url, token=rotate_token)
-                raise Blocked("batch returned nothing twice")
+                raise Blocked("batch returned nothing twice")  # done again later, not skipped
+            stats["skipped_batches"] += 1
             passed(idx, batch)
             continue
 

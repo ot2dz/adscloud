@@ -437,7 +437,8 @@ def run_claimed_job(job: dict, mgr=None, line: str = "") -> None:
     # Coverage written on every close; a run that did not finish
     # cannot be "completed" whatever the slices said.
     cov = {"scanned_count": scanned_total, "slices_total": outcome.get("slices_total"),
-           "slices_ok": outcome.get("slices_ok")}
+           "slices_ok": outcome.get("slices_ok"),
+           "summary": json.dumps(outcome["summary"]) if outcome.get("summary") else None}
     cov_unfinished = {**cov, "completed": False if completed is not None else None}
     parts = ([f"Meta: {reported}"] if reported is not None else []) + \
             ([f"مفحوص: {scanned_total}"] if scanned_total else []) + \
@@ -507,7 +508,9 @@ def run_claimed_job(job: dict, mgr=None, line: str = "") -> None:
         mgr.state["error"] = ""
         mgr._emit("log", {"text": f"⏹ أُوقفت المهمة #{jid}: {count} إعلان{summary}."})
     else:
-        db.finish_job(jid, status="done", result_count=count, completed=completed, **cov)
+        # An empty run "ends" too: keep why it brought nothing.
+        db.finish_job(jid, status="done", result_count=count, completed=completed,
+                      error=(outcome.get("error") or "") if status == "empty" else "", **cov)
         logger.info("job %s: done (%s ads, scanned=%s, reported=%s, completed=%s)",
                     jid, count, scanned_total, reported, completed)
         mgr._emit("log", {"text": f"✅ انتهت المهمة #{jid}: {count} إعلان{summary}."})

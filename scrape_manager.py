@@ -192,7 +192,8 @@ class ScrapeManager:
             self.events.get_nowait()
         self.state.update({"running": True, "query": query or url, "scraped": base_count,
                            "stored": 0, "stores": 0, "scanned": 0, "reported": base_reported,
-                           "error": "", "log": [], "outcome": None, "job_id": job_id})
+                           "error": "", "log": [], "outcome": None, "job_id": job_id,
+                           "steps": None})
         self.thread = threading.Thread(
             target=self._run,
             args=(query, country, exact, stores_only, sort_mode, url, start_date_min, start_date_max, date_label, date_scope),
@@ -379,6 +380,7 @@ class ScrapeManager:
                     outcome["checkpoint"] = {"pass": next_batch, "cursor": None, "after": st.get("after") or "",
                                              "stats": dict(st)}
                     outcome["progressed"] = True
+                    self.state["steps"] = [next_batch - 1, st.get("total_batches") or 0]
                     self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
                     if on_checkpoint:
                         on_checkpoint(outcome["checkpoint"])
@@ -405,6 +407,10 @@ class ScrapeManager:
                                        error=f"Meta لا تُرجع نتائج (حجب مؤقت؟) — لم يُعلَّم أي إعلان: {exc}")
                         progress("⏸ " + outcome["error"])
                 self.state["scraped"] = st.get("confirmed", 0) + st.get("stopped", 0)
+                outcome["summary"] = {k: st.get(k, 0) for k in ("confirmed", "stopped", "new", "pages",
+                                                                "skipped_batches", "requests")}
+                if outcome["status"] == "done":
+                    outcome["completed"] = not st.get("skipped_batches")
                 st["finished_at"] = datetime.now(timezone.utc).isoformat()
                 st["status"] = outcome["status"]
                 db.set_setting("winning_check_summary" if winning else "status_check_summary",
@@ -532,6 +538,8 @@ class ScrapeManager:
                     if open_ended:
                         cp["yield"] = {str(k): v for k, v in day_yield.items()}
                     outcome["checkpoint"] = cp
+                    if not open_ended:  # its end is not known in advance
+                        self.state["steps"] = [len(done), total_passes]
                     if on_checkpoint:
                         try:
                             on_checkpoint(cp)
@@ -667,6 +675,7 @@ class ScrapeManager:
 
                 def expand_cp():
                     cp = {"pages": pages, "i": i, "found": found_total}
+                    self.state["steps"] = [i, len(pages)]
                     outcome["checkpoint"] = cp
                     if on_checkpoint:
                         try:

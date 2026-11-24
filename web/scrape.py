@@ -277,7 +277,29 @@ def _worker_ok() -> bool:
 @bp.route("/api/jobs", methods=["GET"])
 @admin_required
 def api_jobs():
-    return jsonify({"jobs": db.list_jobs(limit=60)})
+    """Running jobs, the queue, and one page of one history group."""
+    import jobs_view
+    from scrape_manager import check_manager
+    running, waiting = jobs_view.open_jobs(db)
+    hist = jobs_view.history(db, group=request.args.get("group", "mine"), verdict=request.args.get("verdict", ""),
+                             q=request.args.get("q", "")[:200], offset=_int_arg("offset", 0),
+                             limit=_int_arg("limit", jobs_view.PAGE))
+    return jsonify({"running": running, "waiting": waiting, "history": hist,
+                    "groups": jobs_view.group_badges(db), "live": jobs_view.live(manager, check_manager),
+                    "expand_days": jobs_view.expand_days(db) if hist["group"] == "expand" else []})
+
+
+@bp.route("/api/jobs/<int:job_id>/retry", methods=["POST"])
+@admin_required
+def api_job_retry(job_id):
+    """Run a finished job again (see jobs_view.retry)."""
+    import jobs_view
+    new, error, resumed = jobs_view.retry(db, job_id)
+    if new is None:
+        return jsonify({"ok": False, "error": error}), 409
+    job_wakeup.set()
+    manager.events.put({"type": "job", "data": {"job_id": new, "status": "pending"}})
+    return jsonify({"ok": True, "job_id": new, "resumed": resumed})
 
 
 @bp.route("/api/jobs", methods=["POST"])
@@ -384,6 +406,7 @@ def api_job_stop(job_id):
         manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "stopped"}})
         return jsonify({"ok": True})
     db.request_stop(job_id)
+    db.cancel_job_if_pending(job_id)  # nobody runs it: closed at once
     manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "stopping"}})
     return jsonify({"ok": True})
 

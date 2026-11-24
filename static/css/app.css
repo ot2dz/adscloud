@@ -59,3 +59,34 @@
 .sbtn:hover { background:#eef6ff; } .sbtn:disabled { opacity:.6; }
 .sadv { border-top:1px solid #f1f5f9; padding-top:.75rem; }
 .sadv summary { cursor:pointer; font-size:.75rem; font-weight:700; color:#475569; }
+
+/* ── Jobs: now / waiting / history ── */
+.jb-h { font-weight:800; color:#102a56; font-size:.9rem; margin-bottom:.6rem; }
+.jb-n { background:#e2ecfa; color:#174ea6; border-radius:999px; padding:0 .5rem; font-size:.7rem; }
+.jb-now { background:#fff; border:1px solid #cfe0f5; border-inline-start:4px solid #2563eb; border-radius:1rem; padding:1rem 1.1rem; box-shadow:0 8px 20px rgba(23,43,77,.04); min-width:0; }
+.jb-now.idle { border-inline-start-color:#cbd5e1; background:#f8fbff; }
+.jb-now.bg { border-inline-start-color:#94a3b8; }
+.jb-line { font-size:.7rem; font-weight:700; color:#64748b; }
+.jb-title { font-weight:800; color:#102a56; font-size:.85rem; overflow-wrap:anywhere; }
+.jb-sub { font-size:.7rem; color:#64748b; font-weight:600; line-height:1.7; overflow-wrap:anywhere; }
+.jb-bar { height:.45rem; background:#e2e8f0; border-radius:999px; overflow:hidden; margin:.5rem 0; }
+.jb-bar > i { display:block; height:100%; background:#2563eb; border-radius:999px; transition:width .4s; }
+.jb-row { display:flex; gap:.75rem; align-items:flex-start; padding:.7rem .25rem; border-top:1px solid #f1f5f9; }
+.jb-row:first-child { border-top:0; }
+.jb-row > .jb-main { flex:1; min-width:0; }
+.jb-day { font-size:.7rem; font-weight:800; color:#64748b; background:#f1f6fd; border-radius:.5rem; padding:.25rem .6rem; margin-top:.6rem; }
+.jb-v { flex-shrink:0; width:5.6rem; text-align:center; font-size:.7rem; font-weight:800; border-radius:.6rem; padding:.25rem .3rem; border:1px solid; }
+.jb-v.ok { color:#047857; background:#ecfdf5; border-color:#a7f3d0; }
+.jb-v.partial { color:#b45309; background:#fffbeb; border-color:#fde68a; }
+.jb-v.empty { color:#475569; background:#f1f5f9; border-color:#cbd5e1; }
+.jb-v.failed { color:#be123c; background:#fff1f2; border-color:#fecdd3; }
+.jb-v.stopped { color:#6b7280; background:#fff; border-color:#d1d5db; }
+.jb-chip { font-size:.72rem; font-weight:700; border:1px solid #cfe0f5; background:#fff; color:#334155; border-radius:999px; padding:.3rem .75rem; transition:background .15s; }
+.jb-chip:hover { background:#eef6ff; }
+.jb-chip.on { background:#2563eb; border-color:#2563eb; color:#fff; }
+.jb-chip b.bad { background:#e11d48; color:#fff; border-radius:999px; padding:0 .4rem; margin-inline-start:.3rem; font-size:.65rem; }
+.jb-act { font-size:.7rem; font-weight:700; border-radius:.5rem; padding:.2rem .5rem; white-space:nowrap; }
+.jb-act:hover { background:#eef6ff; }
+.jb-why { font-size:.7rem; font-weight:600; line-height:1.7; border-radius:.5rem; padding:.3rem .6rem; margin-top:.3rem; overflow-wrap:anywhere; }
+.jb-why.failed { background:#fff1f2; color:#9f1239; } .jb-why.partial { background:#fffbeb; color:#92400e; } .jb-why.empty { background:#f1f5f9; color:#475569; }
+@media (max-width: 640px) { .jb-row { flex-wrap:wrap; } .jb-row > .jb-main { flex-basis:60%; } #jobs-q { width:100% !important; } }

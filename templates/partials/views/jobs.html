@@ -1,8 +1,23 @@
-  <!-- VIEW: JOBS -->
-  <section id="view-jobs" class="hidden bg-white border border-[#cfe0f5] rounded-2xl p-5 shadow-[0_8px_20px_rgba(23,43,77,0.04)] space-y-4">
-    <div class="flex items-center justify-between pb-3 border-b border-slate-100">
-      <h3 class="font-bold text-[#102a56] text-sm">📋 سجل الأوامر والمهام الجارية</h3>
-      <button onclick="loadJobs()" class="text-xs text-slate-500 hover:text-blue-600 font-bold">تحديث</button>
+  <!-- VIEW: JOBS — now / waiting / history (page expansion apart) -->
+  <section id="view-jobs" class="hidden space-y-5">
+    <div>
+      <div class="jb-h">⚡ يعمل الآن</div>
+      <div id="jobs-now" class="grid gap-3 md:grid-cols-2"></div>
     </div>
-    <div id="jobs" class="space-y-2.5 max-h-96 overflow-auto"></div>
+
+    <div id="jobs-queue-box" class="scard hidden">
+      <div class="jb-h">🕒 في الانتظار <span id="jobs-queue-n" class="jb-n"></span></div>
+      <div id="jobs-queue"></div>
+    </div>
+
+    <div class="scard">
+      <div class="flex flex-wrap items-center gap-3 pb-3 border-b border-slate-100">
+        <div class="jb-h !mb-0">📋 السجل</div>
+        <div id="jobs-groups" class="flex flex-wrap gap-1.5"></div>
+        <input id="jobs-q" oninput="jobsSearch()" placeholder="ابحث: كلمة، متجر، منافس…" class="sinput !w-56 ms-auto">
+      </div>
+      <div id="jobs-verdicts" class="flex flex-wrap gap-1.5 py-3"></div>
+      <div id="jobs-history"></div>
+      <button id="jobs-more" onclick="jobsMore()" class="sbtn w-full mt-3 hidden">عرض المزيد</button>
+    </div>
   </section>
