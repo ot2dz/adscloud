@@ -209,6 +209,34 @@ class DbTest(unittest.TestCase):
         self.assertEqual(db.get_lf_store(sid)["last_order_number"], 50)
         self.assertEqual(db.lf_orders_by_day(db.lf_store_probes(sid, 2)), {})
 
+    def test_daily_series_splits_overnight_and_marks_unmeasured(self):
+        from datetime import date
+        probes = [
+            {"kind": "probe", "order_number": 10, "probed_at": "2026-11-23T22:00:00+00:00"},
+            {"kind": "probe", "order_number": 21, "probed_at": "2026-11-24T08:00:00+00:00"},
+        ]
+        # jump = 21-10-1 = 10 orders; the interval crosses the 23:00 UTC boundary
+        # (midnight in Algeria) so 1h lands on 23 Nov and 9h on 24 Nov.
+        rows = db.lf_daily_series(probes, days=3, today=date(2026, 11, 25))
+        by_date = {r["date"]: r for r in rows}
+        self.assertEqual(by_date["2026-11-25"]["orders"], 0)
+        self.assertFalse(by_date["2026-11-25"]["measured"])
+        self.assertEqual((by_date["2026-11-23"]["orders"], by_date["2026-11-23"]["measured"]), (1, True))
+        self.assertEqual((by_date["2026-11-24"]["orders"], by_date["2026-11-24"]["measured"]), (9, True))
+        self.assertEqual(sum(r["orders"] for r in rows), 10)
+        self.assertEqual(db.lf_orders_by_day(probes),
+                         {"2026-11-23": 1, "2026-11-24": 9})
+
+    def test_daily_rounding_keeps_the_total(self):
+        from datetime import date
+        probes = [
+            {"kind": "probe", "order_number": 100, "probed_at": "2026-11-22T23:30:00+00:00"},
+            {"kind": "probe", "order_number": 111, "probed_at": "2026-11-24T01:30:00+00:00"},
+        ]  # jump 10 over 26h crossing midnight(s) -> split over the days, total kept
+        rows = db.lf_daily_series(probes, days=4, today=date(2026, 11, 25))
+        self.assertEqual(sum(r["orders"] for r in rows), 10)
+        self.assertEqual(len([r for r in rows if r["measured"]]), 2)
+
 
 class ApiTest(unittest.TestCase):
     @classmethod

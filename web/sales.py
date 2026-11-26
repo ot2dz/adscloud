@@ -14,7 +14,7 @@ from flask import Blueprint, g, jsonify, request
 
 import ip_rotator
 import sales_tracker
-from db import db
+from db import algeria_today, db
 from web.common import _audit, admin_required, login_required
 
 logger = logging.getLogger("sales_web")
@@ -103,10 +103,15 @@ def _public_store(s: dict) -> dict:
         "label": s.get("label") or "",
         "enabled": bool(s.get("enabled")),
         "orders_today": int(s.get("orders_today") or 0),
+        "today_measured": bool(s.get("today_measured")),
+        "orders_yesterday": int(s.get("orders_yesterday") or 0),
+        "yesterday_measured": bool(s.get("yesterday_measured")),
         "orders_window": int(s.get("orders_window") or 0),
         "window_days": int(s.get("window_days") or 7),
         "days": s.get("days") or {},
+        "daily": s.get("daily") or [],
         "updated_at": s.get("last_checked_at") or s.get("last_probed_at") or "",
+        "updated_at_local": s.get("updated_at_local") or "",
         "running": bool(s.get("running")),
     }
 
@@ -188,6 +193,7 @@ def api_overview():
     admin = _is_admin()
     return jsonify({
         "ok": True, "days": days, "admin": admin,
+        "today": algeria_today().isoformat(),
         "stores": [_admin_store(s) if admin else _public_store(s) for s in stores],
         "limits": _limits(),
         "config": _settings_vars() if admin else None,
@@ -282,8 +288,9 @@ def api_store_series(store_id: int):
     if not store:
         return jsonify({"ok": False, "error": "المتجر غير موجود"}), 404
     days = _days_arg(30, 365)
-    probes = db.lf_store_probes(store_id, days=days)
-    return jsonify({"ok": True, "days": db.lf_orders_by_day(probes)})
+    probes = db.lf_store_probes(store_id, days=days + 2)
+    return jsonify({"ok": True, "daily": db.lf_daily_series(probes, days),
+                    "days": db.lf_orders_by_day(probes)})
 
 
 # ── admin routes (method + diagnostics) ────────────────────────────────

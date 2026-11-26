@@ -4591,39 +4591,130 @@ class Database:
             "ORDER BY probed_at ASC, id ASC", (int(store_id), since))
 
     @staticmethod
-    def lf_orders_by_day(probes: list[dict]) -> dict[str, int]:
-        """Real orders per Algeria day from consecutive probe numbers.
+    def _lf_parse_points(probes: list[dict]) -> list[tuple]:
+        """Successful probes as sorted (UTC datetime, order_number) points."""
+        points = []
+        for p in probes:
+            if p.get("kind") != "probe" or p.get("order_number") is None:
+                continue
+            raw = str(p.get("probed_at") or "")
+            try:
+                dt = datetime.fromisoformat(raw)
+            except (TypeError, ValueError):
+                d = _to_algeria_date(raw)
+                if not d:
+                    continue
+                dt = datetime.combine(d, datetime.min.time(), tzinfo=ALGERIA_TZ)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            points.append((dt.astimezone(timezone.utc), int(p["order_number"])))
+        points.sort(key=lambda x: x[0])
+        return points
 
-        Every successful probe placed one order itself, so the jump between two
-        numbers is one bigger than the customers' orders."""
-        points = [p for p in probes if p.get("kind") == "probe" and p.get("order_number") is not None]
-        out: dict[str, int] = {}
-        for prev, cur in zip(points, points[1:]):
-            jump = int(cur["order_number"]) - int(prev["order_number"]) - 1
-            if jump <= 0:
+    @staticmethod
+    def _lf_distribute(points: list[tuple]) -> tuple[dict, set]:
+        """Spread each gap across the Algeria days it covers, by time share.
+
+        A probe interval is [t1, t2] with t2's order being our own probe, so the
+        customers' orders are ``n2 - n1 - 1``. We split that number over the days
+        the interval spans (largest-remainder rounding keeps the day totals equal
+        to the real total). Returns ({date: orders}, covered_dates).
+        """
+        daily: dict = {}
+        covered: set = set()
+        for dt, _n in points:
+            covered.add(dt.astimezone(ALGERIA_TZ).date())
+        for (t1, n1), (t2, n2) in zip(points, points[1:]):
+            if t2 <= t1:
                 continue
-            day = _to_algeria_date(cur.get("probed_at") or "")
-            if not day:
+            total = (t2 - t1).total_seconds()
+            jump = int(n2) - int(n1) - 1
+            shares = []
+            cur = t1
+            while cur < t2:
+                local = cur.astimezone(ALGERIA_TZ)
+                next_midnight = datetime.combine(local.date() + timedelta(days=1),
+                                                 datetime.min.time(), tzinfo=ALGERIA_TZ)
+                seg_end = min(t2, next_midnight.astimezone(timezone.utc))
+                secs = (seg_end - cur).total_seconds()
+                if secs > 0:
+                    shares.append((local.date(), secs))
+                    covered.add(local.date())
+                cur = seg_end
+            if jump <= 0 or total <= 0 or not shares:
                 continue
-            out[day.isoformat()] = out.get(day.isoformat(), 0) + jump
+            raw = [jump * (secs / total) for _d, secs in shares]
+            ints = [int(x) for x in raw]
+            remainder = jump - sum(ints)
+            order = sorted(range(len(raw)), key=lambda i: raw[i] - ints[i], reverse=True)
+            for i in order[:max(0, remainder)]:
+                ints[i] += 1
+            for (day, _secs), val in zip(shares, ints):
+                if val:
+                    daily[day] = daily.get(day, 0) + val
+        return daily, covered
+
+    @classmethod
+    def lf_orders_by_day(cls, probes: list[dict]) -> dict[str, int]:
+        daily, _covered = cls._lf_distribute(cls._lf_parse_points(probes))
+        return {d.isoformat(): v for d, v in sorted(daily.items())}
+
+    @classmethod
+    def lf_daily_series(cls, probes: list[dict], days: int = 7,
+                        today: Optional[date] = None) -> list[dict]:
+        """One row per date: {date, orders, measured}. ``measured`` is False when
+        no probe covers that day, so the UI can show '—' instead of a fake 0."""
+        days = max(1, int(days))
+        today = today or algeria_today()
+        horizon = today - timedelta(days=days - 1)
+        daily, covered = cls._lf_distribute(cls._lf_parse_points(probes))
+        out = []
+        for i in range(days):
+            d = horizon + timedelta(days=i)
+            out.append({"date": d.isoformat(), "orders": int(daily.get(d, 0)), "measured": d in covered})
         return out
+
+    @staticmethod
+    def _lf_local_str(value: str) -> str:
+        """An ISO timestamp rendered in Algeria time (the browser shows it as-is)."""
+        v = str(value or "").strip()
+        if not v:
+            return ""
+        try:
+            dt = datetime.fromisoformat(v)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(ALGERIA_TZ).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            return v[:16].replace("T", " ")
 
     def lf_sales_overview(self, days: int = 7, owner_id: Optional[int] = None) -> list[dict]:
         """Per-store totals for the dashboard."""
+        days = max(1, int(days))
         today = algeria_today()
-        horizon = today - timedelta(days=max(1, int(days)) - 1)
         stores = self.list_lf_stores(owner_id=owner_id)
         out = []
         for s in stores:
-            probes = self.lf_store_probes(int(s["id"]), days=days + 1)
-            by_day = self.lf_orders_by_day(probes)
-            today_orders = by_day.get(today.isoformat(), 0)
-            window = sum(v for d, v in by_day.items() if d >= horizon.isoformat())
+            probes = self.lf_store_probes(int(s["id"]), days=days + 2)
+            series = self.lf_daily_series(probes, days, today)
+            today_row = series[-1] if series else {"orders": 0, "measured": False}
+            yesterday_row = series[-2] if len(series) >= 2 else {"orders": 0, "measured": False}
+            by_day = {x["date"]: x["orders"] for x in series if x["orders"]}
             ok = [p for p in probes if p.get("kind") == "probe"]
-            out.append(dict(s, orders_today=today_orders, orders_window=window,
-                            window_days=days, probes_window=len(ok),
-                            days=dict(sorted(by_day.items())),
-                            last_error_short=(s.get("last_error") or "")[:160]))
+            out.append(dict(
+                s,
+                orders_today=int(today_row["orders"]),
+                today_measured=bool(today_row["measured"]),
+                orders_yesterday=int(yesterday_row["orders"]),
+                yesterday_measured=bool(yesterday_row["measured"]),
+                orders_window=int(sum(x["orders"] for x in series)),
+                window_days=days,
+                probes_window=len(ok),
+                days=by_day,
+                daily=series,
+                updated_at_local=self._lf_local_str(s.get("last_checked_at") or s.get("last_probed_at") or ""),
+                last_error_short=(s.get("last_error") or "")[:160],
+            ))
         return out
 
     def lf_due_stores(self, now: Optional[datetime] = None) -> list[dict]:
