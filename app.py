@@ -176,9 +176,11 @@ def _resolve_session() -> None:
 
 # ── Pages ─────────────────────────────────────────────────────────────
 def _asset_v() -> str:
-    css = os.path.join(app.static_folder, "css", "app.css")
+    css_dir = os.path.join(app.static_folder, "css")
     js_dir = os.path.join(app.static_folder, "js")
-    paths = [css] + [os.path.join(js_dir, f) for f in os.listdir(js_dir) if f.endswith(".js")]
+    css_files = [os.path.join(css_dir, f) for f in os.listdir(css_dir) if f.endswith(".css")]
+    js_files = [os.path.join(js_dir, f) for f in os.listdir(js_dir) if f.endswith(".js")]
+    paths = css_files + js_files
     try:
         return str(int(max(os.path.getmtime(p) for p in paths)))
     except OSError:

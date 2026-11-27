@@ -1,0 +1,102 @@
+  <!-- VIEW: DASHBOARD -->
+  <section id="view-dashboard" class="space-y-5">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">مرحباً بك في AdsCloud</h1>
+        <p class="page-sub">ملخص السوق الجزائري، مبيعات المتاجر، والمنتجات الأكثر نشاطاً اليوم.</p>
+        <p class="text-[11px] font-semibold text-slate-400 mt-1">
+          متاجر متابَعة: <b class="num text-slate-700" id="dash-stores">—</b>
+          · منتجات رابحة: <b class="num text-slate-700" id="dash-winning">—</b>
+        </p>
+      </div>
+      <button onclick="showTab('ads')" class="btn-primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-4 h-4"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg>
+        استكشف بنك الإعلانات
+      </button>
+    </div>
+
+    <div id="onboarding-card" class="onboard">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <span class="text-[11px] font-bold px-2.5 py-1 rounded-full bg-[#174EA6] text-white">دليل البداية السريع</span>
+          <h2 class="text-base font-bold text-slate-900">كيف تجد منتجك الرابح القادم في 3 خطوات؟</h2>
+        </div>
+        <button onclick="dismissOnboarding()" aria-label="إخفاء الدليل"
+                class="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-slate-400 hover:bg-white hover:text-slate-700 transition">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="grid md:grid-cols-3 gap-3.5 mt-4">
+        <div onclick="showTab('ads')" class="onboard-step">
+          <div class="flex items-center gap-2.5">
+            <span class="onboard-num">1</span>
+            <span class="font-bold text-sm text-slate-900">اكتشف الإعلانات المستمرة</span>
+          </div>
+          <p class="text-xs text-slate-500 mt-2 leading-relaxed">رتّب بنك الإعلانات حسب «الأطول عمراً» أو «القوة» لرؤية المنتجات التي يواصل أصحابها الصرف عليها.</p>
+        </div>
+        <div onclick="showTab('sales')" class="onboard-step">
+          <div class="flex items-center gap-2.5">
+            <span class="onboard-num">2</span>
+            <span class="font-bold text-sm text-slate-900">تأكد من المبيعات الفعلية</span>
+          </div>
+          <p class="text-xs text-slate-500 mt-2 leading-relaxed">أضف رابط أي متجر منافس في «مبيعات المتاجر» لمراقبة عدد طلبياته اليومية قبل استيراد المنتج.</p>
+        </div>
+        <div onclick="showTab('winning')" class="onboard-step">
+          <div class="flex items-center gap-2.5">
+            <span class="onboard-num">3</span>
+            <span class="font-bold text-sm text-slate-900">احفظ وتابع التنبيهات</span>
+          </div>
+          <p class="text-xs text-slate-500 mt-2 leading-relaxed">احفظ المنتج بنجمة لمتابعة توقفه وإعادة إطلاقه، أو حلّل المتجر بالذكاء الاصطناعي.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">مبيعات المتاجر اليوم</div>
+        <div class="kpi-value" id="dash-sales-today">—</div>
+        <div class="kpi-note">مقارنة أمس: <b id="dash-sales-today-note" class="num">—</b></div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">مبيعات أمس</div>
+        <div class="kpi-value text-[#0F766E]" id="dash-sales-yesterday">—</div>
+        <div class="kpi-note">آخر تحديث تلقائي</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">مبيعات 7 أيام</div>
+        <div class="kpi-value text-[#174EA6]" id="dash-sales-week">—</div>
+        <div class="kpi-note">مجموع المتاجر المتابَعة</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">إعلانات محفوظة</div>
+        <div class="kpi-value" id="dash-ads">—</div>
+        <div class="kpi-note">في بنك الإعلانات</div>
+      </div>
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div class="scard lg:order-2">
+        <div class="flex items-center justify-between gap-2 mb-3">
+          <div class="jb-h !mb-0">أمثلة بحث جاهزة للسوق الجزائري</div>
+        </div>
+        <p class="text-xs text-slate-500 mb-3">اضغط على أي مثال للانتقال مباشرة إلى بنك الإعلانات المطابقة.</p>
+        <div class="flex flex-wrap gap-2">
+          <button onclick="quickAdSearch('أدوات المطبخ')" class="quick-chip">أدوات المطبخ</button>
+          <button onclick="quickAdSearch('توصيل مجاني')" class="quick-chip">توصيل مجاني 58 ولاية</button>
+          <button onclick="quickAdSearch('تحميل وعناية')" class="quick-chip">تحميل وعناية</button>
+          <button onclick="quickAdSearch('مستلزمات السيارات')" class="quick-chip">مستلزمات السيارات</button>
+          <button onclick="quickAdSearch('متاجر YouCan')" class="quick-chip">متاجر YouCan</button>
+        </div>
+      </div>
+
+      <div class="scard lg:order-1">
+        <div class="flex items-center justify-between gap-2 mb-3">
+          <div class="jb-h !mb-0">آخر المنتجات الرابحة</div>
+          <button onclick="showTab('winning')" class="text-[11px] font-bold text-[#174EA6] hover:underline">عرض الكل</button>
+        </div>
+        <div id="dash-winning-list" class="space-y-2 text-xs">
+          <div class="text-slate-400 font-semibold py-4 text-center">جارٍ التحميل…</div>
+        </div>
+      </div>
+    </div>
+  </section>

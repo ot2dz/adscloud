@@ -1,36 +1,42 @@
 {% extends "base.html" %}
 {% block content %}
-<main id="main-content" class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+<div class="app-shell">
+  {% include "partials/app_sidebar.html" %}
 
-{% include "partials/scrape_bar.html" %}
+  <div class="app-main">
+    {% include "partials/app_topbar.html" %}
 
-{% include "partials/nav_tabs.html" %}
+    <main id="main-content" class="app-content space-y-6">
 
-{% include "partials/views/ads.html" %}
+      {% include "partials/views/dashboard.html" %}
 
-{% include "partials/modals/group.html" %}
-{% include "partials/modals/ad.html" %}
-{% include "partials/modals/activity.html" %}
+      {% include "partials/views/ads.html" %}
 
-{% include "partials/views/targets.html" %}
+      {% include "partials/modals/group.html" %}
+      {% include "partials/modals/ad.html" %}
+      {% include "partials/modals/activity.html" %}
 
-{% include "partials/views/winning.html" %}
+      {% include "partials/views/targets.html" %}
 
-{% include "partials/views/sales.html" %}
+      {% include "partials/views/winning.html" %}
 
-{% include "partials/views/stores.html" %}
+      {% include "partials/views/sales.html" %}
 
-{% include "partials/views/analysis.html" %}
+      {% include "partials/views/stores.html" %}
 
-{% include "partials/views/global.html" %}
+      {% include "partials/views/analysis.html" %}
 
-{% include "partials/views/jobs.html" %}
+      {% include "partials/views/global.html" %}
 
-{% include "partials/views/settings.html" %}
+      {% include "partials/views/jobs.html" %}
 
-{% include "partials/views/users.html" %}
+      {% include "partials/views/settings.html" %}
 
-{% include "partials/log_panel.html" %}
+      {% include "partials/views/users.html" %}
 
-</main>
+      {% include "partials/log_panel.html" %}
+
+    </main>
+  </div>
+</div>
 {% endblock %}

@@ -116,7 +116,7 @@ function renderSalesList(stores, days, admin) {
     const todayTxt = s.today_measured ? (s.orders_today || 0) : '—';
     const yesterdayTxt = s.yesterday_measured ? (s.orders_yesterday || 0) : '—';
     const tech = admin
-      ? `<div class="text-[11px] text-slate-500 font-semibold mt-1" dir="ltr">
+      ? `<div id="sales-tech-${s.id}" class="hidden text-[11px] text-slate-500 font-semibold mt-1" dir="ltr">
            last: ${escT(s.last_order_number != null ? '#' + s.last_order_number : '—')}
            · probes: ${s.probes_window || 0}
            · status: ${escT(s.last_probe_status || '—')}
@@ -125,6 +125,9 @@ function renderSalesList(stores, days, admin) {
       : '';
     const probeBtn = admin
       ? `<button onclick="probeSalesStore(${s.id}, this)" ${s.running ? 'disabled' : ''} class="sbtn !py-1.5">📡 قِس</button>`
+      : '';
+    const gearBtn = admin
+      ? `<button onclick="document.getElementById('sales-tech-${s.id}').classList.toggle('hidden')" class="sbtn !py-1.5" title="تفاصيل المدير التقنية">⚙</button>`
       : '';
     return `
     <div class="border border-[#cfe0f5] rounded-xl p-3 bg-white${off}">
@@ -154,6 +157,7 @@ function renderSalesList(stores, days, admin) {
           </div>
           <button onclick="openSalesDetails(${s.id})" class="sbtn !py-1.5">📅 تفاصيل</button>
           ${probeBtn}
+          ${gearBtn}
           <button onclick="toggleSalesStore(${s.id})" class="sbtn !py-1.5"
             title="${Number(s.enabled || 0) ? 'إيقاف المتابعة' : 'تفعيل المتابعة'}">${Number(s.enabled || 0) ? '⏸' : '▶'}</button>
           <button onclick="deleteSalesStore(${s.id})" class="sbtn !py-1.5 !text-rose-600 !border-rose-200" title="حذف">🗑</button>

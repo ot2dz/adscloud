@@ -1,0 +1,57 @@
+  <header class="app-topbar">
+    <button onclick="toggleSidebar(true)" class="lg:hidden p-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50" aria-label="فتح القائمة">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+
+    <div class="topbar-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-4 h-4 shrink-0"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg>
+      <input id="topbar-search" onkeydown="if(event.key==='Enter')topbarSearch()" placeholder="ابحث عن منتج، متجر، أو الصق رابطاً…">
+      <kbd class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-white border border-slate-200 rounded text-slate-400">Ctrl+K</kbd>
+    </div>
+
+    <div class="topbar-spacer flex items-center gap-2 flex-wrap">
+      <span id="egress-ip-badge" class="hidden">
+        <span class="topbar-chip bg-emerald-50 text-emerald-800 border-emerald-200">
+          IP: <b class="num" id="egress-ip">--</b>
+        </span>
+        <button id="egress-rotate" type="button" title="تدوير IP"
+          class="ms-1 text-[11px] px-1.5 py-0.5 rounded-full bg-white border border-emerald-200 text-emerald-700 font-bold hover:bg-emerald-50 transition disabled:opacity-50">↻</button>
+      </span>
+
+      <span class="topbar-chip" title="الإعلانات المحفوظة">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-3.5 h-3.5 text-slate-400"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg>
+        <b class="num text-blue-700" id="stat-total">0</b>
+        <span class="hidden sm:inline">إعلان</span>
+      </span>
+      <span class="topbar-chip" title="المتاجر المكتشفة">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-3.5 h-3.5 text-slate-400"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2"/></svg>
+        <b class="num text-emerald-700" id="stat-stores">0</b>
+        <span class="hidden sm:inline">متجر</span>
+      </span>
+
+      <select id="admin-user-filter" data-admin-only onchange="onAdminUserFilterChange()" title="عرض بيانات مستخدم محدد"
+              class="hidden text-[11px] bg-white text-slate-700 font-bold rounded-lg px-2.5 py-1.5 border border-slate-200 max-w-[170px]">
+        <option value="">👥 كل المستخدمين</option>
+      </select>
+
+      <div class="relative">
+        <button onclick="toggleUserMenu(event)" data-user-menu-btn class="topbar-user text-right">
+          <span class="avatar" id="auth-user-avatar">؟</span>
+          <span class="hidden md:block leading-tight">
+            <span class="block text-xs font-bold text-slate-800 max-w-[150px] truncate" id="auth-user-email">…</span>
+            <span class="block text-[10px] font-semibold text-slate-400" id="auth-user-badge">مستخدم</span>
+          </span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-3.5 h-3.5 text-slate-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="user-menu" class="hidden absolute left-0 mt-2 w-52 bg-white border border-slate-200 rounded-xl shadow-xl p-1.5 z-50 text-xs font-semibold">
+          <div class="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-100" id="auth-user-menu-email" dir="ltr"></div>
+          <button onclick="logout()" class="w-full text-right px-3 py-2 rounded-lg hover:bg-rose-50 text-rose-700">خروج</button>
+          <button onclick="logoutAll()" class="w-full text-right px-3 py-2 rounded-lg hover:bg-rose-50 text-rose-700">خروج من كل الأجهزة</button>
+          <div class="my-1 border-t border-slate-100"></div>
+          <button onclick="exportData('csv')" class="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">تصدير CSV</button>
+          <button onclick="exportData('json')" class="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">تصدير JSON</button>
+          <button id="btn-reset-db" onclick="resetAll()" class="hidden w-full text-right px-3 py-2 rounded-lg hover:bg-rose-50 text-rose-700">مسح قاعدة البيانات</button>
+        </div>
+      </div>
+    </div>
+  </header>

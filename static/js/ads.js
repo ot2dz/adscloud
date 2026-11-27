@@ -1,4 +1,4 @@
-// ── Ads pagination ──
+﻿// ── Ads pagination ──
 let adsPage = 1;
 let adsTotal = 0;
 let adsPageSize = 60;
@@ -687,76 +687,99 @@ function adCardHtml(raw, opts = {}) {
     const h = (!opts.plain && raw.hunter) ? raw.hunter : null;
     const tone = g ? groupTone(g.count) : null;
     const days = Math.max(a.days_active || 1, g ? g.max_days : 0);
-    const isWin = days >= 5 && a.is_active;
-    const isNew = days <= 3 && a.is_active;
+    const active = g ? g.active > 0 : a.is_active;
     const adFbUrl = `https://www.facebook.com/ads/library/?id=${encodeURIComponent(raw.ad_id || '')}`;
     const previewImg = a.preview_image_url || '';
     const videoSrc = cardVideoSrc(raw);
-    const cardKeywords = (raw.group && raw.group.keywords) || raw.keywords || [];
-    const active = g ? g.active > 0 : a.is_active;
     const iconBtn = 'w-9 h-9 shrink-0 flex items-center justify-center rounded-lg border border-[#d7e3f4] text-[#174ea6] hover:bg-[#eef5ff] transition';
+    const menuId = 'admenu-' + String(a.ad_id || '').replace(/[^0-9A-Za-z_-]/g, '');
+    const countChip = g
+      ? `<span class="px-2.5 py-1 rounded-lg bg-[#EEF4FF] text-[#174EA6] num">${g.count} إعلانات للمنتج</span>`
+      : (Number(a.collation_count || 1) > 1
+        ? `<span class="px-2.5 py-1 rounded-lg bg-[#EEF4FF] text-[#174EA6] num">${a.collation_count} نسخة</span>` : '');
+    const meta = [
+      a.start_date ? `<span title="تاريخ الإطلاق">📅 ${fmtDayAr(a.start_date)}</span>` : '',
+      `<span title="الأيام النشطة">⏱️ <b class="num text-slate-800">${days}</b> ${days === 1 ? 'يوم' : 'أيام'}</span>`,
+      a.domain_total_ads != null ? `<span title="إجمالي إعلانات المتجر">🏪 <b class="num text-slate-800">${a.domain_total_ads}</b></span>` : '',
+      isNewToday(a) ? '<span class="px-1.5 rounded bg-emerald-100 text-emerald-700 font-bold" title="سُحب اليوم">🆕</span>' : '',
+    ].filter(Boolean).join('');
 
     return `
-    <article class="bg-white border ${tone ? tone.ring : 'border-[#d7e3f4]'} rounded-2xl overflow-hidden flex flex-col shadow-[0_6px_18px_rgba(23,43,77,0.05)] hover:shadow-md transition">
-      <div class="relative w-full aspect-[4/3] shrink-0 overflow-hidden bg-[#eef3f9] flex items-center justify-center">
-        ${previewImg ? `
-          <img src="${previewImg}" alt="صورة الإعلان" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-cover" onerror="this.remove()">
-        ` : `<span class="text-3xl opacity-40">🖼️</span>`}
+    <article class="bg-white border border-[#d7e3f4] rounded-2xl overflow-hidden flex flex-col h-full shadow-[0_6px_18px_rgba(23,43,77,0.05)] hover:shadow-lg hover:-translate-y-0.5 transition duration-200">
+      <div class="relative w-full aspect-[16/10] shrink-0 overflow-hidden bg-[#eef3f9] flex items-center justify-center">
+        <div class="absolute inset-0 skeleton flex flex-col items-center justify-center gap-1 text-slate-400 text-[11px] font-semibold">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-7 h-7 opacity-50"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          <span>معاينة الوسائط</span>
+        </div>
+        ${previewImg ? `<img src="${previewImg}" alt="صورة الإعلان" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-cover" onerror="this.remove()">` : ''}
         ${videoSrc ? `
           <button type="button" data-src="${videoSrc}" onclick="playCardVideo(this)" title="تشغيل الفيديو"
             class="absolute inset-0 flex items-center justify-center group">
             <span class="w-14 h-14 rounded-full bg-black/55 group-hover:bg-black/75 text-white flex items-center justify-center text-2xl shadow-lg transition">▶</span>
           </button>` : ''}
-        ${h ? `<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full font-bold shadow-sm pointer-events-none ${h.score >= 70 ? 'bg-emerald-600 text-white' : (h.score >= 40 ? 'bg-amber-500 text-white' : 'bg-slate-500 text-white')}">${h.score >= 70 ? '🏆 رابح · ' + h.score : '🔥 ' + h.score}</span>`
-          : (isNew ? '<span class="absolute top-2.5 right-2.5 text-[11px] px-2.5 py-0.5 rounded-full bg-sky-500 text-white font-bold shadow-sm pointer-events-none">🚀 جديد</span>' : '')}
+        <span class="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold shadow-sm pointer-events-none ${active ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-white'}">
+          ${active ? 'نشط' : 'متوقف'} · ${days} يوم
+        </span>
         ${g ? `
           <button type="button" data-key="${escT(g.key)}" data-title="${escT((raw.page_name || '') + ' — ' + g.count + ' إعلان لنفس المنتج')}"
             onclick="openGroupModal(this.dataset.key, this.dataset.title)" title="عرض كل إعلانات هذا المنتج"
             class="absolute top-2.5 left-2.5 z-10 px-2.5 py-0.5 rounded-full ${tone.badge} text-white text-[11px] font-bold shadow-sm hover:opacity-90">
-            📦 <span class="num">${g.count}</span> إعلانات
-          </button>` : ''}
+            📦 <span class="num">${g.count}</span>
+          </button>` : (h ? `
+          <span class="absolute top-2.5 left-2.5 px-2.5 py-0.5 rounded-full bg-white/95 text-[#174EA6] text-[11px] font-bold shadow-sm">القوة ${h.score}</span>` : '')}
       </div>
 
-      <div class="p-3.5 flex flex-col gap-2 flex-1">
-        ${cardKeywordBadge(cardKeywords)}
-        <div>
+      <div class="p-4 flex flex-col gap-2.5 flex-1">
+        <div class="min-w-0">
           <div class="flex items-center justify-between gap-2">
-            <h3 class="font-bold text-[15px] text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
-            ${active
-              ? `<span class="shrink-0 text-[11px] font-bold text-emerald-600" title="${raw.status_checked_at ? 'آخر تأكيد: ' + escT(String(raw.status_checked_at).slice(0, 10)) : 'لم يُفحص بعد'}">● نشط</span>`
-              : `<span class="shrink-0 text-[11px] font-bold text-slate-500" title="${raw.stopped_at ? 'آخر يوم شوهد نشطاً: ' + escT(String(raw.stopped_at).slice(0, 10)) : ''}">⚫ توقف بعد ${days} ${days === 1 ? 'يوم' : 'أيام'}</span>`}
+            <h3 class="font-bold text-[14.5px] text-[#102a56] truncate" title="${a.page_name || ''}">${a.page_name || 'صفحة غير معروفة'}</h3>
+            ${h && g ? `<span class="shrink-0 text-[10.5px] font-bold text-[#174EA6] bg-[#EEF4FF] px-2 py-0.5 rounded-full">القوة ${h.score}</span>` : ''}
           </div>
-          <div class="text-[11.5px] text-slate-500 font-mono truncate" dir="ltr" style="text-align:right" title="${a.store_domain || ''}">${a.store_domain || 'بدون متجر'}</div>
+          <div class="text-[11.5px] text-slate-500 font-mono truncate mt-0.5" dir="ltr" style="text-align:right" title="${a.store_domain || ''}">${a.store_domain || 'بدون متجر'}</div>
         </div>
 
-        <div class="flex items-center gap-3 text-[11.5px] text-slate-600 flex-wrap">
-          ${opts.noPrice ? '' : priceBadgeHtml(raw)}
-          ${a.start_date ? `<span title="تاريخ الإطلاق">📅 ${fmtDayAr(a.start_date)}</span>` : ''}
-          <span title="الأيام النشطة">⏱️ <b class="num text-slate-800">${days}</b> ${days === 1 ? 'يوم' : 'أيام'}</span>
-          ${a.domain_total_ads != null ? `<span title="إجمالي إعلانات المتجر">🏪 <b class="num text-slate-800">${a.domain_total_ads}</b> للمتجر</span>` : ''}
-          ${isNewToday(a) ? '<span class="px-1.5 rounded bg-emerald-100 text-emerald-700 font-bold" title="سُحب اليوم">🆕</span>' : ''}
+        <div class="flex items-center gap-2 flex-wrap text-[11.5px] font-bold">
+          ${(!opts.noPrice && a.product_key) ? `<span class="px-2.5 py-1 rounded-lg bg-emerald-50">${priceBadgeHtml(raw)}</span>` : ''}
+          ${countChip}
         </div>
 
-        ${a.body ? `<p class="text-[12.5px] text-slate-700 leading-relaxed line-clamp-2">${escT((raw.body || '').slice(0, 220))}</p>` : ''}
+        ${a.body ? `<p class="text-[12.5px] text-slate-600 leading-relaxed line-clamp-2">${escT((raw.body || '').slice(0, 220))}</p>` : ''}
+        ${meta ? `<div class="flex items-center gap-3 text-[11px] text-slate-500 flex-wrap">${meta}</div>` : ''}
 
         ${g ? `<div>
           <button type="button" data-key="${escT(g.key)}" onclick="toggleCardTimeline(this)"
-            class="w-full text-[11.5px] font-bold text-[#174ea6] bg-[#f3f8ff] hover:bg-[#e8f1ff] border border-[#d7e3f4] rounded-lg py-1.5">⏱️ مدة كل إعلان (${g.count})</button>
+            class="text-[11px] font-bold text-[#174ea6] hover:underline">⏱️ مدة كل إعلان (${g.count})</button>
           <div class="ad-timeline hidden mt-2"></div>
         </div>` : ''}
 
-        <div class="flex items-center gap-1.5 mt-auto pt-1">
+        <div class="mt-auto pt-1.5 flex items-center gap-2 relative">
           <button type="button" onclick="openAdDetails('${a.ad_id}')"
-            class="flex-1 h-9 rounded-lg bg-[#174ea6] hover:bg-[#123f87] text-white font-bold text-xs transition">التفاصيل</button>
-          ${a.link_url ? `<a href="${a.link_url}" target="_blank" rel="noopener" title="فتح المتجر" class="${iconBtn}">🛒</a>` : ''}
-          <a href="${adFbUrl}" target="_blank" rel="noopener" title="فتح الإعلان في مكتبة الإعلانات" class="${iconBtn}">↗</a>
-          <button type="button" data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" title="نسخ النص" class="${iconBtn}">📋</button>
+            class="flex-1 h-10 rounded-xl bg-[#174EA6] hover:bg-[#123E85] text-white font-bold text-xs transition">تفاصيل الإعلان</button>
           ${winStarHtml(raw, iconBtn)}
-          ${a.store_domain ? `<button type="button" data-domain="${a.store_domain}" onclick="analyzeStore(this.dataset.domain)" title="تحليل المتجر بالذكاء الاصطناعي" class="${iconBtn}">🤖</button>` : ''}
-          ${a.page_id ? `<button type="button" data-page="${a.page_id}" data-name="${a.page_name || ''}" onclick="trackPage(this.dataset.page, this.dataset.name)" title="تتبع الصفحة" class="${iconBtn}">👁️</button>`
-            : (a.store_domain ? `<button type="button" data-domain="${a.store_domain}" onclick="trackDomain(this.dataset.domain)" title="تتبع المتجر" class="${iconBtn}">👁️</button>` : '')}
+          <button type="button" onclick="toggleAdMenu(event, '${menuId}')" class="${iconBtn} text-base font-bold" title="خيارات إضافية">⋯</button>
+          <div id="${menuId}" class="ad-menu hidden absolute left-0 bottom-12 w-52 bg-white border border-slate-200 rounded-xl shadow-xl p-1.5 z-30 text-xs font-semibold">
+            ${a.link_url ? `<a href="${a.link_url}" target="_blank" rel="noopener" class="block text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">فتح المتجر</a>` : ''}
+            <a href="${adFbUrl}" target="_blank" rel="noopener" class="block text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">مكتبة إعلانات Meta</a>
+            <button type="button" data-text="${a.body || ''}" onclick="copyAdText(this.dataset.text)" class="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">نسخ نص الإعلان</button>
+            ${a.store_domain ? `<button type="button" data-domain="${a.store_domain}" onclick="analyzeStore(this.dataset.domain)" class="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">تحليل المتجر (AI)</button>` : ''}
+            ${a.page_id
+              ? `<button type="button" data-page="${a.page_id}" data-name="${a.page_name || ''}" onclick="trackPage(this.dataset.page, this.dataset.name)" class="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">تتبّع الصفحة</button>`
+              : (a.store_domain ? `<button type="button" data-domain="${a.store_domain}" onclick="trackDomain(this.dataset.domain)" class="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-50 text-slate-700">تتبّع المتجر</button>` : '')}
+          </div>
         </div>
       </div>
     </article>`;
 }
+
+function toggleAdMenu(e, id) {
+    if (e) e.stopPropagation();
+    const m = document.getElementById(id);
+    if (!m) return;
+    const wasHidden = m.classList.contains('hidden');
+    document.querySelectorAll('.ad-menu').forEach(x => x.classList.add('hidden'));
+    if (wasHidden) m.classList.remove('hidden');
+}
+document.addEventListener('click', () => {
+    document.querySelectorAll('.ad-menu').forEach(x => x.classList.add('hidden'));
+});
 

@@ -88,7 +88,7 @@ function loadDashboardData() {
   }
   // Deep link from Telegram alerts: /?tab=winning
   const tab = new URLSearchParams(location.search).get('tab');
-  if (tab === 'winning') showTab('winning');
+  showTab(tab || 'dashboard');
 }
 
 // Admin: whose data to show ('' = everyone). Regular users are always scoped server-side.
@@ -226,15 +226,25 @@ function renderAuthUser() {
   const resetBtn = document.getElementById('btn-reset-db');
 
   emailEl.innerText = currentUser.email;
+  const avatarEl = document.getElementById('auth-user-avatar');
+  if (avatarEl) avatarEl.innerText = (currentUser.email || '?').trim().charAt(0).toUpperCase();
+  const menuEmailEl = document.getElementById('auth-user-menu-email');
+  if (menuEmailEl) menuEmailEl.innerText = currentUser.email;
 
   if (isAdmin()) {
-    badgeEl.innerText = '👑 مدير النظام';
-    badgeEl.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 border border-amber-300';
+    badgeEl.innerText = 'مدير النظام';
+    badgeEl.className = 'block text-[10px] font-semibold text-amber-600';
     resetBtn.classList.remove('hidden');
   } else {
-    badgeEl.innerText = '👤 مستخدم';
-    badgeEl.className = 'text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800 border border-blue-300';
+    badgeEl.innerText = 'حساب مستخدم';
+    badgeEl.className = 'block text-[10px] font-semibold text-slate-400';
     resetBtn.classList.add('hidden');
+  }
+  const planTitle = document.getElementById('sidebar-plan-title');
+  const planQuota = document.getElementById('sidebar-plan-quota');
+  if (planTitle && planQuota) {
+    planTitle.innerText = isAdmin() ? 'وضع المدير' : 'الخطة المجانية';
+    planQuota.innerText = isAdmin() ? 'بلا حدود' : '1/5 متاجر';
   }
   applyAdminVisibility();
 }
@@ -386,22 +396,20 @@ function escT(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&am
 // ── Tab switcher ──
 function showTab(t) {
   if (t === 'tracked') t = 'targets';  // old tab merged into competitors
-  const views = ['ads','targets','winning','sales','stores','analysis','global','jobs','settings','users'];
+  if (['jobs', 'settings', 'users'].includes(t) && !isAdmin()) t = 'dashboard';
+  const views = ['dashboard','ads','targets','winning','sales','stores','analysis','global','jobs','settings','users'];
   views.forEach(v => {
     const el = document.getElementById('view-'+v);
     if (el) el.classList.toggle('hidden', t!==v);
   });
-  views.forEach(v => {
-    const btn = document.getElementById('tab-'+v);
-    if (btn) {
-      if (t === v) {
-        btn.className = 'px-5 py-2.5 rounded-xl bg-blue-600 text-sm font-bold text-white shadow-sm transition';
-      } else {
-        btn.className = 'px-5 py-2.5 rounded-xl bg-white border border-[#cfe0f5] text-slate-700 text-sm font-bold hover:bg-[#eef6ff] transition';
-      }
-      if (btn.hasAttribute('data-admin-only') && !isAdmin()) btn.classList.add('hidden');
-    }
+  document.querySelectorAll('[data-nav]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.nav === t);
   });
+  applyAdminVisibility();
+  toggleSidebar(false);
+  closeUserMenu();
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  if (t === 'dashboard') loadDashboard();
   if (t === 'ads') { loadKeywordChips(); loadNicheChips(); }
   if (t === 'targets') loadTargets();
   if (t === 'winning') loadWinning();
@@ -497,3 +505,113 @@ setInterval(() => {
   const view = document.getElementById('view-users');
   if (isAdmin() && view && !view.classList.contains('hidden')) loadAdminUsers();
 }, 20000);
+
+// ── App shell (sidebar, topbar search, dashboard) ──
+function toggleSidebar(open) {
+  const sb = document.getElementById('app-sidebar');
+  const bd = document.getElementById('sidebar-backdrop');
+  if (!sb) return;
+  sb.classList.toggle('open', !!open);
+  if (bd) bd.classList.toggle('hidden', !open);
+}
+
+function toggleUserMenu(e) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById('user-menu');
+  if (m) m.classList.toggle('hidden');
+}
+
+function closeUserMenu() {
+  const m = document.getElementById('user-menu');
+  if (m) m.classList.add('hidden');
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#user-menu') || e.target.closest('[data-user-menu-btn]')) return;
+  closeUserMenu();
+});
+
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    document.getElementById('topbar-search')?.focus();
+  }
+  if (e.key === 'Escape') { closeUserMenu(); toggleSidebar(false); }
+});
+
+function topbarSearch() {
+  const v = (document.getElementById('topbar-search')?.value || '').trim();
+  if (!v) { showTab('ads'); return; }
+  quickAdSearch(v);
+}
+
+function quickAdSearch(term) {
+  showTab('ads');
+  const s = document.getElementById('search');
+  if (s) s.value = term;
+  if (typeof loadAds === 'function') loadAds();
+}
+
+function dismissOnboarding() {
+  try { localStorage.setItem('ac_onboard_hidden', '1'); } catch (_e) {}
+  document.getElementById('onboarding-card')?.classList.add('hidden');
+}
+
+function fmtNum(v) { return Number(v || 0).toLocaleString('en-US'); }
+
+async function loadDashboard() {
+  try {
+    if (localStorage.getItem('ac_onboard_hidden') === '1') {
+      document.getElementById('onboarding-card')?.classList.add('hidden');
+    }
+  } catch (_e) {}
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const [st, sa, wi] = await Promise.all([
+    fetch('/api/stats', { credentials: 'same-origin' }).then(r => r.json()).catch(() => null),
+    fetch('/api/sales/overview?days=7', { credentials: 'same-origin' }).then(r => r.json()).catch(() => null),
+    fetch('/api/winning', { credentials: 'same-origin' }).then(r => r.json()).catch(() => null),
+  ]);
+
+  if (st && st.total_ads != null) {
+    set('dash-ads', fmtNum(st.total_ads));
+    set('sidebar-ads-count', fmtNum(st.total_ads));
+  }
+
+  const stores = (sa && sa.stores) || [];
+  const measuredToday = stores.filter(s => s.today_measured);
+  const today = measuredToday.reduce((a, s) => a + (s.orders_today || 0), 0);
+  set('dash-sales-today', measuredToday.length ? fmtNum(today) : '—');
+  const measuredY = stores.filter(s => s.yesterday_measured);
+  const yest = measuredY.reduce((a, s) => a + (s.orders_yesterday || 0), 0);
+  set('dash-sales-yesterday', measuredY.length ? fmtNum(yest) : '—');
+  set('dash-sales-week', stores.length ? fmtNum(stores.reduce((a, s) => a + (s.orders_window || 0), 0)) : '—');
+  set('dash-stores', fmtNum(stores.length));
+
+  const note = document.getElementById('dash-sales-today-note');
+  if (note) {
+    if (measuredToday.length && measuredY.length && yest > 0) {
+      const pct = Math.round((today - yest) / yest * 100);
+      note.textContent = (pct >= 0 ? '+' : '') + pct + '%';
+      note.className = 'num ' + (pct >= 0 ? 'text-emerald-600' : 'text-rose-600');
+    } else {
+      note.textContent = '—';
+      note.className = 'num';
+    }
+  }
+
+  const products = (wi && wi.products) || [];
+  set('dash-winning', fmtNum(products.length));
+  set('sidebar-winning-count', fmtNum(products.length));
+  const list = document.getElementById('dash-winning-list');
+  if (list) {
+    list.innerHTML = products.slice(0, 4).map(p => `
+      <div class="flex items-center justify-between gap-2 border-b border-slate-100 py-2 last:border-0">
+        <div class="min-w-0">
+          <div class="font-bold text-slate-800 truncate">${escT(p.page_name || p.product_key || 'منتج')}</div>
+          <div class="text-[11px] text-slate-400 font-mono truncate" dir="ltr" style="text-align:right">${escT(p.store_domain || '')}</div>
+        </div>
+        <span class="pill shrink-0">${escT(p.stage || 'مراقبة')} · ${Number(p.active_ads || 0)}</span>
+      </div>`).join('') ||
+      '<div class="text-center text-slate-400 font-semibold py-4">لا توجد منتجات محفوظة بعد — احفظ منتجاً بنجمة من بطاقة الإعلان.</div>';
+  }
+}

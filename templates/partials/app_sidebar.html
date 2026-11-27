@@ -1,0 +1,92 @@
+  <div id="sidebar-backdrop" class="sidebar-backdrop hidden" onclick="toggleSidebar(false)"></div>
+  <aside id="app-sidebar" class="app-sidebar">
+    <div class="brand">
+      <button onclick="showTab('dashboard')" class="flex items-center gap-2.5 min-w-0 text-right">
+        <span class="brand-mark">A</span>
+        <span class="min-w-0">
+          <span class="brand-name block">AdsCloud</span>
+          <span class="brand-sub block">استخبارات السوق الجزائري</span>
+        </span>
+      </button>
+      <button onclick="toggleSidebar(false)" class="lg:hidden ms-auto p-1.5 rounded-lg text-slate-400 hover:bg-slate-100" aria-label="إغلاق القائمة">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <nav class="app-nav">
+      <div class="nav-group-title">الرئيسية</div>
+
+      <button onclick="showTab('dashboard')" id="tab-dashboard" data-nav="dashboard" class="nav-item active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>
+        <span class="flex-1">لوحة التحكم</span>
+      </button>
+
+      <button onclick="showTab('ads')" id="tab-ads" data-nav="ads" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg>
+        <span class="flex-1">بنك الإعلانات</span>
+        <span class="nav-count num" id="sidebar-ads-count">—</span>
+      </button>
+
+      <button onclick="showTab('targets')" id="tab-targets" data-nav="targets" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 9l2-4h14l2 4"/><path d="M3 9v10a2 2 0 002 2h14a2 2 0 002-2V9"/><path d="M9 21V12h6v9"/></svg>
+        <span class="flex-1">المنافسون</span>
+      </button>
+
+      <button onclick="showTab('sales')" id="tab-sales" data-nav="sales" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 3 5-6"/></svg>
+        <span class="flex-1">مبيعات المتاجر</span>
+        <span class="nav-count live">مباشر</span>
+      </button>
+
+      <button onclick="showTab('winning')" id="tab-winning" data-nav="winning" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        <span class="flex-1">المنتجات الرابحة</span>
+        <span class="nav-count num" id="sidebar-winning-count">—</span>
+      </button>
+
+      <div class="nav-sep"></div>
+      <div class="nav-group-title">المزيد من الأدوات</div>
+
+      <button onclick="showTab('stores')" id="tab-stores" data-nav="stores" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2"/></svg>
+        <span class="flex-1">المتاجر المكتشفة</span>
+      </button>
+
+      <button onclick="showTab('analysis')" id="tab-analysis" data-nav="analysis" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2L12 3z"/></svg>
+        <span class="flex-1">تحليل المنافس (AI)</span>
+      </button>
+
+      <button onclick="showTab('global')" id="tab-global" data-nav="global" class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>
+        <span class="flex-1">السوق الخارجي</span>
+      </button>
+
+      <button onclick="showTab('jobs')" id="tab-jobs" data-nav="jobs" data-admin-only class="hidden nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span class="flex-1">السحب والمهام</span>
+      </button>
+
+      <button onclick="showTab('settings')" id="tab-settings" data-nav="settings" data-admin-only class="hidden nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        <span class="flex-1">الإعدادات</span>
+      </button>
+
+      <button onclick="showTab('users')" id="tab-users" data-nav="users" data-admin-only class="hidden nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M17 21v-2a4 4 0 00-4-4H7a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+        <span class="flex-1">المستخدمون</span>
+      </button>
+    </nav>
+
+    <div class="plan-card">
+      <div class="flex items-center justify-between text-xs font-bold text-slate-700">
+        <span id="sidebar-plan-title">الخطة المجانية</span>
+        <span class="text-[#174EA6] num" id="sidebar-plan-quota">1/5 متاجر</span>
+      </div>
+      <div class="plan-bar"><i style="width:20%"></i></div>
+      <div class="flex items-center justify-between mt-2 text-[11px] text-slate-500">
+        <span>المتابعة التلقائية مفعّلة</span>
+        <span class="font-mono" id="db-backend">SQLite</span>
+      </div>
+    </div>
+  </aside>

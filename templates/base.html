@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MetaAds Spy — منصة تجسس إعلانات فيسبوك</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preload" href="{{ url_for('static', filename='fonts/ReadexPro-arabic.woff2') }}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v={{ asset_v }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/fonts.css') }}?v={{ asset_v }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ asset_v }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css') }}?v={{ asset_v }}">
 </head>
 <body class="min-h-screen">
-{% include "partials/header.html" %}
 {% include "partials/login.html" %}
 {% block content %}{% endblock %}
 <script src="{{ url_for('static', filename='js/core.js') }}?v={{ asset_v }}"></script>
